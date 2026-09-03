@@ -215,10 +215,18 @@ function Bar({ label, have, want, color }) {
 /* ---------- app ---------- */
 export default function CutLog() {
   const [data, setData] = useState(null);
+  const [locked, setLocked] = useState(null);
   const [tab, setTab] = useState("now");
   const [viewDay, setViewDay] = useState(dayKey());
   const [saveErr, setSaveErr] = useState(false);
   const first = useRef(true);
+
+  useEffect(() => {
+    (async () => {
+      try { await group("POST", { op: "list", prefix: SHARE_PREFIX }); setLocked(false); }
+      catch (e) { setLocked(/access code/i.test(String(e.message))); }
+    })();
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -249,6 +257,7 @@ export default function CutLog() {
   const targets = useMemo(() => (data?.profile ? computeTargets(data.profile, day.tags) : null), [data, day.tags]);
   const updateDay = useCallback((k, fn) => setData((d) => ({ ...d, days: { ...d.days, [k]: fn(d.days[k] || blankDay()) } })), []);
 
+  if (locked) return <Shell><Gate onOk={() => setLocked(false)} /></Shell>;
   if (!data) return <Shell><div className="glass pad center"><p className="dim">Waking up…</p></div></Shell>;
   if (!data.profile) return <Shell><ProfileForm
     initial={{ name: "", sex: "male", age: 40, heightIn: 70, weight: 224, goalWeight: 180, activity: "light", pace: 1.5 }}
@@ -284,7 +293,6 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
   const [open, setOpen] = useState(false);
   const [showStages, setShowStages] = useState(false);
   const [now, setNow] = useState(Date.now());
-  const [goalH, setGoalH] = useState(16);
   const fast = data.fast;
   const isToday = dayId === dayKey();
 
@@ -305,18 +313,18 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
     <>
       {fast ? (
         <div className="glass hero">
-          <Ring pct={hours / fast.goal} color={st.hue}
-            ticks={STAGES.filter((s) => s.at <= fast.goal).map((s) => ({ at: s.at / fast.goal, hit: hours >= s.at, color: s.hue }))}>
+          <Ring pct={Math.min(1, hours / 24)} color={st.hue}
+            ticks={STAGES.map((sg) => ({ at: sg.at / 24, hit: hours >= sg.at, color: sg.hue }))}>
             <div className="mono huge">{clock(now - fast.start)}</div>
             <div className="stagename" style={{ color: st.hue }}>{st.name}</div>
-            <div className="dim tiny">{hours >= fast.goal ? `past ${fast.goal}h` : nx ? `${nx.name} in ${(nx.at - hours).toFixed(1)}h` : `${fast.goal}h target`}</div>
+            <div className="dim tiny">{nx ? `${nx.name} in ${(nx.at - hours).toFixed(1)}h` : "deep fast"}</div>
           </Ring>
-          <p className="dim small stagebody" onClick={() => setShowStages(!showStages)}>{st.body}</p>
+          <p className="stagebody">{st.body}</p>
           <div className="rowbtns">
-            <button className="btn ghost" onClick={() => setShowStages(!showStages)}>{showStages ? "Hide stages" : "All stages"}</button>
+            <button className="btn ghost" onClick={() => setShowStages(!showStages)}>{showStages ? "Hide" : "All stages"}</button>
             <button className="btn ghost" onClick={() => setData((d) => ({ ...d, fast: { ...d.fast, start: d.fast.start - 18e5 } }))}>−30m</button>
             <button className="btn solid" onClick={() => setData((d) => ({ ...d, fast: null,
-              fasts: [{ end: Date.now(), hours: +((Date.now() - d.fast.start) / 36e5).toFixed(1), goal: d.fast.goal }, ...(d.fasts || [])].slice(0, 30) }))}>Break it</button>
+              fasts: [{ end: Date.now(), hours: +((Date.now() - d.fast.start) / 36e5).toFixed(1) }, ...(d.fasts || [])].slice(0, 30) }))}>Break it</button>
           </div>
         </div>
       ) : (
@@ -325,10 +333,8 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
             <div className="mono huge dim">0:00:00</div>
             <div className="dim tiny">not fasting</div>
           </Ring>
-          <div className="chips center">{[14, 16, 18, 20, 24].map((h) => (
-            <button key={h} className={goalH === h ? "chip on" : "chip"} onClick={() => setGoalH(h)}>{h}h</button>))}</div>
-          <button className="btn solid wide" onClick={() => setData((d) => ({ ...d, fast: { start: Date.now(), goal: goalH } }))}>Start the clock</button>
-          {(data.fasts || [])[0] && <p className="dim tiny center">Last: {data.fasts[0].hours}h of a {data.fasts[0].goal}h target</p>}
+          <button className="btn solid wide big" onClick={() => setData((d) => ({ ...d, fast: { start: Date.now() } }))}>Start fasting</button>
+          {(data.fasts || [])[0] && <p className="dim tiny center">Last fast: {data.fasts[0].hours}h</p>}
         </div>
       )}
 
@@ -700,6 +706,7 @@ function Plan({ data, setData, targets, day, updateDay }) {
   const [err, setErr] = useState("");
   const [openRecipe, setOpenRecipe] = useState(null);
   const [showLabs, setShowLabs] = useState(false);
+  const [showList, setShowList] = useState(false);
   const [craving, setCraving] = useState("");
   const [slot, setSlot] = useState(guessMeal());
 
@@ -735,6 +742,14 @@ Respond with ONLY JSON:
       setOpenRecipe(null);
     } catch { setErr("Couldn't put a menu together just now. Try again in a moment."); }
     setBusy(false);
+  };
+
+  const addToList = (m) => {
+    if (!m.recipe) return;
+    setData((d) => ({ ...d, list: [...(d.list || []).filter((x) => x.name !== m.name),
+      { id: crypto.randomUUID(), name: m.name, servings: m.recipe.servings || 1,
+        items: m.recipe.ingredients.map((t) => ({ text: t, done: false })) }] }));
+    setShowList(true);
   };
 
   const choose = (m) => {
@@ -777,6 +792,7 @@ Respond with ONLY JSON:
               <div className="rowbtns">
                 {m.recipe && <button className="btn ghost wide" onClick={() => setOpenRecipe(openRecipe === m.id ? null : m.id)}>
                   {openRecipe === m.id ? "Hide recipe" : "Recipe"}</button>}
+                {m.recipe && <button className="btn ghost wide" onClick={() => addToList(m)}>+ List</button>}
                 <button className="btn solid wide" onClick={() => choose(m)}>Eat this</button>
               </div>
               {openRecipe === m.id && m.recipe && (
@@ -790,6 +806,10 @@ Respond with ONLY JSON:
           ))}
         </div>
       )}
+
+      <button className="btn ghost wide" onClick={() => setShowList(!showList)}>
+        {showList ? "Hide shopping list" : `Shopping list${(data.list || []).length ? ` (${(data.list || []).length})` : ""}`}</button>
+      {showList && <Shopping data={data} setData={setData} />}
 
       <button className="btn ghost wide" onClick={() => setShowLabs(!showLabs)}>
         {showLabs ? "Hide lab work" : `Lab work${labs.length ? ` (${labs.length})` : ""}`}</button>
@@ -832,6 +852,100 @@ function Labs({ data, setData }) {
           <button className="icon" onClick={() => setData((d) => ({ ...d, labs: d.labs.filter((x) => x.id !== l.id) }))}><X size={14} /></button>
         </div>
       ))}
+    </div>
+  );
+}
+
+
+/* ---------- access gate ---------- */
+function Gate({ onOk }) {
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const submit = async () => {
+    if (!code.trim()) return;
+    setBusy(true); setErr("");
+    localStorage.setItem("cutlog:code", code.trim());
+    try { await group("POST", { op: "list", prefix: SHARE_PREFIX }); onOk(); }
+    catch {
+      localStorage.removeItem("cutlog:code");
+      setErr("That code didn't work. Check it with whoever sent you here.");
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="glass pad stack" style={{ marginTop: "22vh" }}>
+      <h2>Cut Log</h2>
+      <p className="dim small">This one's invite-only. Enter the code you were given.</p>
+      <input autoFocus placeholder="Access code" value={code}
+        onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+      <button className="btn accent wide" onClick={submit} disabled={busy || !code.trim()}>
+        {busy ? "Checking…" : "Let me in"}</button>
+      {err && <p className="alert">{err}</p>}
+      <p className="dim tiny">Entered once per device, then remembered.</p>
+    </div>
+  );
+}
+
+/* ---------- shopping list ---------- */
+function Shopping({ data, setData }) {
+  const list = data.list || [];
+  const [busy, setBusy] = useState(false);
+  const [merged, setMerged] = useState(null);
+
+  const toggle = (mealId, idx) => setData((d) => ({ ...d, list: d.list.map((m) => m.id !== mealId ? m
+    : { ...m, items: m.items.map((it, i) => i === idx ? { ...it, done: !it.done } : it) }) }));
+
+  const tidy = async () => {
+    setBusy(true);
+    try {
+      const all = list.flatMap((m) => m.items.map((i) => i.text));
+      const p = await askClaude([{ type: "text", text: `Combine this shopping list. Add up duplicate ingredients into a single line with a total amount, round to what a shop actually sells (you buy a dozen eggs, not 7), and group by supermarket section.
+
+${all.join("\n")}
+
+Respond with ONLY JSON:
+{"sections":[{"name":"Produce"|"Meat & fish"|"Dairy"|"Pantry"|"Frozen"|"Other","items":["total amount + item"]}]}` }]);
+      setMerged(p.sections || []);
+    } catch { setMerged(null); }
+    setBusy(false);
+  };
+
+  if (!list.length) return (
+    <div className="glass pad fadein" style={{ marginTop: 12 }}>
+      <p className="dim small">Nothing on the list yet. Hit "+ List" on any menu option that has a recipe and its ingredients land here.</p>
+    </div>
+  );
+
+  return (
+    <div className="glass fadein" style={{ marginTop: 12 }}>
+      {list.map((m) => (
+        <div key={m.id}>
+          <div className="mealhead">
+            {m.name}
+            <span className="right"><button className="icon" onClick={() => setData((d) => ({ ...d, list: d.list.filter((x) => x.id !== m.id) }))}><X size={14} /></button></span>
+          </div>
+          {m.items.map((it, i) => (
+            <button key={i} className="listitem" onClick={() => toggle(m.id, i)}>
+              <span className={it.done ? "tick on" : "tick"}>{it.done ? "✓" : ""}</span>
+              <span style={{ opacity: it.done ? 0.4 : 1, textDecoration: it.done ? "line-through" : "none" }}>{it.text}</span>
+            </button>
+          ))}
+        </div>
+      ))}
+      <div className="pad stack">
+        <button className="btn accent wide" onClick={tidy} disabled={busy}>
+          {busy ? "Adding it up…" : "Combine into one shopping list"}</button>
+        {merged && merged.map((sec) => (
+          <div key={sec.name}>
+            <div className="dim tiny" style={{ marginTop: 8, textTransform: "uppercase", letterSpacing: ".06em" }}>{sec.name}</div>
+            {sec.items.map((i, n) => <div key={n} style={{ fontSize: 14, padding: "3px 0" }}>{i}</div>)}
+          </div>
+        ))}
+        <button className="btn ghost wide" onClick={() => { setData((d) => ({ ...d, list: [] })); setMerged(null); }}>Clear the list</button>
+      </div>
     </div>
   );
 }
@@ -1197,7 +1311,7 @@ function Shell({ children }) {
         .huge { font-size:33px; font-weight:300; letter-spacing:-.02em; line-height:1.1; }
         .unit { font-size:16px; opacity:.5; margin-left:3px; }
         .stagename { font-size:13px; font-weight:600; letter-spacing:.02em; }
-        .stagebody { text-align:center; max-width:330px; cursor:pointer; }
+        .stagebody { text-align:center; max-width:340px; font-size:14px; line-height:1.55; color:rgba(241,245,249,.85); }
         .bignum { font-size:40px; font-weight:300; letter-spacing:-.03em; line-height:1; }
         .midnum { font-size:23px; font-weight:400; }
         .hr { font-size:12px; min-width:32px; opacity:.6; }
@@ -1267,6 +1381,11 @@ function Shell({ children }) {
         .timerow { display:flex; align-items:center; gap:8px; margin-top:2px; }
         .timeinput { width:auto; padding:2px 6px; font-size:11px; border-radius:7px; background:rgba(255,255,255,.06);
           border:1px solid rgba(255,255,255,.1); color:rgba(241,245,249,.75); font-family:'JetBrains Mono',monospace; }
+        .listitem { display:flex; align-items:center; gap:10px; width:100%; text-align:left; background:none; border:none;
+          border-top:1px solid rgba(255,255,255,.06); padding:11px 16px; font:inherit; font-size:14px; color:#F1F5F9; cursor:pointer; }
+        .tick { width:19px; height:19px; border-radius:6px; border:1px solid rgba(255,255,255,.25); display:grid; place-items:center;
+          font-size:12px; flex-shrink:0; color:#0A0E1F; }
+        .tick.on { background:#A3E635; border-color:#A3E635; }
         .dish { padding:14px 16px; border-top:1px solid rgba(255,255,255,.06); display:flex; flex-direction:column; gap:9px; }
         .dishname { font-size:15px; }
         .dishmacros { display:flex; align-items:baseline; gap:10px; }
