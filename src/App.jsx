@@ -143,6 +143,16 @@ const blankDay = () => ({ foods: [], steps: "", weight: "", tags: [], sleep: "",
 const guessMeal = () => { const h = new Date().getHours(); return h < 10 ? "Breakfast" : h < 15 ? "Lunch" : h < 21 ? "Dinner" : "Snack"; };
 const reduced = () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
+async function foodApi(payload) {
+  const r = await fetch("/api/food", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-access-code": ACCESS() },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 async function askClaude(content) {
   const r = await fetch("/api/claude", {
     method: "POST", headers: { "Content-Type": "application/json", "x-access-code": ACCESS() },
@@ -465,10 +475,11 @@ function AddFood({ onAdd, onCancel, calib, onCalib }) {
   return (
     <div className="glass pad stack fadein">
       <div className="chips">
-        {[["weigh", "Weigh"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
+        {[["weigh", "Weigh"], ["label", "Label"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
       </div>
       {mode === "weigh" && <WeighIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
+      {mode === "label" && <LabelIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "photo" && <SnapIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} calib={calib} onCalib={onCalib} />}
       {mode === "desc" && <DescribeIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
     </div>
@@ -479,21 +490,209 @@ const MealPick = ({ meal, setMeal }) => (
   <div className="chips">{MEALS.map((m) => <button key={m} className={meal === m ? "chip on" : "chip"} onClick={() => setMeal(m)}>{m}</button>)}</div>
 );
 
+function Scanner({ onCode, onClose }) {
+  const ref = useRef(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let stream, raf, stop = false;
+    (async () => {
+      if (!("BarcodeDetector" in window)) {
+        setErr("This browser can't scan barcodes. Type the number instead.");
+        return;
+      }
+      try {
+        const det = new window.BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128"] });
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        ref.current.srcObject = stream;
+        await ref.current.play();
+        const tick = async () => {
+          if (stop) return;
+          try {
+            const codes = await det.detect(ref.current);
+            if (codes[0]?.rawValue) { stop = true; onCode(codes[0].rawValue); return; }
+          } catch { /* frame not ready */ }
+          raf = requestAnimationFrame(tick);
+        };
+        tick();
+      } catch {
+        setErr("Couldn't open the camera. Allow camera access, or type the number.");
+      }
+    })();
+    return () => { stop = true; cancelAnimationFrame(raf); stream?.getTracks().forEach((t) => t.stop()); };
+  }, [onCode]);
+
+  return (
+    <div className="qbox">
+      <video ref={ref} className="shot" playsInline muted />
+      <p className="dim tiny">Hold the barcode steady in frame.</p>
+      {err && <p className="alert">{err}</p>}
+      <button className="btn ghost wide" onClick={onClose}>Close scanner</button>
+    </div>
+  );
+}
+
+function LabelIt({ meal, setMeal, onAdd, onCancel }) {
+  const [img, setImg] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [panel, setPanel] = useState(null);
+  const [servings, setServings] = useState("1");
+  const [err, setErr] = useState("");
+
+  const pickFile = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const b64 = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result.split(",")[1]); r.onerror = () => rej(); r.readAsDataURL(f);
+    });
+    setImg({ data: b64, type: f.type, url: URL.createObjectURL(f) });
+    setPanel(null); setErr("");
+  };
+
+  const read = async () => {
+    setBusy(true); setErr("");
+    try {
+      const p = await askClaude([
+        { type: "image", source: { type: "base64", media_type: img.type, data: img.data } },
+        { type: "text", text: `This is a photograph of a Nutrition Facts panel. Transcribe it exactly as printed. Do not estimate, infer, or correct anything - if a number is unreadable, use null rather than guessing.
+
+Respond with ONLY JSON:
+{"name":"product name if visible, else null","servingSize":"the serving size exactly as printed, e.g. 2/3 cup (55g)","servingGrams":the serving weight in grams as a number, or null if not printed,"servingsPerContainer":number or null,"calories":number,"protein":number,"carbs":number,"fat":number}
+
+The macro numbers are PER SERVING, exactly as the panel states them.` }]);
+      if (!p.calories) throw new Error();
+      setPanel(p);
+    } catch { setErr("Couldn't read that panel. Get closer, straight on, good light."); }
+    setBusy(false);
+  };
+
+  const n = +servings || 0;
+  const total = panel ? {
+    calories: Math.round(panel.calories * n), protein: Math.round((panel.protein || 0) * n),
+    carbs: Math.round((panel.carbs || 0) * n), fat: Math.round((panel.fat || 0) * n),
+  } : null;
+
+  return (
+    <>
+      {!img ? (
+        <>
+          <label className="dropzone">Photograph the Nutrition Facts panel
+            <input type="file" accept="image/*" capture="environment" onChange={pickFile} style={{ display: "none" }} /></label>
+          <p className="dim tiny">Fill the frame with the panel and shoot straight on. This reads the printed numbers rather than estimating, so it's the most accurate way to log anything packaged.</p>
+        </>
+      ) : (
+        <>
+          <img src={img.url} alt="Nutrition label" className="shot" />
+          {!panel && <button className="btn accent wide" onClick={read} disabled={busy}>{busy ? "Reading the panel…" : "Read this label"}</button>}
+        </>
+      )}
+
+      {panel && (
+        <div className="fadein stack">
+          <input value={panel.name || ""} placeholder="Product name"
+            onChange={(e) => setPanel((p) => ({ ...p, name: e.target.value }))} />
+          <p className="dim tiny">
+            Panel says: {panel.calories} cal per serving{panel.servingSize ? ` (${panel.servingSize})` : ""}
+            {panel.servingsPerContainer ? ` · ${panel.servingsPerContainer} servings per container` : ""}
+          </p>
+          <div className="row"><label>How many servings did you eat?</label>
+            <input className="mini" type="number" step="0.25" inputMode="decimal" value={servings}
+              onChange={(e) => setServings(e.target.value)} /></div>
+          <div className="quad">
+            {[["calories", total.calories], ["protein", total.protein], ["carbs", total.carbs], ["fat", total.fat]].map(([l, v], i) => (
+              <div key={l}><div className="midnum" style={{ color: [C.cal, C.protein, C.carbs, C.fat][i] }}>{v}</div><div className="dim tiny">{l}</div></div>))}
+          </div>
+          <MealPick meal={meal} setMeal={setMeal} />
+        </div>
+      )}
+
+      {err && <p className="alert">{err}</p>}
+      <div className="rowbtns">
+        <button className="btn ghost wide" onClick={onCancel}>Cancel</button>
+        <button className="btn solid wide" disabled={!panel || !n} onClick={() => onAdd([{
+          id: crypto.randomUUID(), meal,
+          name: `${panel.name || "Packaged food"}, ${servings} serving${n === 1 ? "" : "s"}`,
+          ...total }])}>Log</button>
+      </div>
+    </>
+  );
+}
+
 function WeighIt({ meal, setMeal, onAdd, onCancel }) {
   const [q, setQ] = useState(""); const [pick, setPick] = useState(null);
   const [amt, setAmt] = useState(""); const [unit, setUnit] = useState("g"); const [raw, setRaw] = useState(false);
-  const hits = q.trim() && !pick ? FOODS.filter((f) => f.n.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 6) : [];
+  const [remote, setRemote] = useState([]); const [searching, setSearching] = useState(false);
+  const [bc, setBc] = useState(""); const [note, setNote] = useState(""); const [scanning, setScanning] = useState(false);
+
+  const local = q.trim() && !pick ? FOODS.filter((f) => f.n.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 5) : [];
+
+  // USDA lookup, debounced, only once the query is worth sending
+  useEffect(() => {
+    if (pick || q.trim().length < 3) { setRemote([]); return; }
+    const t = setTimeout(async () => {
+      setSearching(true);
+      try { const d = await foodApi({ op: "search", query: q.trim() }); setRemote(d.foods || []); }
+      catch { setRemote([]); }
+      setSearching(false);
+    }, 450);
+    return () => clearTimeout(t);
+  }, [q, pick]);
+
+  const take = (f, src) => { setPick({ n: f.n || f.name, m: f.m, s: f.s, r: f.r, src }); setQ(f.n || f.name); setUnit(f.s ? "s" : "g"); setRaw(false); setNote(""); };
+
+  const scanCode = async (codeIn) => {
+    const codeStr = String(codeIn || bc).trim();
+    if (!codeStr) return;
+    setNote("Looking it up…");
+    try {
+      const d = await foodApi({ op: "barcode", barcode: codeStr });
+      if (d.food) { take(d.food, "Label"); setBc(""); }
+      else setNote(d.reason || "Not found.");
+    } catch { setNote("Lookup failed."); }
+  };
+  const scan = () => scanCode(bc);
+
   const entered = pick ? (unit === "g" ? +amt || 0 : unit === "oz" ? (+amt || 0) * 28.35 : (+amt || 0) * (pick.s?.g || 0)) : 0;
   const grams = raw ? entered * 0.75 : entered;
   const m = pick ? pick.m.map((v) => (v * grams) / 100) : [0, 0, 0, 0];
 
   return (
     <>
-      <input autoFocus placeholder="chicken, rice, whey…" value={q} onChange={(e) => { setQ(e.target.value); setPick(null); }} />
-      {hits.map((f) => <button key={f.n} className="listbtn" onClick={() => { setPick(f); setQ(f.n); setUnit(f.s ? "s" : "g"); setRaw(false); }}>{f.n}</button>)}
-      {q.trim() && !pick && !hits.length && <p className="dim tiny">Not in the table — try Photo or Describe.</p>}
+      <input autoFocus placeholder="chicken breast, rice, whey…" value={q}
+        onChange={(e) => { setQ(e.target.value); setPick(null); }} />
+
+      {!pick && !scanning && (
+        <>
+          <button className="btn ghost wide" onClick={() => setScanning(true)}>Scan a barcode</button>
+          <div className="row gap">
+            <input placeholder="Or type the number" value={bc} inputMode="numeric"
+              onChange={(e) => setBc(e.target.value)} onKeyDown={(e) => e.key === "Enter" && scan()} />
+            <button className="btn ghost" onClick={scan} disabled={!bc.trim()}>Look up</button>
+          </div>
+        </>
+      )}
+      {scanning && <Scanner onClose={() => setScanning(false)}
+        onCode={(code) => { setScanning(false); setBc(code); setTimeout(() => scanCode(code), 0); }} />}
+      {note && <p className="dim tiny">{note}</p>}
+
+      {local.map((f) => (
+        <button key={f.n} className="listbtn" onClick={() => take(f, "Table")}>
+          {f.n}<span className="badge good" style={{ marginLeft: 8 }}>quick</span>
+        </button>
+      ))}
+      {searching && <p className="dim tiny">Searching USDA…</p>}
+      {remote.map((f, i) => (
+        <button key={`u${i}`} className="listbtn" onClick={() => take(f, "USDA")}>
+          {f.name}<span className="badge" style={{ marginLeft: 8 }}>USDA</span>
+        </button>
+      ))}
+      {q.trim().length >= 3 && !pick && !searching && !local.length && !remote.length &&
+        <p className="dim tiny">Nothing found. Try the barcode, a photo, or describe it.</p>}
+
       {pick && (
         <>
+          <p className="dim tiny">{pick.m[0]} cal per 100g · {pick.src === "USDA" ? "USDA lab data" : pick.src === "Label" ? "off the package label" : "built-in table"}</p>
           <div className="row gap">
             <input autoFocus type="number" inputMode="decimal" placeholder="Amount" value={amt} onChange={(e) => setAmt(e.target.value)} />
             <div className="chips">
