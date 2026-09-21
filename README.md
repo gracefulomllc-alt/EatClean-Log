@@ -1,82 +1,55 @@
+[README.md](https://github.com/user-attachments/files/32487472/README.md)
 # Cut Log
 
-A fasting timer, food log, and meal planner. React + Vite, deployed on Netlify with two serverless functions.
+Fasting timer, food log, meal planner and recipe builder. React + Vite on Netlify.
 
-## What's here
+## Layout
 
 ```
-src/App.jsx              the whole app
-netlify/functions/claude.js   proxies Anthropic so your API key stays server-side
-netlify/functions/group.js    the shared group log, backed by Netlify Blobs
+src/App.jsx                    the whole app
+src/main.jsx                   boot, service worker, install prompt
+public/                        manifest, service worker, icons (installable app)
+netlify/functions/claude.js    photo, label and menu estimates via Gemini
+netlify/functions/food.js      USDA FoodData Central search + Open Food Facts barcodes
+netlify/functions/sync.js      your log, synced across devices by sync code
+netlify/functions/photos.js    progress photos, stored under your sync code
+netlify/functions/push.js      fasting-alert subscriptions
+netlify/functions/push-tick.js runs every 10 min: fasting-stage notifications + logging reminders
+netlify/functions/group.js     shared group log
+netlify/lib/push-shared.js     fasting stages + push keys, shared by the push functions
+netlify/lib/codekey.js         turns a sync code into a storage key (the code itself is never stored)
 ```
 
-Personal data (your food log, weight, labs, backups) lives in the browser's
-localStorage. It never leaves the device. Lab values are excluded from the
-shared log by design, regardless of your sharing setting.
+## Where the numbers come from
 
-## Deploy
+| Method | Source | Accuracy |
+|---|---|---|
+| Barcode | Open Food Facts (the package's own label data) | exact |
+| Label photo | the printed Nutrition Facts panel, transcribed | exact if legible |
+| Weigh | USDA FoodData Central, per 100 g | as good as your scale |
+| Recipe | sum of weighed ingredients ÷ finished weight | as good as your scale |
+| Plate photo / describe | Gemini estimate | ±20–25% |
 
-1. **Push to GitHub.**
-   ```bash
-   git init && git add -A && git commit -m "Cut Log"
-   gh repo create cutlog --private --source=. --push
-   ```
+## Your calorie budget
 
-2. **Connect it to Netlify.** New site → import from GitHub → pick the repo.
-   Build settings come from `netlify.toml`, so leave them alone.
+Starts from a formula (Mifflin-St Jeor), which is typically ~10% off. After ~3 weeks of
+weigh-ins and fully logged days, the app fits a line through your weigh-ins and works out
+your real maintenance from energy balance: intake − (lb lost × 3500 ÷ days). It only works
+if you log everything; the minimum-budget floor applies regardless.
 
-3. **Set environment variables** in Netlify under Site configuration →
-   Environment variables:
+## Environment variables
 
-   | Variable | Required | What it does |
-   |---|---|---|
-   | `ANTHROPIC_API_KEY` | yes | Your key from console.anthropic.com. Server-side only. |
-   | `ACCESS_CODE` | strongly recommended | If set, nobody can use the AI features or the group log without it. |
+| Variable | Needed for |
+|---|---|
+| `GEMINI_API_KEY` | photo, label, describe, menu, watch import |
+| `USDA_API_KEY` | food search (falls back to a ~50/day demo key) |
+| `ACCESS_CODE` | optional — locks the whole site behind a code |
+| `GEMINI_MODEL` | optional — override if Google renames the model |
 
-4. **Deploy.** Netlify Blobs needs no setup — the functions create their stores
-   on first write.
+Push notification keys are generated automatically on first use and kept in Netlify Blobs.
 
-## About the access code
+## Data
 
-If you set `ACCESS_CODE`, each person enters it once and the browser remembers it:
-
-```js
-localStorage.setItem("cutlog:code", "whatever-you-set")
-```
-
-Add a proper entry screen later if you want; for a handful of friends, telling
-them to paste that line into the console once is enough.
-
-**Leaving `ACCESS_CODE` unset makes the site fully open.** That means anyone who
-finds the URL can spend your Anthropic credit and read everyone's food log. The
-rate limits in `claude.js` cap the damage but don't prevent it.
-
-## Cost control
-
-`netlify/functions/claude.js` has three limits at the top:
-
-```js
-const PER_IP_PER_HOUR = 40;
-const GLOBAL_PER_DAY   = 600;
-const MAX_TOKENS       = 1200;
-```
-
-`GLOBAL_PER_DAY` is your real safety net — it's the most requests the whole site
-can make in a day no matter how many people show up. Lower it until you know what
-normal use costs you. Photo estimates are the expensive calls because they send
-an image; text-only ones are cheap.
-
-Watch actual spend at console.anthropic.com and set a billing limit there too.
-The function limits protect you from a bad day; a billing cap protects you from
-a bad week.
-
-## Local development
-
-```bash
-npm install
-npm i -g netlify-cli
-netlify dev
-```
-
-`netlify dev` runs the functions alongside Vite so `/api/claude` and `/api/group`
-work locally. Plain `npm run dev` serves the UI but the AI features will 404.
+Your log is saved in the browser. Turn on **Setup → Sync** and it's also stored
+server-side under a hash of a 16-character sync code; enter that code on another
+device to share the same log. Lab values never go into the shared group log.
