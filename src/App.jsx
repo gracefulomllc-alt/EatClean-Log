@@ -264,6 +264,29 @@ function computeTargets(p, tags = [], tdeeOverride = null) {
     clamped: raw < floor, actualPace: (tdee - base) / 500 };
 }
 
+/* ---------- how big should this one meal be? ----------
+   Two answers, because they disagree and both are worth knowing:
+     even split   - what's left today, divided by the meals you haven't eaten yet
+     typical share - the slice of the whole day's budget a meal of this kind usually takes
+   The even split is the number to cook to; the two together give you a band to land inside.
+   Weighing everything is what makes either number mean anything, so both are stated in
+   calories you can actually hit on a scale rather than a vague "light dinner". */
+const MEAL_SHARE = { Breakfast: 0.25, Lunch: 0.3, Dinner: 0.35, Snack: 0.1 };
+
+function mealTarget(slot, targets, day, remainCal, remainP) {
+  const eaten = new Set((day.foods || []).map((f) => f.meal));
+  // Still to come: every meal with nothing logged against it, plus the one being planned.
+  const mealsLeft = Math.max(1, MEALS.filter((m) => !eaten.has(m) || m === slot).length);
+  const even = Math.max(0, Math.round(remainCal / mealsLeft));
+  const typical = Math.round(targets.calories * (MEAL_SHARE[slot] ?? 0.25));
+  return {
+    even, typical, mealsLeft,
+    lo: Math.min(even, typical), hi: Math.max(even, typical),
+    protein: Math.max(0, Math.round(remainP / mealsLeft)),
+    over: remainCal <= 0,
+  };
+}
+
 /* ---------- food table (per 100 g as eaten) ---------- */
 const FOODS = [
   { n: "Chicken breast, cooked", m: [165, 31, 0, 3.6], r: 1 },
@@ -436,7 +459,7 @@ export default function CutLog() {
     return n && n !== d ? { ...n, u: Date.now() } : n;
   }), []);
   const [locked, setLocked] = useState(null);
-  THEME = data?.theme === "retro" ? "retro" : "glass";
+  THEME = data?.theme === "glass" ? "glass" : "retro";
   const [sync, setSync] = useState({ state: localStorage.getItem("cutlog:sync") ? "idle" : "off" });
   const dataRef = useRef(null);
   const syncBusy = useRef(false);
@@ -487,7 +510,7 @@ export default function CutLog() {
 
   // The strip above the app (phone status bar, page edges) matches the theme too
   useEffect(() => {
-    const retro = data?.theme === "retro";
+    const retro = data?.theme !== "glass";
     document.body.style.background = retro ? "#008080" : "#0A0E1F";
     document.querySelector('meta[name="theme-color"]')?.setAttribute("content", retro ? "#000080" : "#0A0E1F");
   }, [data?.theme]);
@@ -580,10 +603,11 @@ export default function CutLog() {
       title="Set your numbers" cta="Start" intro="Sets your daily budget. Change any of it later."
       onSave={(profile) => setData((d) => ({ ...d, profile }))} /></Shell>;
 
-  const TABS = [["now", "Now", Timer], ["plan", "Plan", ChefHat], ["coach", "Coach", MessageCircle], ["weight", "Weight", Scale], ["log", "Log", CalendarDays], ["setup", "Setup", Cog]];
+  const TABS = START_ITEMS;
 
   return (
     <Shell theme={THEME}>
+      {THEME === "retro" && <RetroBoot />}
       {saveErr && <div className="glass pad alert">That change didn’t save. Back up from Setup before closing.</div>}
       <div key={tab} className="fadein">
         {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay }} />}
@@ -595,6 +619,7 @@ export default function CutLog() {
           sync={sync} syncNow={syncNow} startSync={startSync} joinSync={joinSync} leaveSync={leaveSync} />}
       </div>
       <nav className="dock">
+        {THEME === "retro" && <StartMenu setTab={setTab} />}
         {TABS.map(([id, label, Icon]) => (
           <button key={id} className={tab === id ? "dockbtn on" : "dockbtn"} onClick={() => setTab(id)}>
             <Icon size={19} strokeWidth={1.7} /><span>{label}</span>
@@ -603,6 +628,71 @@ export default function CutLog() {
         <TrayClock />
       </nav>
     </Shell>
+  );
+}
+
+// The tab list, shared by the taskbar and the Start menu.
+const START_ITEMS = [["now", "Now", Timer], ["plan", "Plan", ChefHat], ["coach", "Coach", MessageCircle],
+  ["weight", "Weight", Scale], ["log", "Log", CalendarDays], ["setup", "Setup", Cog]];
+
+/* ---------- 90s desktop furniture: boot splash and a Start menu ---------- */
+// Shown once per browser session, and never when the OS asks for reduced motion.
+function RetroBoot() {
+  const [done, setDone] = useState(() => reduced() || sessionStorage.getItem("cutlog:booted") === "1");
+  const finish = useCallback(() => { sessionStorage.setItem("cutlog:booted", "1"); setDone(true); }, []);
+  useEffect(() => {
+    if (done) return;
+    const t = setTimeout(finish, 1700);
+    return () => clearTimeout(t);
+  }, [done, finish]);
+  if (done) return null;
+  return (
+    <div className="boot" onClick={finish} role="presentation">
+      <div className="bootbox">
+        <div className="bootlogo">Cut Log<span>95</span></div>
+        <div className="bootbar"><div /></div>
+        <p className="boottip">Starting Cut Log…</p>
+      </div>
+    </div>
+  );
+}
+
+const StartFlag = () => (
+  <svg width="15" height="15" viewBox="0 0 15 15" shapeRendering="crispEdges" aria-hidden="true">
+    <rect x="0" y="1" width="6" height="6" fill="#FF3B30" /><rect x="7" y="0" width="7" height="7" fill="#34C759" />
+    <rect x="0" y="8" width="6" height="6" fill="#0A84FF" /><rect x="7" y="8" width="7" height="7" fill="#FFCC00" />
+  </svg>
+);
+
+function StartMenu({ setTab }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("pointerdown", close); window.removeEventListener("keydown", onKey); };
+  }, [open]);
+  return (
+    <>
+      <button className="startbtn" aria-expanded={open} aria-label="Start"
+        onPointerDown={(e) => { e.stopPropagation(); setOpen((o) => !o); }}>
+        <StartFlag /><span>Start</span>
+      </button>
+      {open && (
+        <div className="startmenu" onPointerDown={(e) => e.stopPropagation()}>
+          <div className="startstripe"><span>Cut Log 95</span></div>
+          <div className="startitems">
+            {START_ITEMS.map(([id, label, Icon]) => (
+              <button key={id} className="startitem" onClick={() => { setTab(id); setOpen(false); }}>
+                <Icon size={17} strokeWidth={1.8} />{label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1482,6 +1572,23 @@ function DescribeIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Log" }) {
 const LAB_PRESETS = ["Total cholesterol", "LDL", "HDL", "Triglycerides", "A1c", "Fasting glucose",
   "ALT", "AST", "Vitamin D", "Ferritin", "TSH", "Creatinine", "eGFR", "CRP", "Uric acid"];
 
+// Menus saved before weights existed kept ingredients as plain strings under recipe.ingredients,
+// and only for "cook" dishes. Read both shapes so an old saved menu still opens.
+function weighList(m) {
+  if (Array.isArray(m.weigh) && m.weigh.length) return m.weigh;
+  const old = m.recipe?.ingredients;
+  if (Array.isArray(old)) return old.map((i) => (typeof i === "string" ? { item: i } : i));
+  return [];
+}
+
+// If you're weighing every line, what you eat is the sum of those lines - not whatever total
+// the model wrote next to the dish name. Its own arithmetic drifts a few percent often enough
+// to matter, so the weighed sum wins and the card, the table and the log all show one number.
+function dishCal(m) {
+  const sum = weighList(m).reduce((a, i) => a + (+i.calories || 0), 0);
+  return Math.round(sum > 0 ? sum : +m.calories || 0);
+}
+
 function Plan({ data, setData, targets, day, updateDay }) {
   const today = dayKey();
   const menu = data.menus?.[today] || null;
@@ -1497,6 +1604,7 @@ function Plan({ data, setData, targets, day, updateDay }) {
   const eaten = day.foods.reduce((a, f) => ({ cal: a.cal + f.calories, p: a.p + f.protein }), { cal: 0, p: 0 });
   const remainCal = targets.calories - eaten.cal;
   const remainP = targets.protein - eaten.p;
+  const mt = mealTarget(slot, targets, day, remainCal, remainP);
   const labs = data.labs || [];
 
   const build = async () => {
@@ -1507,43 +1615,49 @@ function Plan({ data, setData, targets, day, updateDay }) {
 
 ${craving.trim() ? `What they're in the mood for: "${craving.trim()}". Take this seriously — all three options should satisfy that craving, worked into their numbers rather than replaced with something virtuous.` : "No particular craving — give three genuinely different options."}
 
-Their numbers: ${targets.calories} calorie budget today, ${targets.protein}g protein target. ${remainCal} calories and ${Math.max(0, Math.round(remainP))}g protein left for the rest of the day. Size these options so they fit what's left without using all of it, unless this is their last meal of the day.
+Their numbers: ${targets.calories} calorie budget today, ${targets.protein}g protein target. ${remainCal} calories and ${Math.max(0, Math.round(remainP))}g protein left for the rest of the day, across ${mt.mealsLeft} remaining meal${mt.mealsLeft === 1 ? "" : "s"}.
+
+Size all three options to about ${mt.even} calories each — anywhere in ${mt.lo}-${mt.hi} is fine — with roughly ${mt.protein}g protein. Do not go over ${mt.hi}. This is the number that matters; hit it.
 ${data.fast ? "They are fasting right now, so this will break the fast — lead with protein." : ""}
 ${likes.length ? `Foods they already eat: ${likes.join(", ")}.` : ""}
 ${labs.length ? `\nLab values they entered:\n${labs.slice(0, 12).map((l) => `${l.name}: ${l.value}${l.unit ? " " + l.unit : ""} (${l.date})`).join("\n")}\n\nUse these ONLY to lean on well-established dietary patterns. Do NOT diagnose or name conditions. If a value looks meaningfully out of range, put one plain sentence in "flag" telling them to raise it with their doctor.` : ""}
 
 Repetition is fine — do not avoid obvious or familiar meals. Real food, honestly counted, including the oil it's cooked in.
 
-"effort": "grab" is no cooking, "simple" is under 10 minutes, "cook" is a real recipe. Include the recipe object ONLY for "cook".
+"effort": "grab" is no cooking, "simple" is under 10 minutes, "cook" is a real recipe. Include "steps" ONLY for "cook".
+
+They weigh everything on a digital scale, so every option — including the no-cook ones — needs a "weigh" list: each component with its weight in grams and the calories that weight contributes. Use raw weights for things that get cooked, and say so in the item name ("chicken breast, raw"). Count the cooking oil as its own line. The "weigh" list is for ONE serving — exactly the portion they sit down and eat — and its calories must add up to that dish's "calories" to within about 3%, because they are going to weigh it out and expect the total to land. Never give batch weights. Add the line calories up yourself and set the dish "calories" to exactly that sum.
 
 Respond with ONLY JSON:
-{"menu":[{"name":"short dish name","blurb":"one short line","calories":number,"protein":number,"carbs":number,"fat":number,"effort":"grab"|"simple"|"cook","recipe":{"servings":number,"ingredients":["amount + item"],"steps":["step"]}}],
+{"menu":[{"name":"short dish name","blurb":"one short line","calories":number,"protein":number,"carbs":number,"fat":number,"effort":"grab"|"simple"|"cook","weigh":[{"item":"ingredient, prep state","grams":number,"calories":number}],"recipe":{"steps":["step"]}}],
 "note":"one line on how this fits today",
 "flag":"one sentence about a lab value worth raising with a doctor, or null"}` }]);
 
       const items = (p.menu || []).slice(0, 3).map((m) => ({ ...m, slot, id: crypto.randomUUID() }));
-      setData((d) => ({ ...d, menus: { [today]: { items, note: p.note, flag: p.flag, slot, craving: craving.trim() } } }));
+      setData((d) => ({ ...d, menus: { [today]: { items, note: p.note, flag: p.flag, slot, craving: craving.trim(),
+        target: { even: mt.even, lo: mt.lo, hi: mt.hi, protein: mt.protein } } } }));
       setOpenRecipe(null);
     } catch { setErr("Couldn't put a menu together just now. Try again in a moment."); }
     setBusy(false);
   };
 
   const addToList = (m) => {
-    if (!m.recipe) return;
+    const wl = weighList(m);
+    if (!wl.length) return;
     setData((d) => {
       // Replacing a dish of the same name: mark the old one deleted so another device can't bring it back.
       const old = (d.list || []).filter((x) => x.name === m.name);
       const deleted = old.reduce((acc, x) => ({ ...acc, ["list:" + x.id]: Date.now() }), d.deleted || {});
       return { ...d, deleted, list: [...(d.list || []).filter((x) => x.name !== m.name),
-        { id: crypto.randomUUID(), name: m.name, servings: m.recipe.servings || 1, u: Date.now(),
-          items: m.recipe.ingredients.map((t) => ({ text: t, done: false })) }] };
+        { id: crypto.randomUUID(), name: m.name, servings: 1, u: Date.now(),
+          items: wl.map((i) => ({ text: i.grams ? `${Math.round(i.grams)} g ${i.item}` : i.item, done: false })) }] };
     });
     setShowList(true);
   };
 
   const choose = (m) => {
     updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), meal: m.slot, name: m.name, at: Date.now(),
-      calories: Math.round(m.calories), protein: Math.round(m.protein), carbs: Math.round(m.carbs), fat: Math.round(m.fat) }] }));
+      calories: dishCal(m), protein: Math.round(m.protein), carbs: Math.round(m.carbs), fat: Math.round(m.fat) }] }));
   };
 
   const logToday = (item) => updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: Date.now(), u: Date.now(), ...item }] }));
@@ -1561,6 +1675,28 @@ Respond with ONLY JSON:
           <span className="dim tiny">{remainCal.toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g left</span></div>
         <div className="chips">{MEALS.map((s) => (
           <button key={s} className={slot === s ? "chip on" : "chip"} onClick={() => setSlot(s)}>{s}</button>))}</div>
+
+        <div className="mealtarget">
+          <div className="row gap">
+            <div>
+              <div className="dim tiny">This {slot.toLowerCase()} should be</div>
+              <div><span className="midnum mono" style={{ color: C.cal }}>{mt.even.toLocaleString()}</span><span className="dim tiny"> cal</span></div>
+            </div>
+            {!mt.over && (
+              <div className="right">
+                <div className="dim tiny">Aim inside</div>
+                <div className="mono">{mt.lo.toLocaleString()}–{mt.hi.toLocaleString()}</div>
+                <div className="dim tiny">{mt.protein}g protein</div>
+              </div>
+            )}
+          </div>
+          <p className="dim tiny">
+            {mt.over
+              ? `You've used today's budget, so anything now puts you over. For reference, a typical ${slot.toLowerCase()} is ${mt.typical.toLocaleString()} cal of a ${targets.calories.toLocaleString()} day.`
+              : `${remainCal.toLocaleString()} cal left, split evenly across the ${mt.mealsLeft} meal${mt.mealsLeft === 1 ? "" : "s"} you've not eaten. A typical ${slot.toLowerCase()} runs ${mt.typical.toLocaleString()} cal of a ${targets.calories.toLocaleString()} day — the range covers both. Weigh everything and these numbers hold.`}
+          </p>
+        </div>
+
         <input placeholder="burgers, something Mexican, steak — or leave it blank" value={craving}
           onChange={(e) => setCraving(e.target.value)} onKeyDown={(e) => e.key === "Enter" && build()} />
         <button className="btn accent wide" onClick={build} disabled={busy}>
@@ -1574,33 +1710,55 @@ Respond with ONLY JSON:
             <span className="dot" style={{ background: MEAL_COLOR[menu.slot], boxShadow: `0 0 8px ${MEAL_COLOR[menu.slot]}` }} />
             {menu.slot}{menu.craving ? ` · ${menu.craving}` : ""}
           </div>
+          {menu.target && <p className="dim tiny pad" style={{ paddingBottom: 0 }}>
+            Sized for about {menu.target.even.toLocaleString()} cal and {menu.target.protein}g protein.</p>}
           {menu.note && <p className="dim tiny pad" style={{ paddingBottom: 0 }}>{menu.note}</p>}
           {menu.flag && <p className="cue" style={{ color: C.warn, borderColor: `${C.warn}55`, margin: "10px 16px 0" }}>{menu.flag}</p>}
-          {menu.items.map((m) => (
+          {menu.items.map((m) => {
+            const wl = weighList(m);
+            const wcal = wl.reduce((a, i) => a + (+i.calories || 0), 0);
+            const wg = wl.reduce((a, i) => a + (+i.grams || 0), 0);
+            const steps = m.recipe?.steps || [];
+            return (
             <div key={m.id} className="dish">
               <div className="row gap">
                 <div><div className="dishname">{m.name}</div><div className="dim tiny">{m.blurb}</div></div>
                 <span className={`badge ${m.effort === "cook" ? "" : "good"}`}>{m.effort}</span>
               </div>
               <div className="dishmacros">
-                <span className="mono" style={{ color: C.cal }}>{Math.round(m.calories)}</span>
+                <span className="mono" style={{ color: C.cal }}>{dishCal(m)}</span>
                 <span className="dim tiny">{Math.round(m.protein)}p · {Math.round(m.carbs)}c · {Math.round(m.fat)}f</span>
               </div>
               <div className="rowbtns">
-                {m.recipe && <button className="btn ghost wide" onClick={() => setOpenRecipe(openRecipe === m.id ? null : m.id)}>
-                  {openRecipe === m.id ? "Hide recipe" : "Recipe"}</button>}
-                {m.recipe && <button className="btn ghost wide" onClick={() => addToList(m)}>+ List</button>}
+                {wl.length > 0 && <button className="btn ghost wide" onClick={() => setOpenRecipe(openRecipe === m.id ? null : m.id)}>
+                  {openRecipe === m.id ? "Hide" : steps.length ? "Weigh + cook" : "Weigh it"}</button>}
+                {wl.length > 0 && <button className="btn ghost wide" onClick={() => addToList(m)}>+ List</button>}
                 <button className="btn solid wide" onClick={() => choose(m)}>Eat this</button>
               </div>
-              {openRecipe === m.id && m.recipe && (
+              {openRecipe === m.id && wl.length > 0 && (
                 <div className="recipe fadein">
-                  <div className="dim tiny">Makes {m.recipe.servings || 1}</div>
-                  <ul>{m.recipe.ingredients.map((i, n) => <li key={n}>{i}</li>)}</ul>
-                  <ol>{m.recipe.steps.map((s, n) => <li key={n}>{s}</li>)}</ol>
+                  <div className="dim tiny">One serving. Weigh each line raw unless it says otherwise.</div>
+                  <table className="weightbl">
+                    <thead><tr><th>Put on the scale</th><th className="right">Grams</th><th className="right">Cal</th></tr></thead>
+                    <tbody>
+                      {wl.map((i, n) => (
+                        <tr key={n}>
+                          <td>{i.item}</td>
+                          <td className="right mono">{i.grams ? Math.round(i.grams) : "—"}</td>
+                          <td className="right mono">{i.calories != null ? Math.round(i.calories) : "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    {wcal > 0 && (
+                      <tfoot><tr><td>Total</td><td className="right mono">{Math.round(wg)}</td><td className="right mono">{Math.round(wcal)}</td></tr></tfoot>
+                    )}
+                  </table>
+                  {steps.length > 0 && <ol>{steps.map((t, n) => <li key={n}>{t}</li>)}</ol>}
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
       </>)}
@@ -2660,10 +2818,10 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
       <div className="glass pad stack">
         <h2>Look</h2>
         <div className="chips">
-          <button className={data.theme !== "retro" ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: "glass" }))}>Glass</button>
-          <button className={data.theme === "retro" ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: "retro" }))}>Desktop '95</button>
+          <button className={data.theme === "glass" ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: "glass" }))}>Glass</button>
+          <button className={data.theme !== "glass" ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: "retro" }))}>Desktop '95</button>
         </div>
-        <p className="dim tiny">Switches the whole app. Nothing about your data changes.</p>
+        <p className="dim tiny">Desktop '95 is the default. Switches the whole app — nothing about your data changes.</p>
       </div>
       <AdaptivePanel adaptive={adaptive} on={data.useAdaptive !== false} onToggle={(v) => setData((d) => ({ ...d, useAdaptive: v }))} />
       <SyncPanel {...{ sync, syncNow, startSync, joinSync, leaveSync }} />
@@ -2734,7 +2892,7 @@ function ProfileForm({ initial, title, cta, intro, onSave }) {
 /* ---------- shell ---------- */
 function Shell({ children, theme }) {
   return (
-    <div className={theme === "retro" ? "app retro" : "app"}>
+    <div className={theme === "glass" ? "app" : "app retro"}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600&family=JetBrains+Mono:wght@400;600&family=VT323&display=swap');
         .app { position:relative; min-height:100vh; font-family:'Sora',ui-sans-serif,system-ui,sans-serif;
@@ -2871,6 +3029,20 @@ function Shell({ children, theme }) {
         .recipe { border-top:1px solid rgba(255,255,255,.08); padding-top:10px; font-size:13px; }
         .recipe ul, .recipe ol { margin:8px 0 0; padding-left:18px; display:flex; flex-direction:column; gap:5px; }
         .recipe ul { color:rgba(241,245,249,.7); }
+
+        /* what this one meal should come to */
+        .mealtarget { border:1px solid rgba(255,255,255,.1); border-radius:14px; padding:12px 14px;
+          background:rgba(255,255,255,.04); display:flex; flex-direction:column; gap:8px; }
+        .mealtarget p { margin:0; }
+
+        /* the weighed breakdown: item, grams on the scale, calories that adds */
+        .weightbl { width:100%; border-collapse:collapse; margin-top:8px; font-size:13px; }
+        .weightbl th { text-align:left; font-weight:400; font-size:11px; letter-spacing:.04em; text-transform:uppercase;
+          color:rgba(241,245,249,.45); padding:0 0 5px; border-bottom:1px solid rgba(255,255,255,.1); }
+        .weightbl td { padding:5px 0; border-bottom:1px solid rgba(255,255,255,.05); vertical-align:top; }
+        .weightbl td:not(:first-child), .weightbl th:not(:first-child) { padding-left:10px; width:58px; }
+        .weightbl tfoot td { border-bottom:none; border-top:1px solid rgba(255,255,255,.18); font-weight:600; }
+        .weightbl .mono { font-size:13px; }
         .dockbtn { background:none; border:none; color:rgba(241,245,249,.5); font:inherit; font-size:9.5px; cursor:pointer;
           display:flex; flex-direction:column; align-items:center; gap:3px; padding:8px 9px; border-radius:99px; transition:all .25s; }
         .dockbtn.on { color:#0A0E1F; background:#F1F5F9; font-weight:600; }
@@ -2951,6 +3123,13 @@ function Shell({ children, theme }) {
           background:transparent; border:2px groove #f4f4f4; border-radius:0; }
         .app.retro .ingrow { border-bottom-color:#a0a0a0; }
         .app.retro .cue { color:#000; background:#FFFFE1; border:1px solid #000; padding:6px 9px; }
+        .app.retro .mealtarget { background:#FFFFE1; border:1px solid #000; border-radius:0; }
+        .app.retro .weightbl { background:#fff; }
+        .app.retro .weightbl th { background:#C0C0C0; color:#000; text-transform:none; letter-spacing:0; font-size:11.5px; font-weight:bold;
+          padding:3px 5px; border-bottom:1px solid #808080; box-shadow:inset -1px -1px #808080, inset 1px 1px #fff; }
+        .app.retro .weightbl td { padding:4px 5px; border-bottom:1px solid #C0C0C0; color:#000; }
+        .app.retro .weightbl tfoot td { border-top:1px solid #000; background:#C0C0C0; font-weight:bold; }
+        .app.retro .weightbl .mono { font-size:15px; }
         .app.retro .badge { background:#C0C0C0; color:#000; border:1px solid #808080; border-radius:0; }
         .app.retro .badge.good { color:#006B00; }
         .app.retro .badge.low { color:#C00000; }
@@ -2975,6 +3154,44 @@ function Shell({ children, theme }) {
         @media (max-width:430px) { .app.retro .tray { display:none; } .app.retro .dockbtn span { font-size:10px; } }
         @media (max-width:360px) { .app.retro .dockbtn span { display:none; } }
         .app.retro { padding-bottom:84px; }
+        /* the Start button lives only on the taskbar */
+        .startbtn { display:none; }
+
+        /* desktop wallpaper: flat teal with the faint scanline dither a 90s CRT gave you free */
+        .app.retro { background-color:#008080; background-image:
+            repeating-linear-gradient(0deg, rgba(0,0,0,.045) 0 1px, transparent 1px 3px),
+            repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 3px);
+          background-attachment:fixed; }
+
+        /* Start button + menu */
+        .app.retro .startbtn { display:flex; align-items:center; gap:5px; flex:0 0 auto; padding:5px 9px; border:none;
+          background:#C0C0C0; color:#000; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:12px; font-weight:bold;
+          box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; cursor:pointer; }
+        .app.retro .startbtn[aria-expanded="true"] { box-shadow:inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px #808080; }
+        .app.retro .startmenu { position:fixed; left:4px; bottom:calc(46px + env(safe-area-inset-bottom)); width:206px; z-index:70;
+          display:flex; background:#C0C0C0; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; padding:3px; }
+        .app.retro .startstripe { width:22px; flex:0 0 22px; margin-right:3px; background:linear-gradient(#000080, #1084D0); }
+        .app.retro .startstripe span { display:block; transform:rotate(180deg); writing-mode:vertical-rl; color:#fff; font-weight:bold;
+          font-size:12px; padding:8px 0; letter-spacing:.04em; }
+        .app.retro .startitems { flex:1; display:flex; flex-direction:column; }
+        .app.retro .startitem { display:flex; align-items:center; gap:9px; width:100%; padding:8px 10px; border:none; background:transparent;
+          color:#000; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:13px; text-align:left; cursor:pointer; }
+        .app.retro .startitem:hover, .app.retro .startitem:focus-visible { background:#000080; color:#fff; outline:none; }
+
+        /* boot splash */
+        .boot { position:fixed; inset:0; z-index:100; display:flex; align-items:center; justify-content:center;
+          background:#008080; padding:24px; }
+        .bootbox { width:100%; max-width:300px; text-align:center; }
+        .bootlogo { font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-weight:bold; font-size:34px; color:#fff;
+          text-shadow:2px 2px 0 #004040; line-height:1.1; }
+        .bootlogo span { display:inline-block; font-family:'VT323', monospace; font-size:24px; color:#FFCC00; vertical-align:super; margin-left:5px; }
+        .bootbar { margin:20px 0 10px; height:18px; padding:3px; box-sizing:border-box; background:#C0C0C0;
+          box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; }
+        .bootbar > div { height:100%; background-image:repeating-linear-gradient(90deg, #000080 0 8px, transparent 8px 10px);
+          background-size:10px 100%; animation:bootfill 1.6s linear forwards; }
+        @keyframes bootfill { from { width:0; } to { width:100%; } }
+        .boottip { margin:0; color:#fff; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:12.5px; }
+
         @media (prefers-reduced-motion:reduce) { *, .app::before, .app::after { animation:none !important; transition:none !important; } }
       `}</style>
       {children}
