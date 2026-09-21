@@ -136,6 +136,9 @@ const hhmmToTs = (dk, hhmm) => {
   const [H, M] = hhmm.split(":").map(Number);
   return new Date(y, m - 1, d, H || 0, M || 0).getTime();
 };
+// Right now's clock time, but on the day being viewed - so logging something
+// to yesterday doesn't stamp it with today's date.
+const stampFor = (dk) => (dk === dayKey() ? Date.now() : hhmmToTs(dk, tsToHHMM(Date.now())));
 const prettyTime = (ts) => (ts ? new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "");
 const MEAL_COLOR = { Breakfast: "#6EE7F9", Lunch: "#A3E635", Dinner: "#A78BFA", Snack: "#FBBF24" };
 const C = { cal: "#6EE7F9", protein: "#A3E635", carbs: "#A78BFA", fat: "#FBBF24", bad: "#FB7185" };
@@ -185,7 +188,7 @@ function useCountUp(value, ms = 700) {
 function Ring({ pct, color, size = 240, stroke = 16, ticks = [], children, glow = true }) {
   const r = (size - stroke) / 2 - 8;
   const circ = 2 * Math.PI * r;
-  const p = Math.max(0, Math.min(1, pct));
+  const p = Number.isFinite(pct) ? Math.max(0, Math.min(1, pct)) : 0;
   return (
     <div className="ringwrap" style={{ width: size, height: size }}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="ring">
@@ -240,8 +243,9 @@ export default function CutLog() {
 
   useEffect(() => {
     (async () => {
-      try { setData(JSON.parse((await store.get(KEY)).value)); }
-      catch { setData({ profile: null, days: {}, favorites: [], fast: null, fasts: [], share: false, calib: [] }); }
+      const empty = { profile: null, days: {}, favorites: [], fast: null, fasts: [], share: false, calib: [], list: [], labs: [], menus: {} };
+      try { setData({ ...empty, ...JSON.parse((await store.get(KEY)).value) }); }
+      catch { setData(empty); }
     })();
   }, []);
 
@@ -263,7 +267,7 @@ export default function CutLog() {
     })();
   }, [data]);
 
-  const day = data?.days?.[viewDay] || blankDay();
+  const day = { ...blankDay(), ...(data?.days?.[viewDay] || {}) };
   const targets = useMemo(() => (data?.profile ? computeTargets(data.profile, day.tags) : null), [data, day.tags]);
   const updateDay = useCallback((k, fn) => setData((d) => ({ ...d, days: { ...d.days, [k]: fn(d.days[k] || blankDay()) } })), []);
 
@@ -441,7 +445,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
         <div className="chips">
           {data.favorites.map((f) => (
             <button key={f.name} className="chip"
-              onClick={() => updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, { ...f, id: crypto.randomUUID(), meal: guessMeal(), at: Date.now() }] }))}
+              onClick={() => updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, { ...f, id: crypto.randomUUID(), meal: guessMeal(), at: stampFor(dayId) }] }))}
               onContextMenu={(e) => { e.preventDefault(); setData((d) => ({ ...d, favorites: d.favorites.filter((x) => x.name !== f.name) })); }}>
               {f.name} <span className="dim">{f.calories}</span>
             </button>
@@ -451,7 +455,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
 
       {open ? <AddFood onCancel={() => setOpen(false)} calib={data.calib || []}
         onCalib={(n) => setData((d) => ({ ...d, calib: [n, ...(d.calib || [])].slice(0, 12) }))}
-        onAdd={(items) => { updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, ...items.map((i) => ({ at: Date.now(), ...i }))] })); setOpen(false); }} />
+        onAdd={(items) => { updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, ...items.map((i) => ({ at: stampFor(dayId), ...i }))] })); setOpen(false); }} />
         : <button className="btn solid wide big" onClick={() => setOpen(true)}><Plus size={18} /> Add food</button>}
 
       <div className="glass pad">
@@ -622,7 +626,7 @@ The macro numbers are PER SERVING, exactly as the panel states them.` }]);
 function WeighIt({ meal, setMeal, onAdd, onCancel }) {
   const [q, setQ] = useState(""); const [pick, setPick] = useState(null);
   const [amt, setAmt] = useState(""); const [unit, setUnit] = useState("g"); const [raw, setRaw] = useState(false);
-  const [remote, setRemote] = useState([]); const [searching, setSearching] = useState(false);
+  const [remote, setRemote] = useState([]); const [searching, setSearching] = useState(false); const [searchErr, setSearchErr] = useState("");
   const [bc, setBc] = useState(""); const [note, setNote] = useState(""); const [scanning, setScanning] = useState(false);
 
   const local = q.trim() && !pick ? FOODS.filter((f) => f.n.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 5) : [];
@@ -632,8 +636,13 @@ function WeighIt({ meal, setMeal, onAdd, onCancel }) {
     if (pick || q.trim().length < 3) { setRemote([]); return; }
     const t = setTimeout(async () => {
       setSearching(true);
+      setSearchErr("");
       try { const d = await foodApi({ op: "search", query: q.trim() }); setRemote(d.foods || []); }
-      catch { setRemote([]); }
+      catch (e) {
+        setRemote([]);
+        setSearchErr(/429/.test(String(e.message)) ? "USDA lookups are rate-limited right now — add a USDA_API_KEY or wait an hour."
+          : "USDA search isn't responding. The built-in foods above still work.");
+      }
       setSearching(false);
     }, 450);
     return () => clearTimeout(t);
@@ -687,7 +696,8 @@ function WeighIt({ meal, setMeal, onAdd, onCancel }) {
           {f.name}<span className="badge" style={{ marginLeft: 8 }}>USDA</span>
         </button>
       ))}
-      {q.trim().length >= 3 && !pick && !searching && !local.length && !remote.length &&
+      {searchErr && !pick && <p className="alert">{searchErr}</p>}
+      {q.trim().length >= 3 && !pick && !searching && !searchErr && !local.length && !remote.length &&
         <p className="dim tiny">Nothing found. Try the barcode, a photo, or describe it.</p>}
 
       {pick && (
@@ -1169,7 +1179,7 @@ function Weight({ data, targets, updateDay }) {
   return (
     <>
       <div className="glass hero">
-        <Ring pct={(lost) / (start - goal)} color={C.protein} size={220}>
+        <Ring pct={start > goal ? lost / (start - goal) : 0} color={C.protein} size={220}>
           <div className="huge">{shown.toFixed(1)}<span className="unit">lb</span></div>
           <div className="dim tiny">{lost > 0 ? `${lost.toFixed(1)} down` : "no change yet"}</div>
           <div className="dim tiny">{(latest - goal).toFixed(1)} to go</div>
@@ -1240,7 +1250,7 @@ function Us({ data, setData }) {
       {people === null && <div className="glass pad center"><p className="dim">Loading…</p></div>}
       {people?.length === 0 && <div className="glass pad center"><p className="dim">Nobody's sharing yet. Send your partner this app.</p></div>}
       {people?.map((p) => {
-        const d = p.days?.[today] || blankDay();
+        const d = { ...blankDay(), ...(p.days?.[today] || {}) };
         const cal = d.foods.reduce((a, f) => a + f.calories, 0);
         const prot = d.foods.reduce((a, f) => a + f.protein, 0);
         const ws = Object.entries(p.days || {}).filter(([, x]) => x.weight).sort();
@@ -1271,10 +1281,10 @@ function Us({ data, setData }) {
 
 /* ---------- history ---------- */
 function History({ data, onPick }) {
-  const rows = Object.entries(data.days).map(([k, d]) => ({
-    k, cal: d.foods.reduce((a, f) => a + f.calories, 0), p: d.foods.reduce((a, f) => a + f.protein, 0),
-    weight: d.weight, tags: d.tags || [], sleep: d.sleep, steps: d.steps,
-  })).filter((r) => r.cal > 0 || r.weight || r.sleep || r.steps).sort((a, b) => b.k.localeCompare(a.k));
+  const rows = Object.entries(data.days).map(([k, raw]) => ({ k, ...(() => { const d = { ...blankDay(), ...raw }; return {
+    cal: d.foods.reduce((a, f) => a + f.calories, 0), p: d.foods.reduce((a, f) => a + f.protein, 0),
+    weight: d.weight, tags: d.tags, sleep: d.sleep, steps: d.steps }; })() }))
+    .filter((r) => r.cal > 0 || r.weight || r.sleep || r.steps).sort((a, b) => b.k.localeCompare(a.k));
   const fasts = (data.fasts || []).slice(0, 7);
   if (!rows.length && !fasts.length) return <div className="glass pad center"><p className="dim">Nothing logged yet.</p></div>;
   const logged = rows.filter((r) => r.cal > 0);
@@ -1430,7 +1440,9 @@ function Settings({ data, setData, onSave }) {
         <button className="btn ghost wide" onClick={() => { navigator.clipboard.writeText(JSON.stringify(data)); setCopied(true); }}>{copied ? "Copied" : "Copy my whole log"}</button>
         <input placeholder="Paste a backup to restore" value={paste} onChange={(e) => setPaste(e.target.value)} />
         <button className="btn ghost wide" disabled={!paste.trim()} onClick={() => {
-          try { const d = JSON.parse(paste); if (!d.profile || !d.days) throw new Error(); setData(d); setMsg("Restored."); setPaste(""); }
+          try { const d = JSON.parse(paste); if (!d.profile || !d.days) throw new Error();
+            setData({ favorites: [], fasts: [], calib: [], list: [], labs: [], menus: {}, share: false, fast: null, ...d });
+            setMsg("Restored."); setPaste(""); }
           catch { setMsg("That isn't a valid backup."); }
         }}>Restore</button>
         {msg && <p className="dim tiny">{msg}</p>}
