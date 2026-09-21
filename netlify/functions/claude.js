@@ -3,7 +3,7 @@ import { getStore } from "@netlify/blobs";
 // Guardrails. Tune before handing the link out widely.
 const PER_IP_PER_HOUR = 40;
 const GLOBAL_PER_DAY = 800;
-const MAX_TOKENS = 1500;
+const MAX_TOKENS = 8192;   // a week of meal prep is a long answer
 
 // Gemini model names change often. Override with a GEMINI_MODEL env var
 // if this one 404s - check aistudio.google.com for the current name.
@@ -63,19 +63,30 @@ export default async (req) => {
   const model = Netlify.env.get("GEMINI_MODEL") || DEFAULT_MODEL;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
 
-  const r = await fetch(url, {
+  const generationConfig = {
+    maxOutputTokens: Math.min(body.max_tokens || 1500, MAX_TOKENS),
+    // Gemini 2.5 Flash "thinks" before answering by default, and that thinking is
+    // charged against maxOutputTokens - on a real request it can eat the whole budget
+    // and return nothing. Everything this app asks for is extraction or formatting,
+    // so thinking buys nothing here. Turn it off.
+    thinkingConfig: { thinkingBudget: 0 },
+  };
+  // Structured answers (menus, labels, estimates) come back as JSON. The coach chats in plain text.
+  if (body.json !== false) generationConfig.responseMimeType = "application/json";
+
+  const call = (cfg) => fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: toGemini(body.messages),
-      generationConfig: {
-        maxOutputTokens: Math.min(body.max_tokens || 1000, MAX_TOKENS),
-        // Every prompt in this app asks for JSON, so ask Gemini for it directly
-        // instead of fishing it out of markdown fences.
-        responseMimeType: "application/json",
-      },
-    }),
+    body: JSON.stringify({ contents: toGemini(body.messages), generationConfig: cfg }),
   });
+
+  let r = await call(generationConfig);
+  // Some models (2.5 Pro, and whatever Google ships next) reject a zero thinking budget.
+  // If GEMINI_MODEL points at one of those, retry once with the model's own default.
+  if (r.status === 400) {
+    const { thinkingConfig, ...rest } = generationConfig;
+    r = await call(rest);
+  }
 
   if (!r.ok) {
     const detail = await r.text();
@@ -87,9 +98,11 @@ export default async (req) => {
     .map((p) => p.text || "")
     .join("");
 
-  if (!text) {
-    const reason = data?.candidates?.[0]?.finishReason || "empty response";
-    return new Response(`Gemini returned nothing (${reason})`, { status: 502 });
+  const reason = data?.candidates?.[0]?.finishReason;
+  if (!text) return new Response(`Gemini returned nothing (${reason || "empty response"})`, { status: 502 });
+  // A cut-off JSON answer won't parse. Say so plainly instead of letting the app choke on it.
+  if (reason === "MAX_TOKENS" && body.json !== false) {
+    return new Response("That answer ran too long and got cut off. Try asking for less at once.", { status: 502 });
   }
 
   // Hand it back in the shape the app already parses.
