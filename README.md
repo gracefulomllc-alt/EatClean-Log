@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/32487472/README.md)
+[README.md](https://github.com/user-attachments/files/32488029/README.md)
 # Cut Log
 
 Fasting timer, food log, meal planner and recipe builder. React + Vite on Netlify.
