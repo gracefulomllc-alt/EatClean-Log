@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, CartesianGrid } from "recharts";
-import { Timer, Scale, Users, CalendarDays, Settings as Cog, Plus, X, Star, ChevronLeft, ChevronRight, ChefHat } from "lucide-react";
+import { Timer, Scale, Users, CalendarDays, Settings as Cog, Plus, X, Star, ChevronLeft, ChevronRight, ChefHat, MessageCircle } from "lucide-react";
 
 /* ---------- storage: local for personal, server for the shared group ---------- */
 const ACCESS = () => localStorage.getItem("cutlog:code") || "";
@@ -31,6 +31,134 @@ const store = {
   },
 };
 
+/* ---------- sync: merging two copies of the log ---------- */
+// Every item carries `u`, the time it was last edited. Deleting leaves a
+// tombstone in `deleted` stamped with the deletion time. An item is dead only
+// if it was deleted AFTER its last edit - so re-adding something you once
+// deleted still works, and a stale device can't resurrect what you removed.
+const TOMB_TTL = 90 * 864e5;
+function mergeData(a, b) {
+  if (!b) return a;
+  if (!a) return b;
+  const tomb = { ...(b.deleted || {}) };
+  for (const [k, t] of Object.entries(a.deleted || {})) tomb[k] = Math.max(tomb[k] || 0, t);
+  const now = Date.now();
+  for (const k of Object.keys(tomb)) if (now - tomb[k] > TOMB_TTL) delete tomb[k];
+  const alive = (key, it) => !(tomb[key] >= (it?.u || 0));
+  const newer = (x, y) => ((x?.u || 0) >= (y?.u || 0) ? x : y);
+  const byKey = (xs, ys, keyOf, prefix) => {
+    const m = new Map();
+    for (const it of [...(xs || []), ...(ys || [])]) {
+      const k = keyOf(it);
+      if (k == null || !alive(prefix + k, it)) continue;
+      m.set(k, m.has(k) ? newer(m.get(k), it) : it);
+    }
+    return [...m.values()];
+  };
+  const days = {};
+  for (const k of new Set([...Object.keys(a.days || {}), ...Object.keys(b.days || {})])) {
+    const da = a.days?.[k], db = b.days?.[k];
+    const base = !da ? db : !db ? da : newer(da, db);
+    days[k] = { ...base, foods: byKey(da?.foods, db?.foods, (f) => f.id, "food:") };
+  }
+  const top = newer(a, b);
+  return {
+    ...top, days,
+    fasts: byKey(a.fasts, b.fasts, (f) => f.end, "fast:").sort((x, y) => y.end - x.end).slice(0, 30),
+    favorites: byKey(a.favorites, b.favorites, (f) => f.name, "fav:"),
+    labs: byKey(a.labs, b.labs, (l) => l.id, "lab:"),
+    list: byKey(a.list, b.list, (l) => l.id, "list:"),
+    recipes: byKey(a.recipes, b.recipes, (r) => r.id, "recipe:"),
+    photos: byKey(a.photos, b.photos, (p) => p.id, "photo:"),
+    deleted: tomb,
+    u: Math.max(a.u || 0, b.u || 0),
+  };
+}
+const tombstone = (d, key) => ({ ...(d.deleted || {}), [key]: Date.now() });
+
+async function api(path, payload) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-access-code": ACCESS() },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+const syncApi = (p) => api("/api/sync", p);
+const pushApi = (p) => api("/api/push", p);
+
+// 16 characters from an alphabet with no look-alikes (no 0/O, 1/I/L) - about 79 bits.
+const genCode = () => {
+  const A = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  return [...b].map((x) => A[x % A.length]).join("").match(/.{4}/g).join("-");
+};
+const normCode = (s) => {
+  const c = String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return c.length === 16 ? c.match(/.{4}/g).join("-") : null;
+};
+const deviceId = () => {
+  let id = localStorage.getItem("cutlog:device");
+  if (!id) { id = crypto.randomUUID(); localStorage.setItem("cutlog:device", id); }
+  return id;
+};
+const b64ToBytes = (b64) => {
+  const s = (b64 + "=".repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/");
+  return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+};
+
+// "6oz", "250g", "2 servings", "1 scoop"
+const fmtQty = (q, unit) => (unit === "g" || unit === "oz") ? `${q}${unit}`
+  : unit === "serving" ? `${q} serving${+q === 1 ? "" : "s"}` : `${q} ${unit}`;
+
+/* ---------- progress photos: kept in this browser, and on your server if sync is on ---------- */
+const photoDb = (() => {
+  let dbp;
+  const open = () => dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open("cutlog", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("photos");
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  }));
+  const run = async (mode, fn) => {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const t = db.transaction("photos", mode);
+      const q = fn(t.objectStore("photos"));
+      t.oncomplete = () => res(q?.result);
+      t.onerror = () => rej(t.error);
+    });
+  };
+  return {
+    get: (k) => run("readonly", (st) => st.get(k)),
+    put: (k, v) => run("readwrite", (st) => st.put(v, k)),
+    del: (k) => run("readwrite", (st) => st.delete(k)),
+  };
+})();
+
+// Phone photos are 3-5 MB. Shrink to 1080px JPEG (~200 KB) before storing anything.
+async function shrinkPhoto(file, max = 1080, quality = 0.82) {
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", quality);
+}
+
+async function loadPhoto(id) {
+  const local = await photoDb.get(id).catch(() => null);
+  if (local) return local;
+  const code = localStorage.getItem("cutlog:sync");
+  if (!code) return null;
+  try {
+    const { image } = await api("/api/photos", { op: "get", code, id });
+    if (image) photoDb.put(id, image).catch(() => {});
+    return image || null;
+  } catch { return null; }
+}
+
 const KEY = "cutlog:v2";
 const SHARE_PREFIX = "cutlog:shared:v1:";
 const slug = (s) => s.trim().toLowerCase().replace(/[^a-z0-9]/g, "") || "anon";
@@ -55,15 +183,16 @@ const clock = (ms) => {
 
 /* ---------- fasting stages ---------- */
 const STAGES = [
-  { at: 0, name: "Fed", hue: "#94A3B8", body: "Insulin is up and you're absorbing the meal. Nothing is coming out of storage yet." },
-  { at: 4, name: "Post-absorptive", hue: "#7DD3FC", body: "Insulin is falling. Your liver starts releasing stored glucose to hold blood sugar steady." },
-  { at: 8, name: "Glycogen drawdown", hue: "#6EE7F9", body: "Liver glycogen is running down and fat is starting to cover more of the load." },
-  { at: 12, name: "Fat burning", hue: "#5EEAD4", body: "Most of your fuel is now fat. Hunger comes in waves here rather than steadily — it passes." },
-  { at: 16, name: "Ketosis building", hue: "#A3E635", body: "Ketones are climbing. Appetite usually flattens out and focus often sharpens." },
-  { at: 18, name: "Growth hormone rise", hue: "#FBBF24", body: "Growth hormone trends upward. Part of why muscle holds up reasonably well through a fast." },
-  { at: 20, name: "Autophagy window", hue: "#FB923C", body: "Cellular cleanup is thought to step up here. The human timing is poorly pinned down and most hard data is from animals." },
-  { at: 24, name: "Deep fast", hue: "#FB7185", body: "Liver glycogen is largely gone and ketones are the main fuel. Mind your electrolytes and don't train hard in here." },
+  { at: 0, name: "Fed", body: "Insulin is up and you're absorbing the meal. Nothing is coming out of storage yet." },
+  { at: 4, name: "Post-absorptive", body: "Insulin is falling. Your liver starts releasing stored glucose to hold blood sugar steady." },
+  { at: 8, name: "Glycogen drawdown", body: "Liver glycogen is running down and fat is starting to cover more of the load." },
+  { at: 12, name: "Fat burning", body: "Most of your fuel is now fat. Hunger comes in waves here rather than steadily — it passes." },
+  { at: 16, name: "Ketosis building", body: "Ketones are climbing. Appetite usually flattens out and focus often sharpens." },
+  { at: 18, name: "Growth hormone rise", body: "Growth hormone trends upward. Part of why muscle holds up reasonably well through a fast." },
+  { at: 20, name: "Autophagy window", body: "Cellular cleanup is thought to step up here. The human timing is poorly pinned down and most hard data is from animals." },
+  { at: 24, name: "Deep fast", body: "Liver glycogen is largely gone and ketones are the main fuel. Mind your electrolytes and don't train hard in here." },
 ];
+STAGES.forEach((st, i) => Object.defineProperty(st, "hue", { get: () => PALETTES[THEME].stages[i], enumerable: true }));
 const stageAt = (h) => STAGES.reduce((a, s) => (h >= s.at ? s : a), STAGES[0]);
 const nextStage = (h) => STAGES.find((s) => s.at > h) || null;
 
@@ -76,9 +205,53 @@ const ACTIVITY = {
 };
 const TAGS = { lift: { label: "Lifted", cal: 180 }, ball: { label: "Played ball", cal: 400 }, site: { label: "Job site", cal: 300 } };
 
-function computeTargets(p, tags = []) {
+/* ---------- adaptive maintenance: what your own results say ---------- */
+// Energy balance: what you ate, minus what the scale says you lost, is what you burned.
+//   maintenance ≈ average intake − (pounds lost × 3500 ÷ days)
+// Pounds lost comes from a straight-line fit through your weigh-ins, which cancels out
+// day-to-day water swings. The result is blended with the formula until there's enough
+// data to trust it on its own, and clamped so a stretch of missed logging can't drag it
+// somewhere absurd.
+const ADAPT = { window: 28, minSpan: 21, minLogged: 14, minWeighIns: 8, completeDay: 800 };
+function estimateTdee(days, formulaTdee, today = dayKey()) {
+  const start = shiftDay(today, -(ADAPT.window - 1));
+  const inWin = (k) => k >= start && k <= today;
+  const keys = Object.keys(days || {}).sort();
+  const firstW = keys.find((k) => +days[k]?.weight > 0);
+  const base = { ready: false, formula: Math.round(formulaTdee), tdee: Math.round(formulaTdee) };
+  if (!firstW) return { ...base, loggedDays: 0, weighIns: 0, span: 0, need: "Log your weight most mornings." };
+
+  const dayNum = (k) => Math.round((new Date(k + "T12:00") - new Date(start + "T12:00")) / 864e5);
+  const pts = keys.filter((k) => inWin(k) && +days[k]?.weight > 0).map((k) => [dayNum(k), +days[k].weight]);
+  const intakes = keys.filter(inWin)
+    .map((k) => (days[k].foods || []).reduce((a, f) => a + (+f.calories || 0), 0))
+    .filter((c) => c >= ADAPT.completeDay);
+  const span = Math.round((new Date(today + "T12:00") - new Date(firstW + "T12:00")) / 864e5) + 1;
+  const stats = { loggedDays: intakes.length, weighIns: pts.length, span };
+
+  if (span < ADAPT.minSpan || intakes.length < ADAPT.minLogged || pts.length < ADAPT.minWeighIns) {
+    const need = [];
+    if (span < ADAPT.minSpan) need.push(`${ADAPT.minSpan - span} more day${ADAPT.minSpan - span === 1 ? "" : "s"} of history`);
+    if (intakes.length < ADAPT.minLogged) need.push(`${ADAPT.minLogged - intakes.length} more fully logged day${ADAPT.minLogged - intakes.length === 1 ? "" : "s"}`);
+    if (pts.length < ADAPT.minWeighIns) need.push(`${ADAPT.minWeighIns - pts.length} more weigh-in${ADAPT.minWeighIns - pts.length === 1 ? "" : "s"}`);
+    return { ...base, ...stats, need: `Needs ${need.join(", ")}.` };
+  }
+
+  const n = pts.length, mx = pts.reduce((a, p) => a + p[0], 0) / n, my = pts.reduce((a, p) => a + p[1], 0) / n;
+  const slope = pts.reduce((a, p) => a + (p[0] - mx) * (p[1] - my), 0) / (pts.reduce((a, p) => a + (p[0] - mx) ** 2, 0) || 1);
+  const avgIntake = intakes.reduce((a, c) => a + c, 0) / intakes.length;
+  const raw = avgIntake - slope * 3500;                     // slope is lb/day; negative when losing
+  const est = Math.min(formulaTdee * 1.35, Math.max(formulaTdee * 0.7, raw));
+  // Sparse weigh-ins make the slope noisy, so trust grows with how many there are - full at ~20 in 4 weeks.
+  const trust = Math.min(1, intakes.length / ADAPT.window) * Math.min(1, pts.length / 20);
+  const tdee = Math.round((trust * est + (1 - trust) * formulaTdee) / 10) * 10;
+  return { ...base, ...stats, ready: true, tdee, raw: Math.round(raw), avgIntake: Math.round(avgIntake),
+    lbPerWeek: +(slope * 7).toFixed(2), clamped: raw !== est, trust: Math.round(trust * 100) };
+}
+
+function computeTargets(p, tags = [], tdeeOverride = null) {
   const bmr = 10 * (p.weight * 0.4536) + 6.25 * (p.heightIn * 2.54) - 5 * p.age + (p.sex === "male" ? 5 : -161);
-  const tdee = bmr * ACTIVITY[p.activity].mult;
+  const tdee = tdeeOverride || bmr * ACTIVITY[p.activity].mult;
   const floor = p.sex === "male" ? 1500 : 1200;
   const raw = tdee - p.pace * 500;
   const base = Math.max(floor, Math.round(raw / 10) * 10);
@@ -140,8 +313,35 @@ const hhmmToTs = (dk, hhmm) => {
 // to yesterday doesn't stamp it with today's date.
 const stampFor = (dk) => (dk === dayKey() ? Date.now() : hhmmToTs(dk, tsToHHMM(Date.now())));
 const prettyTime = (ts) => (ts ? new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "");
-const MEAL_COLOR = { Breakfast: "#6EE7F9", Lunch: "#A3E635", Dinner: "#A78BFA", Snack: "#FBBF24" };
-const C = { cal: "#6EE7F9", protein: "#A3E635", carbs: "#A78BFA", fat: "#FBBF24", bad: "#FB7185" };
+/* ---------- themes ----------
+   Every color the components set themselves lives here, in both looks. C and MEAL_COLOR
+   read from whichever theme is active, so no screen can end up half-switched.
+   Glow effects append an alpha byte ("#6EE7F988"), so every entry used that way stays 6-digit hex. */
+const PALETTES = {
+  glass: {
+    cal: "#6EE7F9", protein: "#A3E635", carbs: "#A78BFA", fat: "#FBBF24", bad: "#FB7185",
+    water: "#7DD3FC", warn: "#FBBF24", idle: "#64748B",
+    track: "rgba(255,255,255,0.09)", tickOff: "rgba(255,255,255,0.25)", dimText: "rgba(255,255,255,0.55)", faint: "rgba(255,255,255,0.28)",
+    grid: "rgba(255,255,255,0.07)", axis: "rgba(255,255,255,0.45)",
+    tip: { fontSize: 12, borderRadius: 12, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(20,22,40,0.92)", color: "#fff" },
+    cap: "round", glow: true, ringFade: 0.55,
+    meal: { Breakfast: "#6EE7F9", Lunch: "#A3E635", Dinner: "#A78BFA", Snack: "#FBBF24" },
+    stages: ["#94A3B8", "#7DD3FC", "#6EE7F9", "#5EEAD4", "#A3E635", "#FBBF24", "#FB923C", "#FB7185"],
+  },
+  retro: {
+    cal: "#000080", protein: "#006B00", carbs: "#7A007A", fat: "#8A5A00", bad: "#C00000",
+    water: "#00688A", warn: "#A04000", idle: "#808080",
+    track: "#FFFFFF", tickOff: "#808080", dimText: "#404040", faint: "#909090",
+    grid: "#A8A8A8", axis: "#000000",
+    tip: { fontSize: 12, borderRadius: 0, border: "1px solid #000", background: "#FFFFE1", color: "#000" },
+    cap: "butt", glow: false, ringFade: 1,
+    meal: { Breakfast: "#000080", Lunch: "#006B00", Dinner: "#7A007A", Snack: "#8A5A00" },
+    stages: ["#606060", "#00608A", "#000080", "#006B6B", "#006B00", "#8A5A00", "#A04000", "#C00000"],
+  },
+};
+let THEME = "glass";
+const C = new Proxy({}, { get: (_, k) => PALETTES[THEME][k] });
+const MEAL_COLOR = new Proxy({}, { get: (_, k) => PALETTES[THEME].meal[k] });
 const blankDay = () => ({ foods: [], steps: "", weight: "", tags: [], sleep: "", workouts: [] });
 const guessMeal = () => { const h = new Date().getHours(); return h < 10 ? "Breakfast" : h < 15 ? "Lunch" : h < 21 ? "Dinner" : "Snack"; };
 const reduced = () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -156,11 +356,12 @@ async function foodApi(payload) {
   return r.json();
 }
 
-async function askClaude(content) {
+async function askClaude(content, maxTokens = 2000) {
   const r = await fetch("/api/claude", {
     method: "POST", headers: { "Content-Type": "application/json", "x-access-code": ACCESS() },
-    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content }] }),
+    body: JSON.stringify({ max_tokens: maxTokens, messages: [{ role: "user", content }] }),
   });
+  if (!r.ok) throw new Error(await r.text());
   const j = await r.json();
   const txt = j.content.filter((b) => b.type === "text").map((b) => b.text).join("");
   return JSON.parse(txt.replace(/```json|```/g, "").trim());
@@ -194,19 +395,19 @@ function Ring({ pct, color, size = 240, stroke = 16, ticks = [], children, glow 
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="ring">
         <defs>
           <linearGradient id="rg" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor={color} stopOpacity="0.55" />
+            <stop offset="0%" stopColor={color} stopOpacity={C.ringFade} />
             <stop offset="100%" stopColor={color} />
           </linearGradient>
         </defs>
-        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.09)" strokeWidth={stroke} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={C.track} strokeWidth={stroke} />
         <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="url(#rg)" strokeWidth={stroke}
-          strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={circ * (1 - p)}
+          strokeLinecap={C.cap} strokeDasharray={circ} strokeDashoffset={circ * (1 - p)}
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
-          style={{ transition: reduced() ? "none" : "stroke-dashoffset 900ms cubic-bezier(.22,1,.36,1)", filter: glow ? `drop-shadow(0 0 10px ${color}88)` : "none" }} />
+          style={{ transition: reduced() ? "none" : "stroke-dashoffset 900ms cubic-bezier(.22,1,.36,1)", filter: glow && C.glow ? `drop-shadow(0 0 10px ${color}88)` : "none" }} />
         {ticks.map((t, i) => {
           const a = (t.at * 2 * Math.PI) - Math.PI / 2;
           return <circle key={i} cx={size / 2 + Math.cos(a) * r} cy={size / 2 + Math.sin(a) * r} r={t.hit ? 3.5 : 2.5}
-            fill={t.hit ? t.color : "rgba(255,255,255,0.25)"} />;
+            fill={t.hit ? t.color : C.tickOff} />;
         })}
       </svg>
       <div className="ringinner">{children}</div>
@@ -219,7 +420,7 @@ function Bar({ label, have, want, color }) {
   const met = have >= want;
   return (
     <div className="bar">
-      <div className="row tiny"><span>{label}</span><span style={{ color: met ? color : "rgba(255,255,255,0.55)" }}>{Math.round(shown)} / {want}g</span></div>
+      <div className="row tiny"><span>{label}</span><span style={{ color: met ? color : C.dimText }}>{Math.round(shown)} / {want}g</span></div>
       <div className="track"><div style={{ width: `${Math.min(100, (have / want) * 100)}%`, background: color, boxShadow: `0 0 12px ${color}77` }} /></div>
     </div>
   );
@@ -227,8 +428,99 @@ function Bar({ label, have, want, color }) {
 
 /* ---------- app ---------- */
 export default function CutLog() {
-  const [data, setData] = useState(null);
+  const [data, setRawData] = useState(null);
+  // Every edit you make stamps the log with the time, so sync can tell which copy is newer.
+  // Loading from storage and merging from the server use setRawData, which doesn't stamp.
+  const setData = useCallback((fn) => setRawData((d) => {
+    const n = typeof fn === "function" ? fn(d) : fn;
+    return n && n !== d ? { ...n, u: Date.now() } : n;
+  }), []);
   const [locked, setLocked] = useState(null);
+  THEME = data?.theme === "retro" ? "retro" : "glass";
+  const [sync, setSync] = useState({ state: localStorage.getItem("cutlog:sync") ? "idle" : "off" });
+  const dataRef = useRef(null);
+  const syncBusy = useRef(false);
+  const syncTimer = useRef(null);
+  const didFirstSync = useRef(false);
+  dataRef.current = data;
+
+  const syncNow = useCallback(async () => {
+    const code = localStorage.getItem("cutlog:sync");
+    if (!code || syncBusy.current || !dataRef.current) return;
+    syncBusy.current = true;
+    setSync((x) => ({ ...x, state: "syncing" }));
+    try {
+      const remote = (await syncApi({ op: "get", code })).data;
+      // Merge against whatever is current at the moment React applies it, and hand back the
+      // same object when nothing changed - that's what stops sync from looping on itself.
+      if (remote) setRawData((cur) => { const m = mergeData(cur, remote); return JSON.stringify(m) === JSON.stringify(cur) ? cur : m; });
+      await syncApi({ op: "put", code, data: remote ? mergeData(dataRef.current, remote) : dataRef.current });
+      setSync({ state: "ok", at: Date.now() });
+    } catch (e) {
+      setSync({ state: "error", at: Date.now(), err: String(e.message || e).slice(0, 160) });
+    }
+    syncBusy.current = false;
+  }, []);
+
+  const startSync = useCallback(async () => {
+    const code = genCode();
+    localStorage.setItem("cutlog:sync", code);
+    setSync({ state: "idle" });
+    await syncNow();
+    return code;
+  }, [syncNow]);
+
+  const joinSync = useCallback(async (raw) => {
+    const code = normCode(raw);
+    if (!code) throw new Error("That code should be 16 letters and numbers.");
+    const remote = (await syncApi({ op: "get", code })).data;
+    if (!remote) throw new Error("No log found for that code. Check it on your other device.");
+    localStorage.setItem("cutlog:sync", code);
+    setRawData((cur) => mergeData(cur, remote));
+    setSync({ state: "ok", at: Date.now() });
+  }, []);
+
+  const leaveSync = useCallback(() => {
+    localStorage.removeItem("cutlog:sync");
+    setSync({ state: "off" });
+  }, []);
+
+  // The strip above the app (phone status bar, page edges) matches the theme too
+  useEffect(() => {
+    const retro = data?.theme === "retro";
+    document.body.style.background = retro ? "#008080" : "#0A0E1F";
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", retro ? "#000080" : "#0A0E1F");
+  }, [data?.theme]);
+
+  // First sync once the local copy has loaded
+  useEffect(() => {
+    if (data && !didFirstSync.current) { didFirstSync.current = true; syncNow(); }
+  }, [data, syncNow]);
+
+  // Pull when you come back to the app, and every few minutes while it's open
+  useEffect(() => {
+    const onVis = () => document.visibilityState === "visible" && syncNow();
+    document.addEventListener("visibilitychange", onVis);
+    const t = setInterval(() => document.visibilityState === "visible" && syncNow(), 180000);
+    return () => { document.removeEventListener("visibilitychange", onVis); clearInterval(t); };
+  }, [syncNow]);
+
+  // Tell the alert server when you last logged, so reminders stay quiet if you already did
+  const lastLog = useMemo(() => {
+    let m = 0;
+    for (const d of Object.values(data?.days || {})) for (const f of d.foods || []) if ((f.at || 0) > m) m = f.at;
+    return m;
+  }, [data?.days]);
+  useEffect(() => {
+    if (!lastLog || localStorage.getItem("cutlog:alerts") !== "1") return;
+    pushApi({ op: "logged", deviceId: deviceId(), at: lastLog }).catch(() => {});
+  }, [lastLog]);
+
+  // Tell the alert server when a fast starts or ends on this device
+  useEffect(() => {
+    if (!data || localStorage.getItem("cutlog:alerts") !== "1") return;
+    pushApi({ op: "fast", deviceId: deviceId(), start: data.fast?.start || null }).catch(() => {});
+  }, [data?.fast?.start]);
   const [tab, setTab] = useState("now");
   const [viewDay, setViewDay] = useState(dayKey());
   const [saveErr, setSaveErr] = useState(false);
@@ -243,9 +535,9 @@ export default function CutLog() {
 
   useEffect(() => {
     (async () => {
-      const empty = { profile: null, days: {}, favorites: [], fast: null, fasts: [], share: false, calib: [], list: [], labs: [], menus: {} };
-      try { setData({ ...empty, ...JSON.parse((await store.get(KEY)).value) }); }
-      catch { setData(empty); }
+      const empty = { profile: null, days: {}, favorites: [], fast: null, fasts: [], share: false, calib: [], list: [], labs: [], menus: {}, recipes: [], deleted: {} };
+      try { setRawData({ ...empty, ...JSON.parse((await store.get(KEY)).value) }); }
+      catch { setRawData(empty); }
     })();
   }, []);
 
@@ -254,6 +546,10 @@ export default function CutLog() {
     if (first.current) { first.current = false; return; }
     (async () => {
       try { await store.set(KEY, JSON.stringify(data)); setSaveErr(false); } catch { setSaveErr(true); }
+      if (localStorage.getItem("cutlog:sync")) {
+        clearTimeout(syncTimer.current);
+        syncTimer.current = setTimeout(syncNow, 1500);
+      }
       if (data.share && data.profile?.name) {
         const recent = {};
         Object.keys(data.days).sort().slice(-21).forEach((k) => { recent[k] = data.days[k]; });
@@ -268,28 +564,35 @@ export default function CutLog() {
   }, [data]);
 
   const day = { ...blankDay(), ...(data?.days?.[viewDay] || {}) };
-  const targets = useMemo(() => (data?.profile ? computeTargets(data.profile, day.tags) : null), [data, day.tags]);
-  const updateDay = useCallback((k, fn) => setData((d) => ({ ...d, days: { ...d.days, [k]: fn(d.days[k] || blankDay()) } })), []);
+  // Once there are ~3 weeks of weigh-ins and logged days, your real results replace the formula.
+  const adaptive = useMemo(() => (data?.profile ? estimateTdee(data.days, computeTargets(data.profile, []).tdee) : null), [data?.days, data?.profile]);
+  const useAdaptive = data?.useAdaptive !== false && !!adaptive?.ready;
+  const targets = useMemo(() => (data?.profile ? computeTargets(data.profile, day.tags, useAdaptive ? adaptive.tdee : null) : null),
+    [data?.profile, day.tags, useAdaptive, adaptive]);
+  const updateDay = useCallback((k, fn) => setData((d) => ({ ...d, days: { ...d.days, [k]: { ...fn(d.days[k] || blankDay()), u: Date.now() } } })), [setData]);
 
-  if (locked) return <Shell><Gate onOk={() => setLocked(false)} /></Shell>;
-  if (!data) return <Shell><div className="glass pad center"><p className="dim">Waking up…</p></div></Shell>;
-  if (!data.profile) return <Shell><ProfileForm
-    initial={{ name: "", sex: "male", age: 40, heightIn: 70, weight: 224, goalWeight: 180, activity: "light", pace: 1.5 }}
-    title="Set your numbers" cta="Start" intro="Sets your daily budget. Change any of it later."
-    onSave={(profile) => setData((d) => ({ ...d, profile }))} /></Shell>;
+  if (locked) return <Shell theme={THEME}><Gate onOk={() => setLocked(false)} /></Shell>;
+  if (!data) return <Shell theme={THEME}><div className="glass pad center"><p className="dim">Waking up…</p></div></Shell>;
+  if (!data.profile) return <Shell theme={THEME}>
+    <JoinSync onJoin={joinSync} />
+    <ProfileForm
+      initial={{ name: "", sex: "male", age: 40, heightIn: 70, weight: 224, goalWeight: 180, activity: "light", pace: 1.5 }}
+      title="Set your numbers" cta="Start" intro="Sets your daily budget. Change any of it later."
+      onSave={(profile) => setData((d) => ({ ...d, profile }))} /></Shell>;
 
-  const TABS = [["now", "Now", Timer], ["plan", "Plan", ChefHat], ["weight", "Weight", Scale], ["us", "Us", Users], ["log", "Log", CalendarDays], ["setup", "Setup", Cog]];
+  const TABS = [["now", "Now", Timer], ["plan", "Plan", ChefHat], ["coach", "Coach", MessageCircle], ["weight", "Weight", Scale], ["log", "Log", CalendarDays], ["setup", "Setup", Cog]];
 
   return (
-    <Shell>
+    <Shell theme={THEME}>
       {saveErr && <div className="glass pad alert">That change didn’t save. Back up from Setup before closing.</div>}
       <div key={tab} className="fadein">
         {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay }} />}
         {tab === "plan" && <Plan data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} />}
-        {tab === "weight" && <Weight data={data} targets={targets} updateDay={updateDay} />}
-        {tab === "us" && <Us data={data} setData={setData} />}
-        {tab === "log" && <History data={data} onPick={(k) => { setViewDay(k); setTab("now"); }} />}
-        {tab === "setup" && <Settings data={data} setData={setData} onSave={(p) => setData((d) => ({ ...d, profile: p }))} />}
+        {tab === "weight" && <Weight data={data} setData={setData} targets={targets} updateDay={updateDay} />}
+        {tab === "coach" && <Coach data={data} setData={setData} targets={targets} adaptive={adaptive} />}
+        {tab === "log" && <LogTab data={data} setData={setData} onPick={(k) => { setViewDay(k); setTab("now"); }} />}
+        {tab === "setup" && <Settings data={data} setData={setData} onSave={(p) => setData((d) => ({ ...d, profile: p }))} adaptive={adaptive} useAdaptive={useAdaptive}
+          sync={sync} syncNow={syncNow} startSync={startSync} joinSync={joinSync} leaveSync={leaveSync} />}
       </div>
       <nav className="dock">
         {TABS.map(([id, label, Icon]) => (
@@ -297,14 +600,24 @@ export default function CutLog() {
             <Icon size={19} strokeWidth={1.7} /><span>{label}</span>
           </button>
         ))}
+        <TrayClock />
       </nav>
     </Shell>
   );
 }
 
+function TrayClock() {
+  const [t, setT] = useState(() => new Date());
+  useEffect(() => { const i = setInterval(() => setT(new Date()), 20000); return () => clearInterval(i); }, []);
+  return <span className="tray">{t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>;
+}
+
 /* ---------- now ---------- */
 function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const removeFood = (id) => setData((d) => ({ ...d, deleted: tombstone(d, "food:" + id),
+    days: { ...d.days, [dayId]: { ...(d.days[dayId] || blankDay()), foods: (d.days[dayId]?.foods || []).filter((x) => x.id !== id), u: Date.now() } } }));
   const [showStages, setShowStages] = useState(false);
   const [now, setNow] = useState(Date.now());
   const fast = data.fast;
@@ -343,7 +656,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
         </div>
       ) : (
         <div className="glass hero">
-          <Ring pct={0} color="#64748B" glow={false}>
+          <Ring pct={0} color={C.idle} glow={false}>
             <div className="mono huge dim">0:00:00</div>
             <div className="dim tiny">not fasting</div>
           </Ring>
@@ -421,21 +734,26 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
               <div className="mealhead"><span className="dot" style={{ background: MEAL_COLOR[m], boxShadow: `0 0 8px ${MEAL_COLOR[m]}` }} />{m}
                 <span className="right dim">{day.foods.filter((f) => f.meal === m).reduce((a, f) => a + f.calories, 0)}</span></div>
               {day.foods.slice().sort((a, b) => (a.at || 0) - (b.at || 0)).filter((f) => f.meal === m).map((f) => (
-                <div key={f.id} className="fooditem">
-                  <div>
+                <React.Fragment key={f.id}>
+                <div className="fooditem">
+                  <div className="tapable" onClick={() => setEditing(editing === f.id ? null : f.id)}>
                     <div>{f.name}</div>
                     <div className="dim tiny timerow">
-                      <input className="timeinput" type="time" value={tsToHHMM(f.at)}
-                        onChange={(e) => updateDay(dayId, (d) => ({ ...d, foods: d.foods.map((x) => x.id === f.id ? { ...x, at: hhmmToTs(dayId, e.target.value) } : x) }))} />
+                      <input className="timeinput" type="time" value={tsToHHMM(f.at)} onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => updateDay(dayId, (d) => ({ ...d, foods: d.foods.map((x) => x.id === f.id ? { ...x, at: hhmmToTs(dayId, e.target.value), u: Date.now() } : x) }))} />
                       <span>{Math.round(f.protein)}p · {Math.round(f.carbs)}c · {Math.round(f.fat)}f</span>
                     </div>
                   </div>
                   <div className="fright">
                     <span className="mono">{f.calories}</span>
-                    <button className="icon" title="Save" onClick={() => setData((d) => ({ ...d, favorites: [{ name: f.name, calories: f.calories, protein: f.protein, carbs: f.carbs, fat: f.fat }, ...d.favorites.filter((x) => x.name !== f.name)].slice(0, 40) }))}><Star size={15} /></button>
-                    <button className="icon" title="Remove" onClick={() => updateDay(dayId, (d) => ({ ...d, foods: d.foods.filter((x) => x.id !== f.id) }))}><X size={15} /></button>
+                    <button className="icon" title="Save as favorite" onClick={() => setData((d) => ({ ...d, favorites: [{ name: f.name, calories: f.calories, protein: f.protein, carbs: f.carbs, fat: f.fat, per: f.per, qty: f.qty, unit: f.unit, baseName: f.baseName, raw: f.raw, u: Date.now() }, ...d.favorites.filter((x) => x.name !== f.name)].slice(0, 40) }))}><Star size={15} /></button>
+                    <button className="icon" title="Remove" onClick={() => removeFood(f.id)}><X size={15} /></button>
                   </div>
                 </div>
+                {editing === f.id && <EditFood food={f} onClose={() => setEditing(null)}
+                  onDelete={() => { removeFood(f.id); setEditing(null); }}
+                  onSave={(nf) => { updateDay(dayId, (d) => ({ ...d, foods: d.foods.map((x) => x.id === f.id ? { ...nf, u: Date.now() } : x) })); setEditing(null); }} />}
+                </React.Fragment>
               ))}
             </div>
           ))}
@@ -445,18 +763,34 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
         <div className="chips">
           {data.favorites.map((f) => (
             <button key={f.name} className="chip"
-              onClick={() => updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, { ...f, id: crypto.randomUUID(), meal: guessMeal(), at: stampFor(dayId) }] }))}
-              onContextMenu={(e) => { e.preventDefault(); setData((d) => ({ ...d, favorites: d.favorites.filter((x) => x.name !== f.name) })); }}>
+              onClick={() => updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, { ...f, id: crypto.randomUUID(), meal: guessMeal(), at: stampFor(dayId), u: Date.now() }] }))}
+              onContextMenu={(e) => { e.preventDefault(); setData((d) => ({ ...d, deleted: tombstone(d, "fav:" + f.name), favorites: d.favorites.filter((x) => x.name !== f.name) })); }}>
               {f.name} <span className="dim">{f.calories}</span>
             </button>
           ))}
         </div>
       )}
 
-      {open ? <AddFood onCancel={() => setOpen(false)} calib={data.calib || []}
+      {open ? <AddFood onCancel={() => setOpen(false)} calib={data.calib || []} recipes={data.recipes || []} setData={setData}
         onCalib={(n) => setData((d) => ({ ...d, calib: [n, ...(d.calib || [])].slice(0, 12) }))}
-        onAdd={(items) => { updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, ...items.map((i) => ({ at: stampFor(dayId), ...i }))] })); setOpen(false); }} />
+        onAdd={(items) => { updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, ...items.map((i) => ({ at: stampFor(dayId), ...i, u: Date.now() }))] })); setOpen(false); }} />
         : <button className="btn solid wide big" onClick={() => setOpen(true)}><Plus size={18} /> Add food</button>}
+
+      {(() => {
+        const goal = data.profile.waterOz || 100, have = +day.water || 0;
+        return (
+          <div className="glass pad">
+            <div className="row"><label style={{ margin: 0 }}>Water</label>
+              <span className="mono" style={{ color: have >= goal ? C.water : undefined }}>{have} / {goal} oz</span></div>
+            <div className="track"><div style={{ width: `${Math.min(100, (have / goal) * 100)}%`, background: C.water, boxShadow: `0 0 10px ${C.water}88` }} /></div>
+            <div className="chips" style={{ marginTop: 10, marginBottom: 0 }}>
+              {[8, 16, 24].map((n) => (
+                <button key={n} className="chip" onClick={() => updateDay(dayId, (d) => ({ ...d, water: (+d.water || 0) + n }))}>+{n} oz</button>))}
+              <button className="chip" disabled={!have} onClick={() => updateDay(dayId, (d) => ({ ...d, water: Math.max(0, (+d.water || 0) - 8) }))}>−8</button>
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="glass pad">
         <div className="row"><label>Steps</label>
@@ -472,21 +806,253 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
   );
 }
 
+
+/* ---------- edit a logged entry ---------- */
+// Anything logged by weight, label or recipe knows its per-unit values, so changing
+// the amount rescales everything. Photo and describe entries are treated as one
+// portion, so you can still say "that was actually 1.5 of those".
+function EditFood({ food, onSave, onDelete, onClose }) {
+  const per = food.per || [food.calories, food.protein, food.carbs, food.fat];
+  const unit = food.per ? food.unit : "portion";
+  const [qty, setQty] = useState(String(food.per ? food.qty : 1));
+  const [name, setName] = useState(food.name);
+  const [nameTouched, setNameTouched] = useState(false);
+  const [meal, setMeal] = useState(food.meal);
+  const [v, setV] = useState({ calories: food.calories, protein: food.protein, carbs: food.carbs, fat: food.fat });
+
+  const rescale = (q) => {
+    setQty(q);
+    const n = +q || 0;
+    setV({ calories: Math.round(per[0] * n), protein: +(per[1] * n).toFixed(1), carbs: +(per[2] * n).toFixed(1), fat: +(per[3] * n).toFixed(1) });
+    if (food.baseName && !nameTouched && n) setName(`${food.baseName}, ${fmtQty(q, unit)}${food.raw ? " raw" : ""}`);
+  };
+
+  const save = () => {
+    const n = +qty || 0;
+    const vals = { calories: Math.round(+v.calories || 0), protein: +v.protein || 0, carbs: +v.carbs || 0, fat: +v.fat || 0 };
+    onSave({ ...food, name: name.trim() || food.name, meal, ...vals,
+      // Keep the per-unit values in step with whatever was typed, so the next edit still scales right.
+      ...(n > 0 ? { qty: n, unit, per: [vals.calories / n, vals.protein / n, vals.carbs / n, vals.fat / n] } : {}) });
+  };
+
+  return (
+    <div className="editbox fadein">
+      <input value={name} onChange={(e) => { setName(e.target.value); setNameTouched(true); }} />
+      <div className="row gap">
+        <label style={{ margin: 0, flex: 1 }}>Amount</label>
+        <input className="mini" type="number" step="any" inputMode="decimal" value={qty} onChange={(e) => rescale(e.target.value)} />
+        <span className="dim small" style={{ minWidth: 56 }}>{unit === "portion" ? "× portion" : unit}</span>
+      </div>
+      {unit === "portion" && (
+        <div className="chips">{["0.5", "0.75", "1", "1.25", "1.5", "2"].map((q) => (
+          <button key={q} className={qty === q ? "chip on" : "chip"} onClick={() => rescale(q)}>{q}×</button>))}</div>
+      )}
+      <div className="quad small">
+        {[["calories", "Cal"], ["protein", "P"], ["carbs", "C"], ["fat", "F"]].map(([k, l]) => (
+          <div key={k}><label>{l}</label><input type="number" inputMode="decimal" value={v[k]}
+            onChange={(e) => setV((x) => ({ ...x, [k]: e.target.value }))} /></div>))}
+      </div>
+      <MealPick meal={meal} setMeal={setMeal} />
+      <div className="rowbtns">
+        <button className="btn ghost" onClick={onDelete}>Delete</button>
+        <button className="btn ghost wide" onClick={onClose}>Cancel</button>
+        <button className="btn solid wide" onClick={save}>Save</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- join an existing log from a new device ---------- */
+function JoinSync({ onJoin }) {
+  const [open, setOpen] = useState(false);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const go = async () => {
+    setBusy(true); setErr("");
+    try { await onJoin(code); } catch (e) { setErr(String(e.message || e)); }
+    setBusy(false);
+  };
+  if (!open) return (
+    <button className="btn ghost wide" style={{ marginBottom: 12 }} onClick={() => setOpen(true)}>
+      Already use Cut Log on another device?</button>
+  );
+  return (
+    <div className="glass pad stack">
+      <h2>Bring your log over</h2>
+      <p className="dim small">On your other device, open Setup → Sync and copy the code shown there.</p>
+      <input placeholder="XXXX-XXXX-XXXX-XXXX" value={code} autoCapitalize="characters"
+        onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => e.key === "Enter" && go()} />
+      <button className="btn accent wide" onClick={go} disabled={busy || !code.trim()}>{busy ? "Pulling your log…" : "Connect"}</button>
+      {err && <p className="alert">{err}</p>}
+    </div>
+  );
+}
+
 /* ---------- add food ---------- */
-function AddFood({ onAdd, onCancel, calib, onCalib }) {
+function AddFood({ onAdd, onCancel, calib, onCalib, recipes, setData }) {
   const [mode, setMode] = useState("weigh");
   const [meal, setMeal] = useState(guessMeal());
   return (
     <div className="glass pad stack fadein">
       <div className="chips">
-        {[["weigh", "Weigh"], ["label", "Label"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
+        {[["weigh", "Weigh"], ["label", "Label"], ["recipe", "Recipe"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
       </div>
+      {mode === "recipe" && <Recipes recipes={recipes} setData={setData} meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "weigh" && <WeighIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "label" && <LabelIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "photo" && <SnapIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} calib={calib} onCalib={onCalib} />}
       {mode === "desc" && <DescribeIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
     </div>
+  );
+}
+
+/* ---------- recipes: home-cooked dishes, logged by the gram ---------- */
+const sumMacros = (items) => items.reduce((a, i) => [a[0] + (+i.calories || 0), a[1] + (+i.protein || 0), a[2] + (+i.carbs || 0), a[3] + (+i.fat || 0)], [0, 0, 0, 0]);
+
+function Recipes({ recipes, setData, meal, setMeal, onAdd, onCancel }) {
+  const [building, setBuilding] = useState(null);   // null | "new" | a recipe being edited
+  const [pick, setPick] = useState(null);
+  const [by, setBy] = useState("g");
+  const [amt, setAmt] = useState("");
+
+  if (building) return (
+    <RecipeBuilder initial={building === "new" ? null : building}
+      onDone={(r) => {
+        if (r) setData((d) => ({ ...d, recipes: [...(d.recipes || []).filter((x) => x.id !== r.id), { ...r, u: Date.now() }] }));
+        setBuilding(null);
+      }} />
+  );
+
+  if (pick) {
+    const tot = sumMacros(pick.items);
+    const div = by === "g" ? pick.cookedG : pick.servings;
+    const per = tot.map((v) => v / (div || 1));
+    const n = +amt || 0;
+    const m = per.map((v) => v * n);
+    const unit = by === "g" ? "g" : "serving";
+    return (
+      <>
+        <div className="row"><h2>{pick.name}</h2><button className="icon" onClick={() => setPick(null)}><X size={16} /></button></div>
+        <p className="dim tiny">Whole recipe: {Math.round(tot[0]).toLocaleString()} cal · {Math.round(tot[1])}g protein
+          {pick.cookedG ? ` · ${pick.cookedG}g finished` : ""}{pick.servings ? ` · ${pick.servings} servings` : ""}</p>
+        {pick.cookedG > 0 && pick.servings > 0 && (
+          <div className="chips">
+            <button className={by === "g" ? "chip on" : "chip"} onClick={() => setBy("g")}>By weight</button>
+            <button className={by === "serving" ? "chip on" : "chip"} onClick={() => setBy("serving")}>By servings</button>
+          </div>
+        )}
+        <div className="row gap">
+          <input autoFocus type="number" inputMode="decimal" placeholder={by === "g" ? "Grams on your plate" : "Servings"}
+            value={amt} onChange={(e) => setAmt(e.target.value)} />
+          <span className="dim small">{by === "g" ? "g" : "servings"}</span>
+        </div>
+        <div className="quad">
+          {[["calories", m[0]], ["protein", m[1]], ["carbs", m[2]], ["fat", m[3]]].map(([l, v], i) => (
+            <div key={l}><div className="midnum" style={{ color: [C.cal, C.protein, C.carbs, C.fat][i] }}>{Math.round(v)}</div><div className="dim tiny">{l}</div></div>))}
+        </div>
+        <MealPick meal={meal} setMeal={setMeal} />
+        <div className="rowbtns">
+          <button className="btn ghost wide" onClick={() => setPick(null)}>Back</button>
+          <button className="btn solid wide" disabled={!n} onClick={() => onAdd([{
+            id: crypto.randomUUID(), meal, name: `${pick.name}, ${fmtQty(amt, unit)}`,
+            baseName: pick.name, unit, qty: n, per: per.map((v) => +v.toFixed(4)),
+            calories: Math.round(m[0]), protein: +m[1].toFixed(1), carbs: +m[2].toFixed(1), fat: +m[3].toFixed(1) }])}>Log</button>
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      {!recipes.length && <p className="dim small">Build a dish once — chili, a casserole, overnight oats — and log any portion of it by weight after that.</p>}
+      {recipes.map((r) => {
+        const t = sumMacros(r.items);
+        return (
+          <div key={r.id} className="recipeRow">
+            <button className="listbtn" style={{ flex: 1 }} onClick={() => { setPick(r); setBy(r.cookedG ? "g" : "serving"); setAmt(""); }}>
+              {r.name}
+              <span className="dim tiny" style={{ display: "block" }}>
+                {r.cookedG ? `${Math.round((t[0] / r.cookedG) * 100)} cal per 100g` : `${Math.round(t[0] / r.servings)} cal per serving`}
+              </span>
+            </button>
+            <button className="icon" title="Edit" onClick={() => setBuilding(r)}>✎</button>
+            <button className="icon" title="Delete" onClick={() => setData((d) => ({ ...d, deleted: tombstone(d, "recipe:" + r.id),
+              recipes: (d.recipes || []).filter((x) => x.id !== r.id) }))}><X size={15} /></button>
+          </div>
+        );
+      })}
+      <div className="rowbtns">
+        <button className="btn ghost wide" onClick={onCancel}>Cancel</button>
+        <button className="btn accent wide" onClick={() => setBuilding("new")}>+ New recipe</button>
+      </div>
+    </>
+  );
+}
+
+function RecipeBuilder({ initial, onDone }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [items, setItems] = useState(initial?.items || []);
+  const [cookedG, setCookedG] = useState(initial?.cookedG ? String(initial.cookedG) : "");
+  const [servings, setServings] = useState(initial?.servings ? String(initial.servings) : "");
+  const [adding, setAdding] = useState(initial ? null : "weigh");
+  const noop = () => {};
+  const tot = sumMacros(items);
+  const addItems = (its) => { setItems((x) => [...x, ...its]); setAdding(null); };
+  const ready = name.trim() && items.length && (+cookedG > 0 || +servings > 0);
+
+  return (
+    <>
+      <h2>{initial ? "Edit recipe" : "New recipe"}</h2>
+      <input placeholder="Name it — e.g. Turkey chili" value={name} onChange={(e) => setName(e.target.value)} />
+
+      {items.length > 0 && (
+        <div className="ingredients">
+          {items.map((i, n) => (
+            <div key={i.id || n} className="row small ingrow">
+              <span style={{ flex: 1 }}>{i.name}</span>
+              <span className="mono dim">{Math.round(i.calories)}</span>
+              <button className="icon" onClick={() => setItems((x) => x.filter((_, k) => k !== n))}><X size={13} /></button>
+            </div>
+          ))}
+          <div className="row small" style={{ paddingTop: 8 }}>
+            <strong>Total</strong>
+            <span className="mono">{Math.round(tot[0]).toLocaleString()} cal · {Math.round(tot[1])}p · {Math.round(tot[2])}c · {Math.round(tot[3])}f</span>
+          </div>
+        </div>
+      )}
+
+      {adding ? (
+        <div className="subpanel stack">
+          <div className="chips">
+            {[["weigh", "Weigh"], ["label", "Label"], ["desc", "Describe"]].map(([k, l]) => (
+              <button key={k} className={adding === k ? "chip on" : "chip"} onClick={() => setAdding(k)}>{l}</button>))}
+          </div>
+          <p className="dim tiny">Weigh ingredients before they go in. For meat, pick a raw USDA entry or tick "Weighed raw". Don't forget the oil.</p>
+          {adding === "weigh" && <WeighIt meal="Dinner" setMeal={noop} hideMeal cta="Add" onAdd={addItems} onCancel={() => setAdding(null)} />}
+          {adding === "label" && <LabelIt meal="Dinner" setMeal={noop} hideMeal cta="Add" onAdd={addItems} onCancel={() => setAdding(null)} />}
+          {adding === "desc" && <DescribeIt meal="Dinner" setMeal={noop} hideMeal cta="Add" onAdd={addItems} onCancel={() => setAdding(null)} />}
+        </div>
+      ) : (
+        <button className="btn ghost wide" onClick={() => setAdding("weigh")}>+ Add ingredient</button>
+      )}
+
+      <div className="subpanel stack">
+        <div className="row gap"><label style={{ margin: 0, flex: 1 }}>Finished weight</label>
+          <input className="mini" type="number" inputMode="decimal" placeholder="grams" value={cookedG} onChange={(e) => setCookedG(e.target.value)} /></div>
+        <p className="dim tiny">Weigh the full pot when it's done, then subtract what the empty pot weighs. Cooking drives off water, so this — not the raw total — is what makes each portion exact.</p>
+        <div className="row gap"><label style={{ margin: 0, flex: 1 }}>Or servings it makes</label>
+          <input className="mini" type="number" inputMode="decimal" placeholder="e.g. 6" value={servings} onChange={(e) => setServings(e.target.value)} /></div>
+      </div>
+
+      <div className="rowbtns">
+        <button className="btn ghost wide" onClick={() => onDone(null)}>Cancel</button>
+        <button className="btn solid wide" disabled={!ready} onClick={() => onDone({
+          id: initial?.id || crypto.randomUUID(), name: name.trim(), items,
+          cookedG: +cookedG || 0, servings: +servings || 0 })}>Save recipe</button>
+      </div>
+    </>
   );
 }
 
@@ -536,7 +1102,7 @@ function Scanner({ onCode, onClose }) {
   );
 }
 
-function LabelIt({ meal, setMeal, onAdd, onCancel }) {
+function LabelIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Log" }) {
   const [img, setImg] = useState(null);
   const [busy, setBusy] = useState(false);
   const [panel, setPanel] = useState(null);
@@ -607,7 +1173,7 @@ The macro numbers are PER SERVING, exactly as the panel states them.` }]);
             {[["calories", total.calories], ["protein", total.protein], ["carbs", total.carbs], ["fat", total.fat]].map(([l, v], i) => (
               <div key={l}><div className="midnum" style={{ color: [C.cal, C.protein, C.carbs, C.fat][i] }}>{v}</div><div className="dim tiny">{l}</div></div>))}
           </div>
-          <MealPick meal={meal} setMeal={setMeal} />
+          {!hideMeal && <MealPick meal={meal} setMeal={setMeal} />}
         </div>
       )}
 
@@ -616,14 +1182,16 @@ The macro numbers are PER SERVING, exactly as the panel states them.` }]);
         <button className="btn ghost wide" onClick={onCancel}>Cancel</button>
         <button className="btn solid wide" disabled={!panel || !n} onClick={() => onAdd([{
           id: crypto.randomUUID(), meal,
-          name: `${panel.name || "Packaged food"}, ${servings} serving${n === 1 ? "" : "s"}`,
-          ...total }])}>Log</button>
+          name: `${panel.name || "Packaged food"}, ${fmtQty(servings, "serving")}`,
+          baseName: panel.name || "Packaged food", unit: "serving", qty: n,
+          per: [panel.calories, panel.protein || 0, panel.carbs || 0, panel.fat || 0],
+          ...total }])}>{cta}</button>
       </div>
     </>
   );
 }
 
-function WeighIt({ meal, setMeal, onAdd, onCancel }) {
+function WeighIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Log" }) {
   const [q, setQ] = useState(""); const [pick, setPick] = useState(null);
   const [amt, setAmt] = useState(""); const [unit, setUnit] = useState("g"); const [raw, setRaw] = useState(false);
   const [remote, setRemote] = useState([]); const [searching, setSearching] = useState(false); const [searchErr, setSearchErr] = useState("");
@@ -716,12 +1284,18 @@ function WeighIt({ meal, setMeal, onAdd, onCancel }) {
             {[["calories", m[0]], ["protein", m[1]], ["carbs", m[2]], ["fat", m[3]]].map(([l, v], i) => (
               <div key={l}><div className="midnum" style={{ color: [C.cal, C.protein, C.carbs, C.fat][i] }}>{Math.round(v)}</div><div className="dim tiny">{l}</div></div>))}
           </div>
-          <MealPick meal={meal} setMeal={setMeal} />
+          {!hideMeal && <MealPick meal={meal} setMeal={setMeal} />}
           <div className="rowbtns">
             <button className="btn ghost wide" onClick={onCancel}>Cancel</button>
-            <button className="btn solid wide" disabled={!grams} onClick={() => onAdd([{ id: crypto.randomUUID(), meal,
-              name: `${pick.n}, ${amt}${unit === "s" ? " " + pick.s.label : unit}${raw ? " raw" : ""}`,
-              calories: Math.round(m[0]), protein: +m[1].toFixed(1), carbs: +m[2].toFixed(1), fat: +m[3].toFixed(1) }])}>Log</button>
+            <button className="btn solid wide" disabled={!grams} onClick={() => {
+              const unitLabel = unit === "s" ? pick.s.label : unit;
+              const gPerUnit = (unit === "g" ? 1 : unit === "oz" ? 28.35 : pick.s.g) * (raw ? 0.75 : 1);
+              onAdd([{ id: crypto.randomUUID(), meal,
+                name: `${pick.n}, ${fmtQty(amt, unitLabel)}${raw ? " raw" : ""}`,
+                baseName: pick.n, raw, unit: unitLabel, qty: +amt,
+                per: pick.m.map((v) => +((v * gPerUnit) / 100).toFixed(4)),
+                calories: Math.round(m[0]), protein: +m[1].toFixed(1), carbs: +m[2].toFixed(1), fat: +m[3].toFixed(1) }]);
+            }}>{cta}</button>
           </div>
         </>
       )}
@@ -868,7 +1442,7 @@ Respond with ONLY JSON:
   );
 }
 
-function DescribeIt({ meal, setMeal, onAdd, onCancel }) {
+function DescribeIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Log" }) {
   const [desc, setDesc] = useState("");
   const [v, setV] = useState({ calories: "", protein: "", carbs: "", fat: "" });
   const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
@@ -891,14 +1465,14 @@ function DescribeIt({ meal, setMeal, onAdd, onCancel }) {
           <div key={k}><label>{l}</label><input type="number" inputMode="numeric" value={v[k]}
             onChange={(e) => setV((x) => ({ ...x, [k]: e.target.value }))} /></div>))}
       </div>
-      <MealPick meal={meal} setMeal={setMeal} />
+      {!hideMeal && <MealPick meal={meal} setMeal={setMeal} />}
       {err && <p className="alert">{err}</p>}
       <div className="rowbtns">
         <button className="btn ghost wide" onClick={onCancel}>Cancel</button>
         <button className="btn solid wide" onClick={() => {
           if (!desc.trim() || v.calories === "") { setErr("Needs a name and a calorie number."); return; }
           onAdd([{ id: crypto.randomUUID(), meal, name: desc.trim(), calories: +v.calories || 0, protein: +v.protein || 0, carbs: +v.carbs || 0, fat: +v.fat || 0 }]);
-        }}>Log</button>
+        }}>{cta}</button>
       </div>
     </>
   );
@@ -918,6 +1492,7 @@ function Plan({ data, setData, targets, day, updateDay }) {
   const [showList, setShowList] = useState(false);
   const [craving, setCraving] = useState("");
   const [slot, setSlot] = useState(guessMeal());
+  const [mode, setMode] = useState("today");
 
   const eaten = day.foods.reduce((a, f) => ({ cal: a.cal + f.calories, p: a.p + f.protein }), { cal: 0, p: 0 });
   const remainCal = targets.calories - eaten.cal;
@@ -955,9 +1530,14 @@ Respond with ONLY JSON:
 
   const addToList = (m) => {
     if (!m.recipe) return;
-    setData((d) => ({ ...d, list: [...(d.list || []).filter((x) => x.name !== m.name),
-      { id: crypto.randomUUID(), name: m.name, servings: m.recipe.servings || 1,
-        items: m.recipe.ingredients.map((t) => ({ text: t, done: false })) }] }));
+    setData((d) => {
+      // Replacing a dish of the same name: mark the old one deleted so another device can't bring it back.
+      const old = (d.list || []).filter((x) => x.name === m.name);
+      const deleted = old.reduce((acc, x) => ({ ...acc, ["list:" + x.id]: Date.now() }), d.deleted || {});
+      return { ...d, deleted, list: [...(d.list || []).filter((x) => x.name !== m.name),
+        { id: crypto.randomUUID(), name: m.name, servings: m.recipe.servings || 1, u: Date.now(),
+          items: m.recipe.ingredients.map((t) => ({ text: t, done: false })) }] };
+    });
     setShowList(true);
   };
 
@@ -966,8 +1546,16 @@ Respond with ONLY JSON:
       calories: Math.round(m.calories), protein: Math.round(m.protein), carbs: Math.round(m.carbs), fat: Math.round(m.fat) }] }));
   };
 
+  const logToday = (item) => updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: Date.now(), u: Date.now(), ...item }] }));
   return (
     <>
+      <div className="chips">
+        {[["today", "Today"], ["out", "Eating out"], ["week", "Week"]].map(([k, l]) => (
+          <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
+      </div>
+      {mode === "out" && <EatingOut remainCal={remainCal} remainP={remainP} onLog={logToday} />}
+      {mode === "week" && <WeekPlan data={data} setData={setData} onLog={logToday} onOpenList={() => setShowList(true)} />}
+      {mode === "today" && (<>
       <div className="glass pad stack">
         <div className="row"><h2>What sounds good?</h2>
           <span className="dim tiny">{remainCal.toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g left</span></div>
@@ -987,7 +1575,7 @@ Respond with ONLY JSON:
             {menu.slot}{menu.craving ? ` · ${menu.craving}` : ""}
           </div>
           {menu.note && <p className="dim tiny pad" style={{ paddingBottom: 0 }}>{menu.note}</p>}
-          {menu.flag && <p className="cue" style={{ color: "#FBBF24", borderColor: "#FBBF2455", margin: "10px 16px 0" }}>{menu.flag}</p>}
+          {menu.flag && <p className="cue" style={{ color: C.warn, borderColor: `${C.warn}55`, margin: "10px 16px 0" }}>{menu.flag}</p>}
           {menu.items.map((m) => (
             <div key={m.id} className="dish">
               <div className="row gap">
@@ -1015,6 +1603,7 @@ Respond with ONLY JSON:
           ))}
         </div>
       )}
+      </>)}
 
       <button className="btn ghost wide" onClick={() => setShowList(!showList)}>
         {showList ? "Hide shopping list" : `Shopping list${(data.list || []).length ? ` (${(data.list || []).length})` : ""}`}</button>
@@ -1026,6 +1615,227 @@ Respond with ONLY JSON:
     </>
   );
 }
+/* ---------- eating out: best orders from a menu photo or a restaurant name ---------- */
+function EatingOut({ remainCal, remainP, onLog }) {
+  const [where, setWhere] = useState("");
+  const [img, setImg] = useState(null);
+  const [slot, setSlot] = useState(guessMeal());
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState(null);
+  const [err, setErr] = useState("");
+  const [logged, setLogged] = useState({});
+
+  const pick = async (e) => {
+    const f = e.target.files?.[0]; e.target.value = "";
+    if (!f) return;
+    try { setImg(await shrinkPhoto(f, 1600, 0.85)); setRes(null); } catch { setErr("Couldn't read that photo."); }
+  };
+
+  const go = async () => {
+    setBusy(true); setErr(""); setRes(null); setLogged({});
+    try {
+      const content = [];
+      if (img) content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: img.split(",")[1] } });
+      content.push({ type: "text", text: `Someone cutting weight is eating out${where.trim() ? ` at ${where.trim()}` : ""}. This is ${slot.toLowerCase()}.
+${img ? "The photo is the menu. Only recommend items actually on it." : "There's no menu photo. Use what you genuinely know of this restaurant's menu. If you don't know it, set known to false and give picks that would exist at a typical place of that kind."}
+They have ${Math.max(0, remainCal)} calories and ${Math.max(0, Math.round(remainP))}g protein left today.
+
+Pick the 3 best orders that fit what's left, best protein-per-calorie first. Where you know a chain's published nutrition, use it; otherwise estimate honestly — count the oil, sauce, cheese and sides, and lean high rather than low. For each, give concrete ordering tweaks that cut calories without ruining the meal.
+
+Respond with ONLY JSON:
+{"known":true|false,"picks":[{"name":"exactly how to order it","why":"one short line","calories":number,"protein":number,"carbs":number,"fat":number,"tweaks":["short tweak"]}],"avoid":"the one item on this menu that looks healthy but isn't, or null","note":"one line"}` });
+      const p = await askClaude(content, 2500);
+      if (!p.picks?.length) throw new Error("No picks came back.");
+      setRes(p);
+    } catch (e) { setErr(String(e.message || e).slice(0, 200)); }
+    setBusy(false);
+  };
+
+  return (
+    <>
+      <div className="glass pad stack">
+        <div className="row"><h2>Eating out</h2><span className="dim tiny">{Math.max(0, remainCal).toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g left</span></div>
+        <div className="chips">{MEALS.map((m) => <button key={m} className={slot === m ? "chip on" : "chip"} onClick={() => setSlot(m)}>{m}</button>)}</div>
+        <input placeholder="Where? e.g. Chipotle, Texas Roadhouse, the diner" value={where} onChange={(e) => setWhere(e.target.value)} />
+        {img ? (
+          <div className="row gap"><img src={img} alt="Menu" className="menuthumb" /><button className="btn ghost" onClick={() => setImg(null)}>Remove photo</button></div>
+        ) : (
+          <label className="dropzone">Photograph the menu (optional)
+            <input type="file" accept="image/*" capture="environment" onChange={pick} style={{ display: "none" }} /></label>
+        )}
+        <button className="btn accent wide" onClick={go} disabled={busy || (!where.trim() && !img)}>{busy ? "Reading the menu…" : "What should I order?"}</button>
+        {err && <p className="alert">{err}</p>}
+      </div>
+
+      {res && (
+        <div className="glass fadein">
+          {res.known === false && <p className="cue" style={{ margin: "14px 16px 0", color: C.warn, borderColor: `${C.warn}55` }}>It doesn't know this place's menu well — treat these as ballpark. A menu photo gets you real items.</p>}
+          {res.note && <p className="dim tiny pad" style={{ paddingBottom: 0 }}>{res.note}</p>}
+          {res.picks.map((m, i) => (
+            <div key={i} className="dish">
+              <div><div className="dishname">{m.name}</div><div className="dim tiny">{m.why}</div></div>
+              <div className="dishmacros">
+                <span className="mono" style={{ color: C.cal }}>{Math.round(m.calories)}</span>
+                <span className="dim tiny">{Math.round(m.protein)}p · {Math.round(m.carbs)}c · {Math.round(m.fat)}f · estimate</span>
+              </div>
+              {m.tweaks?.length > 0 && <ul className="tweaks">{m.tweaks.map((t, j) => <li key={j}>{t}</li>)}</ul>}
+              <button className="btn solid wide" disabled={logged[i]} onClick={() => {
+                onLog({ meal: slot, name: `${m.name}${where.trim() ? ` (${where.trim()})` : ""}`, calories: Math.round(m.calories),
+                  protein: Math.round(m.protein), carbs: Math.round(m.carbs), fat: Math.round(m.fat) });
+                setLogged((x) => ({ ...x, [i]: true }));
+              }}>{logged[i] ? "Logged ✓" : "Eat this"}</button>
+            </div>
+          ))}
+          {res.avoid && <p className="cue" style={{ margin: "0 16px 14px" }}>Skip: {res.avoid}</p>}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ---------- week: batch-cook meal prep, one grocery list ---------- */
+function WeekPlan({ data, setData, onLog, onOpenList }) {
+  const week = data.week;
+  const base = computeTargets(data.profile, []);
+  const fasts = (data.fasts || []).length >= 3;
+  const [ifMode, setIfMode] = useState(fasts);
+  const [prefs, setPrefs] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [open, setOpen] = useState(null);
+  const [saved, setSaved] = useState({});
+  const [logged, setLogged] = useState({});
+
+  const since = week ? Math.round((new Date(dayKey() + "T12:00") - new Date(week.start + "T12:00")) / 864e5) : 0;
+  const [dayIdx, setDayIdx] = useState(Math.min(6, Math.max(0, since)));
+
+  const build = async () => {
+    setBusy(true); setErr("");
+    try {
+      const likes = (data.favorites || []).map((f) => f.name).slice(0, 12);
+      const p = await askClaude([{ type: "text", text: `Plan 7 days of meal prep for someone cutting weight, around a small set of batch-cooked dishes that repeat through the week — they cook twice and eat all week. Repetition is good here.
+
+Every day should land within 100 calories of ${base.calories} and reach at least ${base.protein}g protein.
+${ifMode ? "They do intermittent fasting: plan 2 meals plus 1 snack a day inside an eating window — no breakfast." : "Plan breakfast, lunch, dinner and one snack each day."}
+${prefs.trim() ? `Their preferences: ${prefs.trim()}.` : ""}
+${likes.length ? `Foods they already eat: ${likes.join(", ")}.` : ""}
+Use 4 to 7 distinct dishes. Ingredient amounts are for the WHOLE batch, as you'd buy them. Keep steps to at most 4 short lines. Count cooking oil in the macros.
+
+Respond with ONLY JSON:
+{"dishes":[{"id":"d1","name":"...","servingsMade":number,"perServing":{"calories":number,"protein":number,"carbs":number,"fat":number},"ingredients":["amount + item"],"steps":["short step"]}],
+"days":[{"meals":[{"slot":"Breakfast"|"Lunch"|"Dinner"|"Snack","dish":"d1"}]}],
+"prepDay":"one line on what to cook when",
+"note":"one line"}
+Exactly 7 entries in days.` }], 7000);
+      if (!p.dishes?.length || !p.days?.length) throw new Error("The plan came back incomplete. Try again.");
+      setData((d) => ({ ...d, week: { start: dayKey(), dishes: p.dishes, days: p.days.slice(0, 7), prepDay: p.prepDay, note: p.note, u: Date.now() } }));
+      setDayIdx(0); setOpen(null); setSaved({}); setLogged({});
+    } catch (e) { setErr(String(e.message || e).slice(0, 200)); }
+    setBusy(false);
+  };
+
+  const dish = (id) => week?.dishes.find((x) => x.id === id);
+  // Recompute every day's totals here rather than trusting the model's arithmetic.
+  const dayTotal = (i) => (week?.days[i]?.meals || []).reduce((a, m) => {
+    const ps = dish(m.dish)?.perServing || {};
+    return { c: a.c + (+ps.calories || 0), p: a.p + (+ps.protein || 0) };
+  }, { c: 0, p: 0 });
+
+  const toList = () => {
+    setData((d) => {
+      const names = new Set(week.dishes.map((x) => x.name));
+      const old = (d.list || []).filter((x) => names.has(x.name));
+      const deleted = old.reduce((acc, x) => ({ ...acc, ["list:" + x.id]: Date.now() }), d.deleted || {});
+      return { ...d, deleted, list: [...(d.list || []).filter((x) => !names.has(x.name)),
+        ...week.dishes.map((x) => ({ id: crypto.randomUUID(), name: x.name, servings: x.servingsMade, u: Date.now(),
+          items: (x.ingredients || []).map((t) => ({ text: t, done: false })) }))] };
+    });
+    onOpenList();
+  };
+
+  const saveRecipe = (x) => {
+    const n = +x.servingsMade || 1, ps = x.perServing || {};
+    setData((d) => ({ ...d, recipes: [...(d.recipes || []), { id: crypto.randomUUID(), name: x.name, servings: n, cookedG: 0, u: Date.now(),
+      items: [{ id: crypto.randomUUID(), name: "Whole batch (plan estimate — rebuild by weighing for accuracy)",
+        calories: Math.round((+ps.calories || 0) * n), protein: (+ps.protein || 0) * n, carbs: (+ps.carbs || 0) * n, fat: (+ps.fat || 0) * n }] }] }));
+    setSaved((s) => ({ ...s, [x.id]: true }));
+  };
+
+  const dateFor = (i) => shiftDay(week.start, i);
+
+  return (
+    <>
+      <div className="glass pad stack">
+        <div className="row"><h2>Meal prep week</h2><span className="dim tiny">{base.calories.toLocaleString()} cal · {base.protein}g / day</span></div>
+        <input placeholder="Anything to include or avoid? e.g. chicken and rice, no fish, under $80" value={prefs} onChange={(e) => setPrefs(e.target.value)} />
+        <button className={ifMode ? "listbtn on" : "listbtn"} onClick={() => setIfMode(!ifMode)}>{ifMode ? "✓ " : ""}I fast — 2 meals + a snack, no breakfast</button>
+        <button className="btn accent wide" onClick={build} disabled={busy}>{busy ? "Planning the week — about 20 seconds…" : week ? "Plan a new week" : "Plan my week"}</button>
+        {err && <p className="alert">{err}</p>}
+      </div>
+
+      {week && (
+        <>
+          {since > 7 && <p className="cue" style={{ marginBottom: 12 }}>This plan is from {prettyDay(week.start)}. Plan a new week when you're ready.</p>}
+          {week.prepDay && <div className="glass pad"><p className="small"><strong>Prep:</strong> {week.prepDay}</p>{week.note && <p className="dim tiny" style={{ marginTop: 6 }}>{week.note}</p>}</div>}
+
+          <div className="chips">{week.days.map((_, i) => {
+            const t = dayTotal(i);
+            return <button key={i} className={dayIdx === i ? "chip on" : "chip"} onClick={() => setDayIdx(i)}>
+              {new Date(dateFor(i) + "T12:00").toLocaleDateString(undefined, { weekday: "short" })} <span className="dim">{Math.round(t.c)}</span></button>;
+          })}</div>
+
+          <div className="glass">
+            {(() => { const t = dayTotal(dayIdx); const off = Math.round(t.c - base.calories);
+              return <div className="mealhead">{prettyDay(dateFor(dayIdx))}<span className="right mono" style={{ color: Math.abs(off) > 150 ? C.warn : undefined }}>
+                {Math.round(t.c)} cal · {Math.round(t.p)}g{Math.abs(off) > 150 ? ` (${off > 0 ? "+" : ""}${off})` : ""}</span></div>; })()}
+            {(week.days[dayIdx]?.meals || []).map((m, j) => {
+              const x = dish(m.dish); if (!x) return null;
+              const ps = x.perServing || {}, key = `${dayIdx}-${j}`;
+              return (
+                <div key={j} className="dish">
+                  <div className="row gap"><div><div className="dim tiny">{m.slot}</div><div className="dishname">{x.name}</div></div>
+                    <span className="mono" style={{ color: C.cal }}>{Math.round(ps.calories)}</span></div>
+                  <span className="dim tiny">{Math.round(ps.protein)}p · {Math.round(ps.carbs)}c · {Math.round(ps.fat)}f per serving</span>
+                  {dateFor(dayIdx) === dayKey() && (
+                    <button className="btn solid wide" disabled={logged[key]} onClick={() => {
+                      onLog({ meal: m.slot, name: `${x.name}, 1 serving`, baseName: x.name, unit: "serving", qty: 1,
+                        per: [+ps.calories || 0, +ps.protein || 0, +ps.carbs || 0, +ps.fat || 0],
+                        calories: Math.round(ps.calories), protein: Math.round(ps.protein), carbs: Math.round(ps.carbs), fat: Math.round(ps.fat) });
+                      setLogged((z) => ({ ...z, [key]: true }));
+                    }}>{logged[key] ? "Logged ✓" : "Eat this"}</button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <button className="btn accent wide big" onClick={toList}>Build my grocery list</button>
+
+          <div className="glass">
+            <div className="mealhead">The dishes · {week.dishes.length} to cook</div>
+            {week.dishes.map((x) => (
+              <div key={x.id} className="dish">
+                <div className="row gap"><div className="dishname">{x.name}</div><span className="dim tiny">makes {x.servingsMade}</span></div>
+                <div className="rowbtns">
+                  <button className="btn ghost wide" onClick={() => setOpen(open === x.id ? null : x.id)}>{open === x.id ? "Hide recipe" : "Recipe"}</button>
+                  <button className="btn ghost wide" disabled={saved[x.id]} onClick={() => saveRecipe(x)}>{saved[x.id] ? "Saved ✓" : "Save to my recipes"}</button>
+                </div>
+                {open === x.id && (
+                  <div className="recipe fadein">
+                    <ul>{(x.ingredients || []).map((t, n) => <li key={n}>{t}</li>)}</ul>
+                    <ol>{(x.steps || []).map((t, n) => <li key={n}>{t}</li>)}</ol>
+                  </div>
+                )}
+              </div>
+            ))}
+            <p className="dim tiny pad">Macros here are the planner's estimates. When you cook a dish, rebuild it in Add food → Recipe by weighing — that's what makes it exact.</p>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
 function Labs({ data, setData }) {
   const labs = data.labs || [];
   const [name, setName] = useState("");
@@ -1035,7 +1845,7 @@ function Labs({ data, setData }) {
 
   const add = () => {
     if (!name.trim() || value === "") return;
-    setData((d) => ({ ...d, labs: [{ id: crypto.randomUUID(), name: name.trim(), value, unit: unit.trim(), date }, ...(d.labs || [])].slice(0, 60) }));
+    setData((d) => ({ ...d, labs: [{ id: crypto.randomUUID(), name: name.trim(), value, unit: unit.trim(), date, u: Date.now() }, ...(d.labs || [])].slice(0, 60) }));
     setName(""); setValue(""); setUnit("");
   };
 
@@ -1058,7 +1868,7 @@ function Labs({ data, setData }) {
         <div key={l.id} className="row tiny">
           <span>{l.name}</span>
           <span className="dim">{l.value}{l.unit ? ` ${l.unit}` : ""} · {l.date}</span>
-          <button className="icon" onClick={() => setData((d) => ({ ...d, labs: d.labs.filter((x) => x.id !== l.id) }))}><X size={14} /></button>
+          <button className="icon" onClick={() => setData((d) => ({ ...d, deleted: tombstone(d, "lab:" + l.id), labs: d.labs.filter((x) => x.id !== l.id) }))}><X size={14} /></button>
         </div>
       ))}
     </div>
@@ -1105,7 +1915,7 @@ function Shopping({ data, setData }) {
   const [merged, setMerged] = useState(null);
 
   const toggle = (mealId, idx) => setData((d) => ({ ...d, list: d.list.map((m) => m.id !== mealId ? m
-    : { ...m, items: m.items.map((it, i) => i === idx ? { ...it, done: !it.done } : it) }) }));
+    : { ...m, u: Date.now(), items: m.items.map((it, i) => i === idx ? { ...it, done: !it.done } : it) }) }));
 
   const tidy = async () => {
     setBusy(true);
@@ -1134,7 +1944,7 @@ Respond with ONLY JSON:
         <div key={m.id}>
           <div className="mealhead">
             {m.name}
-            <span className="right"><button className="icon" onClick={() => setData((d) => ({ ...d, list: d.list.filter((x) => x.id !== m.id) }))}><X size={14} /></button></span>
+            <span className="right"><button className="icon" onClick={() => setData((d) => ({ ...d, deleted: tombstone(d, "list:" + m.id), list: d.list.filter((x) => x.id !== m.id) }))}><X size={14} /></button></span>
           </div>
           {m.items.map((it, i) => (
             <button key={i} className="listitem" onClick={() => toggle(m.id, i)}>
@@ -1153,14 +1963,130 @@ Respond with ONLY JSON:
             {sec.items.map((i, n) => <div key={n} style={{ fontSize: 14, padding: "3px 0" }}>{i}</div>)}
           </div>
         ))}
-        <button className="btn ghost wide" onClick={() => { setData((d) => ({ ...d, list: [] })); setMerged(null); }}>Clear the list</button>
+        <button className="btn ghost wide" onClick={() => { setData((d) => ({ ...d, list: [], deleted: (d.list || []).reduce((acc, x) => ({ ...acc, ["list:" + x.id]: Date.now() }), d.deleted || {}) })); setMerged(null); }}>Clear the list</button>
       </div>
     </div>
   );
 }
 
 /* ---------- weight ---------- */
-function Weight({ data, targets, updateDay }) {
+function WaistCard({ days }) {
+  const pts = Object.entries(days).filter(([, d]) => +d.waist > 0).map(([k, d]) => ({ day: k, waist: +d.waist })).sort((a, b) => a.day.localeCompare(b.day));
+  if (!pts.length) return null;
+  const first = pts[0].waist, last = pts[pts.length - 1].waist, change = +(last - first).toFixed(2);
+  return (
+    <div className="glass pad">
+      <div className="row"><h2>Waist</h2>
+        <span className="mono" style={{ color: change < 0 ? C.protein : undefined }}>{last}" {pts.length > 1 ? `· ${change > 0 ? "+" : ""}${change}"` : ""}</span></div>
+      {pts.length > 1 && (
+        <ResponsiveContainer width="100%" height={140}>
+          <LineChart data={pts} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}>
+            <CartesianGrid stroke={C.grid} vertical={false} />
+            <XAxis dataKey="day" tick={{ fontSize: 10, fill: C.axis }} tickFormatter={(k) => k.slice(5)} axisLine={false} tickLine={false} />
+            <YAxis domain={["dataMin - 1", "dataMax + 1"]} tick={{ fontSize: 10, fill: C.axis }} axisLine={false} tickLine={false} />
+            <Line type="monotone" dataKey="waist" stroke={C.carbs} strokeWidth={2.5} dot={{ r: 3 }} />
+          </LineChart>
+        </ResponsiveContainer>
+      )}
+    </div>
+  );
+}
+
+function Thumb({ id, onClick }) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => { let live = true; loadPhoto(id).then((s) => live && setSrc(s)); return () => { live = false; }; }, [id]);
+  return <button className="thumb" onClick={onClick}>{src ? <img src={src} alt="" /> : <span className="dim tiny">…</span>}</button>;
+}
+
+function Progress({ data, setData }) {
+  const photos = (data.photos || []).slice().sort((a, b) => b.date.localeCompare(a.date) || b.u - a.u);
+  const [view, setView] = useState(null);           // null | id | "compare"
+  const [big, setBig] = useState({});
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const code = localStorage.getItem("cutlog:sync");
+
+  // Photos taken before sync was switched on: upload them now.
+  useEffect(() => {
+    if (!code) return;
+    (async () => {
+      for (const p of photos.filter((x) => !x.up)) {
+        const img = await photoDb.get(p.id).catch(() => null);
+        if (!img) continue;
+        try {
+          await api("/api/photos", { op: "put", code, id: p.id, image: img });
+          setData((d) => ({ ...d, photos: (d.photos || []).map((x) => x.id === p.id ? { ...x, up: true, u: Date.now() } : x) }));
+        } catch { /* try again next time */ }
+      }
+    })();
+  }, [code, photos.length]);
+
+  useEffect(() => {
+    const ids = view === "compare" ? [photos[photos.length - 1]?.id, photos[0]?.id] : view ? [view] : [];
+    ids.filter(Boolean).forEach((id) => loadPhoto(id).then((src) => setBig((b) => ({ ...b, [id]: src }))));
+  }, [view]);
+
+  const add = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setBusy(true); setErr("");
+    try {
+      const img = await shrinkPhoto(f);
+      const id = crypto.randomUUID();
+      await photoDb.put(id, img);
+      let up = false;
+      if (code) { try { await api("/api/photos", { op: "put", code, id, image: img }); up = true; } catch { /* backfilled later */ } }
+      const w = data.days[dayKey()]?.weight;
+      setData((d) => ({ ...d, photos: [...(d.photos || []), { id, date: dayKey(), weight: w ? +w : null, up, u: Date.now() }] }));
+    } catch { setErr("Couldn't save that photo."); }
+    setBusy(false);
+  };
+
+  const remove = async (id) => {
+    await photoDb.del(id).catch(() => {});
+    if (code) api("/api/photos", { op: "delete", code, id }).catch(() => {});
+    setData((d) => ({ ...d, deleted: tombstone(d, "photo:" + id), photos: (d.photos || []).filter((x) => x.id !== id) }));
+    setView(null);
+  };
+
+  const label = (p) => `${prettyDay(p.date)}${p.weight ? ` · ${p.weight} lb` : ""}`;
+  const firstP = photos[photos.length - 1], lastP = photos[0];
+
+  return (
+    <div className="glass pad stack">
+      <div className="row"><h2>Progress photos</h2>
+        {photos.length > 1 && <button className="chip" onClick={() => setView("compare")}>Compare first → latest</button>}</div>
+      <p className="dim tiny">Same spot, same light, same time of day — every week or two. {code ? "Synced to your devices under your sync code." : "Stored only on this device. Turn on sync to keep them if you switch phones."}</p>
+      {photos.length > 0 && <div className="thumbs">{photos.map((p) => <Thumb key={p.id} id={p.id} onClick={() => setView(p.id)} />)}</div>}
+      <label className="dropzone">{busy ? "Saving…" : "Take a progress photo"}
+        <input type="file" accept="image/*" capture="user" onChange={add} style={{ display: "none" }} disabled={busy} /></label>
+      {err && <p className="alert">{err}</p>}
+
+      {view && (
+        <div className="viewer" onClick={() => setView(null)}>
+          <div className="viewerInner" onClick={(e) => e.stopPropagation()}>
+            {view === "compare" ? (
+              <div className="compare">
+                {[firstP, lastP].map((p) => (
+                  <div key={p.id}><img src={big[p.id] || ""} alt="" /><p className="dim tiny center">{label(p)}</p></div>))}
+              </div>
+            ) : (
+              <>
+                <img src={big[view] || ""} alt="" className="full" />
+                <p className="dim tiny center">{label(photos.find((p) => p.id === view) || { date: dayKey() })}</p>
+                <button className="btn ghost wide" onClick={() => remove(view)}>Delete this photo</button>
+              </>
+            )}
+            <button className="btn solid wide" onClick={() => setView(null)}>Close</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Weight({ data, setData, targets, updateDay }) {
   const today = dayKey();
   const cur = data.days[today]?.weight ?? "";
   const entries = Object.entries(data.days).filter(([, d]) => d.weight !== "" && d.weight != null)
@@ -1189,19 +2115,26 @@ function Weight({ data, targets, updateDay }) {
           <input className="mini" type="number" step="0.1" inputMode="decimal" placeholder="—" value={cur}
             onChange={(e) => updateDay(today, (d) => ({ ...d, weight: e.target.value }))} />
         </div>
-        <p className="dim tiny">Same time each morning, before you eat. Fasting days read low — water, not fat.</p>
+        <div className="row wideinput">
+          <label>Waist (in)</label>
+          <input className="mini" type="number" step="0.25" inputMode="decimal" placeholder="—" value={data.days[today]?.waist ?? ""}
+            onChange={(e) => updateDay(today, (d) => ({ ...d, waist: e.target.value }))} />
+        </div>
+        <p className="dim tiny">Weigh the same time each morning, before you eat. Measure your waist at the navel, relaxed, once a week — it keeps dropping on weeks the scale stalls.</p>
       </div>
+      <WaistCard days={data.days} />
+      <Progress data={data} setData={setData} />
 
       {series.length > 1 ? (
         <div className="glass pad">
           <ResponsiveContainer width="100%" height={210}>
             <LineChart data={series} margin={{ top: 8, right: 8, left: -22, bottom: 0 }}>
-              <CartesianGrid stroke="rgba(255,255,255,0.07)" vertical={false} />
-              <XAxis dataKey="day" tick={{ fontSize: 10, fill: "rgba(255,255,255,0.45)" }} tickFormatter={(k) => k.slice(5)} axisLine={false} tickLine={false} />
-              <YAxis domain={["dataMin - 2", "dataMax + 2"]} tick={{ fontSize: 10, fill: "rgba(255,255,255,0.45)" }} axisLine={false} tickLine={false} />
-              <Tooltip contentStyle={{ fontSize: 12, borderRadius: 12, border: "1px solid rgba(255,255,255,0.15)", background: "rgba(20,22,40,0.92)", color: "#fff" }} />
+              <CartesianGrid stroke={C.grid} vertical={false} />
+              <XAxis dataKey="day" tick={{ fontSize: 10, fill: C.axis }} tickFormatter={(k) => k.slice(5)} axisLine={false} tickLine={false} />
+              <YAxis domain={["dataMin - 2", "dataMax + 2"]} tick={{ fontSize: 10, fill: C.axis }} axisLine={false} tickLine={false} />
+              <Tooltip contentStyle={C.tip} />
               <ReferenceLine y={goal} stroke={C.protein} strokeDasharray="4 4" />
-              <Line type="monotone" dataKey="weight" stroke="rgba(255,255,255,0.28)" strokeWidth={1.5} dot={{ r: 2 }} />
+              <Line type="monotone" dataKey="weight" stroke={C.faint} strokeWidth={1.5} dot={{ r: 2 }} />
               <Line type="monotone" dataKey="avg" stroke={C.cal} strokeWidth={2.5} dot={false} name="7-day avg" />
             </LineChart>
           </ResponsiveContainer>
@@ -1259,7 +2192,7 @@ function Us({ data, setData }) {
           <div key={p.name} className="glass">
             <div className="pad">
               <div className="row"><strong>{p.name}</strong>
-                <span className="mono" style={{ color: cal > p.target ? C.bad : cal ? C.protein : "rgba(255,255,255,0.4)" }}>
+                <span className="mono" style={{ color: cal > p.target ? C.bad : cal ? C.protein : C.dimText }}>
                   {cal ? `${cal.toLocaleString()} / ${p.target.toLocaleString()}` : "—"}</span></div>
               <div className="track"><div style={{ width: `${Math.min(100, (cal / p.target) * 100)}%`, background: cal > p.target ? C.bad : C.cal, boxShadow: `0 0 10px ${cal > p.target ? C.bad : C.cal}88` }} /></div>
               <div className="row tiny dim"><span>{Math.round(prot)} / {p.proteinTarget}g protein</span><span>{latest} lb · {(p.start - latest).toFixed(1)} down</span></div>
@@ -1275,6 +2208,110 @@ function Us({ data, setData }) {
         );
       })}
       <button className="btn ghost wide" onClick={() => setData((d) => ({ ...d, share: false }))}>Stop sharing</button>
+    </>
+  );
+}
+
+/* ---------- log tab: your history, plus the group view ---------- */
+function LogTab({ data, setData, onPick }) {
+  const [view, setView] = useState("mine");
+  return (
+    <>
+      <div className="chips">
+        <button className={view === "mine" ? "chip on" : "chip"} onClick={() => setView("mine")}>My history</button>
+        <button className={view === "group" ? "chip on" : "chip"} onClick={() => setView("group")}>Group</button>
+      </div>
+      {view === "mine" ? <History data={data} onPick={onPick} /> : <Us data={data} setData={setData} />}
+    </>
+  );
+}
+
+/* ---------- coach: a chat that already knows your log ---------- */
+function coachContext(data, targets, adaptive) {
+  const today = dayKey();
+  const d = { ...blankDay(), ...(data.days[today] || {}) };
+  const sum = (foods) => foods.reduce((a, f) => ({ c: a.c + (+f.calories || 0), p: a.p + (+f.protein || 0) }), { c: 0, p: 0 });
+  const t = sum(d.foods);
+  const week = [...Array(7)].map((_, i) => shiftDay(today, -(i + 1))).map((k) => {
+    const x = data.days[k] || {}; const s = sum(x.foods || []);
+    return `${k}: ${s.c ? `${Math.round(s.c)} cal, ${Math.round(s.p)}g protein` : "nothing logged"}${x.weight ? `, weighed ${x.weight}` : ""}`;
+  });
+  const fastH = data.fast ? ((Date.now() - data.fast.start) / 36e5).toFixed(1) : null;
+  const p = data.profile;
+  return [
+    `Person: ${p.sex}, ${p.age}, ${Math.floor(p.heightIn / 12)}'${p.heightIn % 12}", started ${p.weight} lb, goal ${p.goalWeight} lb, losing ~${p.pace} lb/week.`,
+    `Today's budget: ${targets.calories} cal, ${targets.protein}g protein (${targets.carbs}g carbs, ${targets.fat}g fat).${targets.earned ? ` Includes ${targets.earned} earned from activity.` : ""}`,
+    adaptive?.ready ? `Measured maintenance from their own data: ${adaptive.tdee} cal (formula said ${adaptive.formula}); trending ${adaptive.lbPerWeek} lb/week.` : `Maintenance is still a formula estimate.`,
+    `Eaten today: ${Math.round(t.c)} cal, ${Math.round(t.p)}g protein — ${Math.round(targets.calories - t.c)} cal and ${Math.max(0, Math.round(targets.protein - t.p))}g protein left.`,
+    d.foods.length ? `Today's food: ${d.foods.map((f) => `${f.name} (${f.calories} cal, ${Math.round(f.protein)}p${f.at ? ", " + prettyTime(f.at) : ""})`).join("; ")}.` : "Nothing logged yet today.",
+    fastH ? `Currently fasting: ${fastH} hours in.` : "Not fasting right now.",
+    `Water today: ${+d.water || 0} of ${p.waterOz || 100} oz. ${d.tags?.length ? `Activity today: ${d.tags.map((x) => TAGS[x]?.label).join(", ")}.` : ""}`,
+    `Previous 7 days:\n${week.join("\n")}`,
+    (data.recipes || []).length ? `Their saved recipes: ${data.recipes.map((r) => r.name).join(", ")}.` : "",
+    (data.favorites || []).length ? `Foods they eat often: ${data.favorites.slice(0, 12).map((f) => f.name).join(", ")}.` : "",
+    `Current time: ${new Date().toLocaleString([], { weekday: "long", hour: "numeric", minute: "2-digit" })}.`,
+  ].filter(Boolean).join("\n");
+}
+
+const COACH_RULES = `You are the diet coach inside this person's food-logging app. You can see their numbers below — use them. Answer like a sharp, practical coach texting back: short, specific, grounded in their actual remaining calories and protein. Name real foods and portions. No lectures, no generic advice they could get anywhere.
+
+Hard lines:
+- You are not a doctor. Don't diagnose, interpret symptoms, or advise on medications or medical conditions — tell them to ask their doctor.
+- Never suggest eating below their budget floor, skipping meals to "make up" for a big day, or anything extreme. If they overshot, the answer is to get back on plan at the next meal.
+- If they describe feeling faint, dizzy, or unwell while fasting, tell them to break the fast and eat. If anything suggests an unhealthy relationship with food, encourage them kindly to talk to a professional.
+- If you don't know something about their data, say so rather than inventing it.`;
+
+function Coach({ data, setData, targets, adaptive }) {
+  const msgs = data.coach || [];
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const endRef = useRef(null);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [msgs.length, busy]);
+
+  const send = async (raw) => {
+    const q = String(raw ?? text).trim();
+    if (!q || busy) return;
+    setText(""); setErr(""); setBusy(true);
+    const mine = { role: "user", text: q, at: Date.now() };
+    setData((d) => ({ ...d, coach: [...(d.coach || []), mine].slice(-40) }));
+    try {
+      let history = [...msgs, mine].slice(-12);
+      while (history.length && history[0].role !== "user") history = history.slice(1);
+      const turns = history.slice(0, -1).map((m) => ({ role: m.role, content: m.text }));
+      turns.push({ role: "user", content: `${COACH_RULES}\n\n--- Their data right now ---\n${coachContext(data, targets, adaptive)}\n---\n\nThey say: ${q}` });
+      const res = await api("/api/claude", { json: false, max_tokens: 1200, messages: turns });
+      const reply = res.content?.[0]?.text?.trim() || "I didn't get an answer back. Try again.";
+      setData((d) => ({ ...d, coach: [...(d.coach || []), { role: "assistant", text: reply, at: Date.now() }].slice(-40) }));
+    } catch (e) {
+      setErr(/too long|cut off/i.test(String(e.message)) ? "That answer ran long and got cut off — try a narrower question." : "Couldn't reach the coach. Check your connection and try again.");
+    }
+    setBusy(false);
+  };
+
+  const quick = ["What should I eat next?", "I'm at a gas station — what do I grab?", "How's my week going?", "I'm starving and have 400 cal left", "I blew my budget today. Now what?"];
+
+  return (
+    <>
+      <div className="glass pad stack">
+        <div className="row"><h2>Coach</h2>{msgs.length > 0 && <button className="chip" onClick={() => setData((d) => ({ ...d, coach: [] }))}>Clear</button>}</div>
+        <p className="dim tiny">Sees today's log, your fast, water, the last 7 days and your recipes — not your lab values. Runs on Gemini.</p>
+      </div>
+      {msgs.length === 0 && (
+        <div className="chips">{quick.map((q) => <button key={q} className="chip" onClick={() => send(q)}>{q}</button>)}</div>
+      )}
+      <div className="chat">
+        {msgs.map((m, i) => <div key={i} className={m.role === "user" ? "bubble me" : "bubble"}>{m.text}</div>)}
+        {busy && <div className="bubble dim">Thinking…</div>}
+        <div ref={endRef} />
+      </div>
+      {err && <p className="alert">{err}</p>}
+      <div className="glass pad row gap composer">
+        <textarea rows={2} placeholder="Ask anything about your food today…" value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} />
+        <button className="btn accent" onClick={() => send()} disabled={busy || !text.trim()}>Send</button>
+      </div>
     </>
   );
 }
@@ -1420,15 +2457,220 @@ Respond with ONLY JSON:
   );
 }
 
-function Settings({ data, setData, onSave }) {
+function AdaptivePanel({ adaptive, on, onToggle }) {
+  if (!adaptive) return null;
+  const a = adaptive;
+  return (
+    <div className="glass pad stack">
+      <div className="row"><h2>Your real maintenance</h2>
+        {a.ready && <button className={on ? "chip on" : "chip"} onClick={() => onToggle(!on)}>{on ? "In use" : "Off"}</button>}</div>
+      {!a.ready ? (
+        <>
+          <p className="dim small">Your budget comes from a formula that's typically 10% off either way. After about three weeks of weigh-ins and logged days, the app measures what you actually burn and replaces it.</p>
+          <p className="cue">{a.need}</p>
+          <p className="dim tiny">So far: {a.loggedDays} fully logged days, {a.weighIns} weigh-ins in the last 4 weeks.</p>
+        </>
+      ) : (
+        <>
+          <div className="quad">
+            <div><div className="midnum" style={{ color: C.cal }}>{a.tdee.toLocaleString()}</div><div className="dim tiny">measured</div></div>
+            <div><div className="midnum dim">{a.formula.toLocaleString()}</div><div className="dim tiny">formula said</div></div>
+            <div><div className="midnum" style={{ color: C.protein }}>{a.lbPerWeek > 0 ? "+" : ""}{a.lbPerWeek}</div><div className="dim tiny">lb / week</div></div>
+          </div>
+          <p className="dim small">From {a.loggedDays} logged days averaging {a.avgIntake.toLocaleString()} cal and {a.weighIns} weigh-ins over the last 4 weeks{a.trust < 100 ? ` — ${a.trust}% measured, the rest still formula until there's more data` : ""}.</p>
+          <p className="dim tiny">This only works if you log everything. Skip foods and it'll decide your metabolism is slower than it is and lower your budget. Your minimum budget still applies either way — it can't be pushed below a safe floor.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------- setup panels: sync, install, alerts ---------- */
+function SyncPanel({ sync, syncNow, startSync, joinSync, leaveSync }) {
+  const code = localStorage.getItem("cutlog:sync");
+  const [joinCode, setJoinCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [copied, setCopied] = useState(false);
+  const run = async (fn) => { setBusy(true); setErr(""); try { await fn(); } catch (e) { setErr(String(e.message || e)); } setBusy(false); };
+
+  if (!code) return (
+    <div className="glass pad stack">
+      <h2>Sync across devices</h2>
+      <p className="dim small">Right now your log lives only in this browser. Turn on sync and it follows you between phone and laptop — and survives a cleared browser.</p>
+      <button className="btn accent wide" disabled={busy} onClick={() => run(startSync)}>{busy ? "Setting up…" : "Turn on sync"}</button>
+      <div className="row gap">
+        <input placeholder="Or a code from another device" value={joinCode} autoCapitalize="characters" onChange={(e) => setJoinCode(e.target.value)} />
+        <button className="btn ghost" disabled={busy || !joinCode.trim()} onClick={() => run(() => joinSync(joinCode))}>Connect</button>
+      </div>
+      {err && <p className="alert">{err}</p>}
+    </div>
+  );
+
+  const when = sync.at ? new Date(sync.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+  const status = sync.state === "syncing" ? "Syncing…" : sync.state === "ok" ? `Synced at ${when}`
+    : sync.state === "error" ? `Last sync failed at ${when}: ${sync.err}` : "Waiting to sync…";
+  return (
+    <div className="glass pad stack">
+      <h2>Sync is on</h2>
+      <p className="dim small">Enter this code on your other devices. Keep it private — anyone with it can read and change your log.</p>
+      <div className="codebox" onClick={() => { navigator.clipboard?.writeText(code); setCopied(true); }}>{code}</div>
+      <p className="dim tiny center">{copied ? "Copied" : "Tap to copy"}</p>
+      <p className={sync.state === "error" ? "alert" : "dim tiny"}>{status}</p>
+      <div className="rowbtns">
+        <button className="btn ghost wide" onClick={syncNow}>Sync now</button>
+        <button className="btn ghost wide" onClick={leaveSync}>Stop on this device</button>
+      </div>
+      {err && <p className="alert">{err}</p>}
+    </div>
+  );
+}
+
+function InstallPanel() {
+  const [prompt, setPrompt] = useState(() => window.__installPrompt || null);
+  const standalone = window.matchMedia?.("(display-mode: standalone)").matches || window.navigator.standalone;
+  useEffect(() => {
+    const f = () => setPrompt(window.__installPrompt || null);
+    window.addEventListener("cutlog:installable", f);
+    return () => window.removeEventListener("cutlog:installable", f);
+  }, []);
+  if (standalone) return null;
+  return (
+    <div className="glass pad stack">
+      <h2>Put it on your home screen</h2>
+      {prompt
+        ? <button className="btn solid wide" onClick={async () => { prompt.prompt(); await prompt.userChoice; window.__installPrompt = null; setPrompt(null); }}>Install Cut Log</button>
+        : <p className="dim small">In Chrome, tap ⋮ → <strong>Add to Home screen</strong> (or <strong>Install app</strong>). On iPhone, Share → Add to Home Screen.</p>}
+      <p className="dim tiny">Installed, it opens full-screen like any other app, and fasting alerts are more reliable.</p>
+    </div>
+  );
+}
+
+function Reminders() {
+  const saved = (() => { try { return JSON.parse(localStorage.getItem("cutlog:reminders")) || null; } catch { return null; } })();
+  const [on, setOn] = useState(!!saved?.on);
+  const [times, setTimes] = useState(saved?.times || ["12:30", "18:30"]);
+  const [msg, setMsg] = useState("");
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  const save = async (nextOn, nextTimes) => {
+    setMsg("");
+    try {
+      await pushApi({ op: "reminders", deviceId: deviceId(), times: nextOn ? nextTimes : [], tz });
+      localStorage.setItem("cutlog:reminders", JSON.stringify({ on: nextOn, times: nextTimes }));
+      setOn(nextOn); setTimes(nextTimes);
+      setMsg(nextOn ? `Saved. Reminders at ${nextTimes.join(" and ")}, ${tz.replace(/_/g, " ")} time.` : "Reminders off.");
+    } catch (e) { setMsg(String(e.message || e)); }
+  };
+
+  return (
+    <div className="subpanel stack" style={{ marginTop: 4 }}>
+      <button className={on ? "listbtn on" : "listbtn"} onClick={() => save(!on, times)}>{on ? "✓ " : ""}Remind me to log</button>
+      {on && (
+        <>
+          {times.map((t, i) => (
+            <div key={i} className="row gap">
+              <input type="time" value={t} onChange={(e) => setTimes((x) => x.map((y, j) => (j === i ? e.target.value : y)))} />
+              {times.length > 1 && <button className="icon" onClick={() => setTimes((x) => x.filter((_, j) => j !== i))}><X size={14} /></button>}
+            </div>
+          ))}
+          <div className="rowbtns">
+            {times.length < 4 && <button className="btn ghost wide" onClick={() => setTimes((x) => [...x, "20:00"])}>+ Add a time</button>}
+            <button className="btn solid wide" onClick={() => save(true, times)}>Save times</button>
+          </div>
+          <p className="dim tiny">Skipped if you've logged in the last 4 hours, or while a fast is running.</p>
+        </>
+      )}
+      {msg && <p className={/unknown|first|fail/i.test(msg) ? "alert" : "dim tiny"}>{msg}</p>}
+    </div>
+  );
+}
+
+function AlertsPanel({ data }) {
+  const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const [on, setOn] = useState(localStorage.getItem("cutlog:alerts") === "1");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  // serviceWorker.ready never settles if the worker failed to register, so don't wait forever.
+  const worker = () => Promise.race([navigator.serviceWorker.ready,
+    new Promise((_, rej) => setTimeout(() => rej(new Error("The app's background worker isn't running. Reload the page and try again.")), 8000))]);
+
+  const enable = async () => {
+    setBusy(true); setMsg("");
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") throw new Error("Notifications are blocked for this site. Allow them in your browser's site settings, then try again.");
+      const reg = await worker();
+      const { key } = await pushApi({ op: "key" });
+      const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+      await pushApi({ op: "subscribe", deviceId: deviceId(), sub: sub.toJSON(), start: data.fast?.start || null });
+      localStorage.setItem("cutlog:alerts", "1");
+      setOn(true);
+      setMsg("On. You'll get a notification each time a fast reaches a new stage — checked every 10 minutes.");
+    } catch (e) { setMsg(String(e.message || e)); }
+    setBusy(false);
+  };
+  const disable = async () => {
+    setBusy(true);
+    try {
+      const reg = await worker();
+      await (await reg.pushManager.getSubscription())?.unsubscribe();
+      await pushApi({ op: "unsubscribe", deviceId: deviceId() });
+    } catch { /* turning off locally is what matters */ }
+    localStorage.removeItem("cutlog:alerts");
+    setOn(false); setMsg(""); setBusy(false);
+  };
+  const test = async () => {
+    setMsg("");
+    try { await pushApi({ op: "test", deviceId: deviceId() }); setMsg("Sent — it should land in a few seconds."); }
+    catch (e) { setMsg(String(e.message || e)); }
+  };
+
+  return (
+    <div className="glass pad stack">
+      <h2>Fasting alerts</h2>
+      {!supported ? <p className="dim small">This browser can't receive notifications. On iPhone, add the app to your home screen first, then open it from there.</p>
+        : on ? (
+          <>
+            <p className="dim small">On for this device. You'll hear from it when a fast crosses into Fat burning, Ketosis, and each stage after.</p>
+            <div className="rowbtns">
+              <button className="btn ghost wide" onClick={test}>Send a test</button>
+              <button className="btn ghost wide" disabled={busy} onClick={disable}>Turn off</button>
+            </div>
+            <Reminders />
+          </>
+        ) : (
+          <>
+            <p className="dim small">Get a notification as each fasting stage begins, even with the app closed.</p>
+            <button className="btn accent wide" disabled={busy} onClick={enable}>{busy ? "Setting up…" : "Turn on fasting alerts"}</button>
+          </>
+        )}
+      {msg && <p className={/blocked|isn't|fail|error/i.test(msg) ? "alert" : "dim tiny"}>{msg}</p>}
+    </div>
+  );
+}
+
+function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, leaveSync, adaptive, useAdaptive }) {
   const [copied, setCopied] = useState(false);
   const [paste, setPaste] = useState("");
   const [msg, setMsg] = useState("");
-  const t = computeTargets(data.profile, []);
+  const t = computeTargets(data.profile, [], useAdaptive ? adaptive.tdee : null);
   return (
     <>
+      <div className="glass pad stack">
+        <h2>Look</h2>
+        <div className="chips">
+          <button className={data.theme !== "retro" ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: "glass" }))}>Glass</button>
+          <button className={data.theme === "retro" ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: "retro" }))}>Desktop '95</button>
+        </div>
+        <p className="dim tiny">Switches the whole app. Nothing about your data changes.</p>
+      </div>
+      <AdaptivePanel adaptive={adaptive} on={data.useAdaptive !== false} onToggle={(v) => setData((d) => ({ ...d, useAdaptive: v }))} />
+      <SyncPanel {...{ sync, syncNow, startSync, joinSync, leaveSync }} />
+      <InstallPanel />
+      <AlertsPanel data={data} />
       <div className="glass pad">
-        <div className="row"><span className="dim">Maintenance</span><strong className="mono">{t.tdee.toLocaleString()}</strong></div>
+        <div className="row"><span className="dim">Maintenance {useAdaptive ? "(measured)" : "(formula)"}</span><strong className="mono">{t.tdee.toLocaleString()}</strong></div>
         <div className="row"><span className="dim">Rest-day budget</span><strong className="mono">{t.base.toLocaleString()}</strong></div>
         <div className="row"><span className="dim">Rest-day protein</span><strong className="mono">{t.protein}g</strong></div>
         {t.clamped && <p className="alert">Budget is held at the floor. Add movement instead of cutting lower.</p>}
@@ -1471,6 +2713,7 @@ function ProfileForm({ initial, title, cta, intro, onSave }) {
           <input aria-label="Inches" type="number" value={inch} onChange={(e) => set("heightIn", ft * 12 + (+e.target.value))} /></div></div>
         <div><label>Current weight</label><input type="number" value={p.weight} onChange={(e) => set("weight", e.target.value)} /></div>
         <div><label>Goal weight</label><input type="number" value={p.goalWeight} onChange={(e) => set("goalWeight", e.target.value)} /></div>
+        <div><label>Daily water (oz)</label><input type="number" value={p.waterOz ?? 100} onChange={(e) => set("waterOz", e.target.value)} /></div>
       </div>
       <label>How your days usually go</label>
       <div className="stack">{Object.entries(ACTIVITY).map(([k, v]) => (
@@ -1483,17 +2726,17 @@ function ProfileForm({ initial, title, cta, intro, onSave }) {
         <div><div className="midnum" style={{ color: C.protein }}>{pv.protein}g</div><div className="dim tiny">protein a day</div></div>
       </div>
       {pv.clamped && <p className="alert">That pace pushes under a sensible floor, so the budget stops here.</p>}
-      <button className="btn solid wide" onClick={() => onSave({ ...p, age: +p.age, heightIn: +p.heightIn, weight: +p.weight, goalWeight: +p.goalWeight })}>{cta}</button>
+      <button className="btn solid wide" onClick={() => onSave({ ...p, age: +p.age, heightIn: +p.heightIn, weight: +p.weight, goalWeight: +p.goalWeight, waterOz: +p.waterOz || 100 })}>{cta}</button>
     </div>
   );
 }
 
 /* ---------- shell ---------- */
-function Shell({ children }) {
+function Shell({ children, theme }) {
   return (
-    <div className="app">
+    <div className={theme === "retro" ? "app retro" : "app"}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600&family=JetBrains+Mono:wght@400;600&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600&family=JetBrains+Mono:wght@400;600&family=VT323&display=swap');
         .app { position:relative; min-height:100vh; font-family:'Sora',ui-sans-serif,system-ui,sans-serif;
           color:#F1F5F9; font-size:15px; line-height:1.5; overflow-x:hidden;
           background:#0A0E1F; padding:16px 14px 96px; max-width:560px; margin:0 auto;
@@ -1592,6 +2835,31 @@ function Shell({ children }) {
         .timerow { display:flex; align-items:center; gap:8px; margin-top:2px; }
         .timeinput { width:auto; padding:2px 6px; font-size:11px; border-radius:7px; background:rgba(255,255,255,.06);
           border:1px solid rgba(255,255,255,.1); color:rgba(241,245,249,.75); font-family:'JetBrains Mono',monospace; }
+        .tapable { cursor:pointer; flex:1; min-width:0; }
+        .menuthumb { width:84px; height:84px; object-fit:cover; border-radius:12px; }
+        .tweaks { margin:0; padding-left:18px; font-size:12.5px; color:rgba(241,245,249,.7); display:flex; flex-direction:column; gap:3px; }
+        .chat { display:flex; flex-direction:column; gap:8px; margin-bottom:12px; }
+        .bubble { max-width:86%; padding:11px 14px; border-radius:18px 18px 18px 6px; background:rgba(255,255,255,.07);
+          border:1px solid rgba(255,255,255,.1); font-size:14px; line-height:1.5; white-space:pre-wrap; align-self:flex-start; }
+        .bubble.me { align-self:flex-end; border-radius:18px 18px 6px 18px; background:rgba(110,231,249,.14); border-color:rgba(110,231,249,.3); }
+        .composer textarea { font-family:inherit; font-size:14px; }
+        .thumbs { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+        .thumb { aspect-ratio:3/4; border-radius:12px; overflow:hidden; border:1px solid rgba(255,255,255,.12); background:rgba(255,255,255,.04);
+          padding:0; cursor:pointer; display:grid; place-items:center; }
+        .thumb img, .compare img { width:100%; height:100%; object-fit:cover; display:block; }
+        .viewer { position:fixed; inset:0; z-index:100; background:rgba(5,7,16,.92); display:grid; place-items:center; padding:16px; }
+        .viewerInner { width:100%; max-width:520px; display:flex; flex-direction:column; gap:10px; max-height:100%; overflow:auto; }
+        .viewer .full { width:100%; max-height:70vh; object-fit:contain; border-radius:16px; }
+        .compare { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+        .compare > div > img { aspect-ratio:3/4; border-radius:14px; }
+        .editbox { margin:0 12px 12px; padding:14px; border-radius:16px; background:rgba(255,255,255,.05);
+          border:1px solid rgba(110,231,249,.25); display:flex; flex-direction:column; gap:10px; }
+        .subpanel { padding:12px; border-radius:16px; background:rgba(255,255,255,.035); border:1px solid rgba(255,255,255,.08); }
+        .ingredients { border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:6px 12px 10px; }
+        .ingrow { padding:7px 0; border-bottom:1px solid rgba(255,255,255,.06); }
+        .recipeRow { display:flex; align-items:center; gap:4px; }
+        .codebox { font-family:'JetBrains Mono',monospace; font-size:19px; letter-spacing:.08em; text-align:center; padding:14px;
+          border-radius:14px; background:rgba(110,231,249,.08); border:1px dashed rgba(110,231,249,.4); user-select:all; }
         .listitem { display:flex; align-items:center; gap:10px; width:100%; text-align:left; background:none; border:none;
           border-top:1px solid rgba(255,255,255,.06); padding:11px 16px; font:inherit; font-size:14px; color:#F1F5F9; cursor:pointer; }
         .tick { width:19px; height:19px; border-radius:6px; border:1px solid rgba(255,255,255,.25); display:grid; place-items:center;
@@ -1607,6 +2875,106 @@ function Shell({ children }) {
           display:flex; flex-direction:column; align-items:center; gap:3px; padding:8px 9px; border-radius:99px; transition:all .25s; }
         .dockbtn.on { color:#0A0E1F; background:#F1F5F9; font-weight:600; }
         .app *:focus-visible { outline:2px solid #6EE7F9; outline-offset:2px; }
+
+        /* ================= Desktop '95 theme ================= */
+        .tray { display:none; }
+        .app.retro { background:#008080; color:#000; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:14px; }
+        .app.retro::before, .app.retro::after { display:none; }
+        .app.retro *:focus-visible { outline:1px dotted #000; outline-offset:-4px; }
+        .app.retro h2 { font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:15px; font-weight:bold; letter-spacing:0; }
+        .app.retro .dim { color:#404040; }
+        .app.retro .alert { color:#C00000; }
+
+        /* windows */
+        .app.retro .glass { background:#C0C0C0; border:none; border-radius:0; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff;
+          backdrop-filter:none; -webkit-backdrop-filter:none; padding:3px; }
+        .app.retro .glass::before { content:""; display:block; height:20px; margin:0 0 3px; align-self:stretch;
+          background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='52' height='14' shape-rendering='crispEdges'%3E%3Cg fill='%23C0C0C0'%3E%3Crect width='16' height='14'/%3E%3Crect x='16' width='16' height='14'/%3E%3Crect x='36' width='16' height='14'/%3E%3C/g%3E%3Cpath d='M.5 13V.5H15M16.5 13V.5H31M36.5 13V.5H51' stroke='%23fff' fill='none'/%3E%3Cpath d='M0 13.5H16M15.5 0V14M16 13.5H32M31.5 0V14M36 13.5H52M51.5 0V14' stroke='%23000' fill='none'/%3E%3Crect x='4' y='9' width='6' height='2'/%3E%3Cpath d='M19.5 3.5h9v7h-9z' fill='none' stroke='%23000'/%3E%3Crect x='19' y='3' width='10' height='2'/%3E%3Cpath d='M40 3.5l7 7M47 3.5l-7 7' stroke='%23000' stroke-width='1.6' shape-rendering='geometricPrecision'/%3E%3C/svg%3E") no-repeat right 3px center, linear-gradient(90deg, #000080, #1084D0); }
+        .app.retro .glass.pad { padding:3px 14px 14px; }
+        .app.retro .glass.pad::before { margin:0 -11px 10px; }
+        .app.retro .glass.hero { padding:3px 14px 16px; }
+        .app.retro .glass.hero::before { margin:0 -11px 4px; }
+        .app.retro .composer::before { display:none; }
+        .app.retro .composer { padding:8px; }
+
+        /* the big numbers stay big — in a terminal face that still reads at a glance */
+        .app.retro .huge, .app.retro .bignum, .app.retro .midnum, .app.retro .codebox { font-family:'VT323', 'Courier New', monospace; font-weight:400; letter-spacing:0; }
+        .app.retro .huge { font-size:46px; line-height:.95; }
+        .app.retro .bignum { font-size:60px; line-height:.9; }
+        .app.retro .midnum { font-size:32px; }
+        .app.retro .mono { font-family:'VT323', 'Courier New', monospace; font-size:19px; }
+        .app.retro .unit { opacity:.7; }
+        .app.retro .stagename { font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-weight:bold; }
+        .app.retro .stagebody { color:#000; }
+
+        /* buttons */
+        .app.retro .btn, .app.retro .chip { background:#C0C0C0; color:#000; border:none; border-radius:0; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff;
+          font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-weight:normal; transition:none; }
+        .app.retro .btn:active, .app.retro .chip:active { box-shadow:inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px #808080; transform:none; }
+        .app.retro .btn.solid, .app.retro .btn.accent { font-weight:bold; box-shadow:0 0 0 1px #000, inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; background:#C0C0C0; color:#000; }
+        .app.retro .btn.solid:active, .app.retro .btn.accent:active { box-shadow:0 0 0 1px #000, inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px #808080; }
+        .app.retro .btn:disabled, .app.retro .chip:disabled { opacity:1; color:#808080; text-shadow:1px 1px #fff; }
+        .app.retro .chip { padding:6px 11px; font-size:12.5px; }
+        .app.retro .chip.on { background:#000080; color:#fff; box-shadow:inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px #808080; font-weight:bold; }
+        .app.retro .icon, .app.retro .linkbtn { color:#000; }
+
+        /* list boxes and fields */
+        .app.retro .listbtn { background:#fff; color:#000; border:1px solid #808080; border-radius:0; }
+        .app.retro .listbtn.on { background:#000080; color:#fff; border-color:#000080; font-weight:bold; }
+        .app.retro input, .app.retro textarea { background:#fff; color:#000; border:none; border-radius:0; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; }
+        .app.retro input:focus, .app.retro textarea:focus { background:#fff; border:none; }
+        .app.retro input::placeholder, .app.retro textarea::placeholder { color:#808080; }
+        .app.retro label { color:#000; }
+        .app.retro .timeinput { background:#fff; color:#000; border-radius:0; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; border:none; font-family:'VT323', monospace; font-size:15px; }
+
+        /* progress bars: the chunky block style, each bar keeping its own color */
+        .app.retro .track, .app.retro .fuel { background:#fff; border-radius:0; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; height:16px; padding:3px; box-sizing:border-box; }
+        .app.retro .track.tall { height:20px; }
+        .app.retro .track > div, .app.retro .fuel > div { border-radius:0; box-shadow:none !important;
+          background-image:repeating-linear-gradient(90deg, transparent 0 8px, #fff 8px 10px) !important; }
+        .app.retro .overtick { background:#C00000; opacity:1; }
+        .app.retro .dot { border-radius:0; box-shadow:none !important; }
+
+        /* list views */
+        .app.retro .mealhead { background:#C0C0C0; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; font-weight:bold; color:#000; }
+        .app.retro .fooditem, .app.retro .dish, .app.retro .listitem, .app.retro .histrow { background:#fff; color:#000; border-top:1px solid #C0C0C0; }
+        .app.retro .histrow:hover, .app.retro .histrow:focus-visible { background:#000080; color:#fff; }
+        .app.retro .histrow:hover .dim { color:#dfdfdf; }
+        .app.retro .stagerow { background:#fff; border-top:1px solid #C0C0C0; }
+        .app.retro .stagerow.on { background:#000080; color:#fff; }
+        .app.retro .stagerow.on .dim, .app.retro .stagerow.on .hr { color:#dfdfdf; opacity:1; }
+        .app.retro .tick { border-radius:0; border-color:#000; background:#fff; }
+        .app.retro .tick.on { background:#fff; color:#000; border-color:#000; }
+
+        /* group boxes */
+        .app.retro .editbox, .app.retro .subpanel, .app.retro .ingredients, .app.retro .qbox, .app.retro .itemcard, .app.retro .recipe {
+          background:transparent; border:2px groove #f4f4f4; border-radius:0; }
+        .app.retro .ingrow { border-bottom-color:#a0a0a0; }
+        .app.retro .cue { color:#000; background:#FFFFE1; border:1px solid #000; padding:6px 9px; }
+        .app.retro .badge { background:#C0C0C0; color:#000; border:1px solid #808080; border-radius:0; }
+        .app.retro .badge.good { color:#006B00; }
+        .app.retro .badge.low { color:#C00000; }
+        .app.retro .codebox { background:#fff; color:#000080; border:none; border-radius:0; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; font-size:26px; }
+        .app.retro .dropzone { background:#fff; color:#000; border:1px dashed #000; border-radius:0; }
+        .app.retro .shot, .app.retro .thumb, .app.retro .menuthumb, .app.retro .compare > div > img, .app.retro .viewer .full { border-radius:0; border:1px solid #000; }
+        .app.retro .viewer { background:rgba(0,128,128,.94); }
+        .app.retro .viewerInner { background:#C0C0C0; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; padding:10px; }
+
+        /* coach */
+        .app.retro .bubble { background:#fff; color:#000; border:1px solid #000; border-radius:0; }
+        .app.retro .bubble.me { background:#FFFFE1; border-color:#000; }
+
+        /* bottom dock becomes a taskbar */
+        .app.retro .dock { left:0; right:0; bottom:0; transform:none; border-radius:0; border:none; background:#C0C0C0;
+          box-shadow:inset 0 1px #dfdfdf, inset 0 2px #fff; padding:4px 4px calc(4px + env(safe-area-inset-bottom)); gap:3px;
+          backdrop-filter:none; -webkit-backdrop-filter:none; }
+        .app.retro .dockbtn { flex:1; flex-direction:row; justify-content:center; gap:4px; border-radius:0; padding:6px 2px;
+          background:#C0C0C0; color:#000; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:11px; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; transition:none; min-width:0; }
+        .app.retro .dockbtn.on { background:repeating-conic-gradient(#C0C0C0 0 25%, #fff 0 50%) 0 0 / 2px 2px; color:#000; box-shadow:inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px #808080; font-weight:bold; }
+        .app.retro .tray { display:flex; align-items:center; padding:0 8px; font-size:11px; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; white-space:nowrap; }
+        @media (max-width:430px) { .app.retro .tray { display:none; } .app.retro .dockbtn span { font-size:10px; } }
+        @media (max-width:360px) { .app.retro .dockbtn span { display:none; } }
+        .app.retro { padding-bottom:84px; }
         @media (prefers-reduced-motion:reduce) { *, .app::before, .app::after { animation:none !important; transition:none !important; } }
       `}</style>
       {children}
