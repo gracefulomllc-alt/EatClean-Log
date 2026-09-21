@@ -14,6 +14,18 @@ function pick(nutrients, id) {
   return hit ? Number(hit.value ?? hit.amount ?? 0) : 0;
 }
 
+// USDA's Foundation foods - the lab-analysed, highest quality entries - often
+// report energy under the Atwater nutrients rather than the classic 1008.
+// Reading only 1008 silently dropped them. Fall through until one has a value.
+function energy(nutrients) {
+  for (const id of [1008, 2048, 2047]) {
+    const v = pick(nutrients, id);
+    if (v > 0) return v;
+  }
+  const kj = pick(nutrients, 1062);
+  return kj > 0 ? kj / 4.184 : 0;
+}
+
 // USDA descriptions are shouty and comma-heavy: "CHICKEN, BROILERS, BREAST, MEAT ONLY, COOKED"
 function tidy(s) {
   const t = String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -46,7 +58,7 @@ export default async (req) => {
     const foods = (d.foods || []).map((f) => ({
       name: tidy(f.description),
       source: "USDA",
-      m: [pick(f.foodNutrients, N.cal), pick(f.foodNutrients, N.protein),
+      m: [energy(f.foodNutrients), pick(f.foodNutrients, N.protein),
           pick(f.foodNutrients, N.carbs), pick(f.foodNutrients, N.fat)].map((v) => Math.round(v * 10) / 10),
     })).filter((f) => f.m[0] > 0);
 
