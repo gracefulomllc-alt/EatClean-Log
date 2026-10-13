@@ -1,3 +1,4 @@
+import { suggestMeals } from "./mealLibrary.js";
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { SPC_GAMES, SPC_URL } from "./spcSchedule.js";
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, CartesianGrid } from "recharts";
@@ -672,7 +673,7 @@ export default function CutLog() {
   if (!data.profile) return <Shell theme={THEME}>
     <JoinSync onJoin={joinSync} />
     <ProfileForm
-      initial={{ name: "", sex: "male", age: 40, heightIn: 70, weight: 224, goalWeight: 180, activity: "light", pace: 1.5 }}
+      initial={{ name: "", sex: "male", age: "", heightIn: 69, weight: "", goalWeight: "", activity: "light", pace: 1 }}
       title="Set your numbers" cta="Start" intro="Sets your daily budget. Change any of it later."
       onSave={(profile) => setData((d) => ({ ...d, profile }))} /></Shell>;
 
@@ -2475,7 +2476,10 @@ Respond with ONLY JSON:
       const items = (p.menu || []).slice(0, 3).map((m) => ({ ...m, slot, id: crypto.randomUUID() }));
       setData((d) => ({ ...d, menus: { [today]: { items, note: p.note, flag: p.flag, slot, craving: craving.trim() } } }));
       setOpenRecipe(null);
-    } catch { setErr("Couldn't put a menu together just now. Try again in a moment."); }
+    } catch (e) {
+      const why = String(e?.message || "").slice(0, 160);
+      setErr(`The coach couldn't build a custom menu${why ? ` (${why})` : ""}. The ideas below still work.`);
+    }
     setBusy(false);
   };
 
@@ -2498,36 +2502,7 @@ Respond with ONLY JSON:
   };
 
   const logToday = (item) => updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: Date.now(), u: Date.now(), ...item }] }));
-  return (
-    <>
-      <div className="chips">
-        {[["today", "Today"], ["out", "Eating out"], ["week", "Week"]].map(([k, l]) => (
-          <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
-      </div>
-      {mode === "out" && <EatingOut remainCal={remainCal} remainP={remainP} onLog={logToday} data={data} setData={setData} />}
-      {mode === "week" && <WeekPlan data={data} setData={setData} onLog={logToday} onOpenList={() => setShowList(true)} />}
-      {mode === "today" && (<>
-      <div className="glass pad stack">
-        <div className="row"><h2>What sounds good?</h2>
-          <span className="dim tiny">{remainCal.toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g left</span></div>
-        <div className="chips">{MEALS.map((s) => (
-          <button key={s} className={slot === s ? "chip on" : "chip"} onClick={() => setSlot(s)}>{s}</button>))}</div>
-        <input placeholder="burgers, something Mexican, steak — or leave it blank" value={craving}
-          onChange={(e) => setCraving(e.target.value)} onKeyDown={(e) => e.key === "Enter" && build()} />
-        <button className="btn accent wide" onClick={build} disabled={busy}>
-          {busy ? "Thinking…" : `Give me three ${slot.toLowerCase()} options`}</button>
-        {err && <p className="alert">{err}</p>}
-      </div>
-
-      {menu && (
-        <div className="glass fadein">
-          <div className="mealhead">
-            <span className="dot" style={{ background: MEAL_COLOR[menu.slot], boxShadow: `0 0 8px ${MEAL_COLOR[menu.slot]}` }} />
-            {menu.slot}{menu.craving ? ` · ${menu.craving}` : ""}
-          </div>
-          {menu.note && <p className="dim tiny pad" style={{ paddingBottom: 0 }}>{menu.note}</p>}
-          {menu.flag && <p className="cue" style={{ color: C.warn, borderColor: `${C.warn}55`, margin: "10px 16px 0" }}>{menu.flag}</p>}
-          {menu.items.map((m) => (
+  const dishCard = (m) => (
             <div key={m.id} className="dish">
               <div className="row gap">
                 <div><div className="dishname">{m.name}</div><div className="dim tiny">{m.blurb}</div></div>
@@ -2551,7 +2526,53 @@ Respond with ONLY JSON:
                 </div>
               )}
             </div>
-          ))}
+  );
+  const ideas = suggestMeals(craving, slot, remainCal, remainP, 6).map((m) => ({ ...m, slot, id: "lib-" + slot + m.name }));
+  const otherIdeas = ideas.length || !craving.trim() ? [] : suggestMeals(craving, null, remainCal, remainP, 4).map((m) => ({ ...m, slot: m.slots[0], id: "lib-x" + m.name }));
+  return (
+    <>
+      <div className="chips">
+        {[["today", "Today"], ["out", "Eating out"], ["week", "Week"]].map(([k, l]) => (
+          <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
+      </div>
+      {mode === "out" && <EatingOut remainCal={remainCal} remainP={remainP} onLog={logToday} data={data} setData={setData} />}
+      {mode === "week" && <WeekPlan data={data} setData={setData} onLog={logToday} onOpenList={() => setShowList(true)} />}
+      {mode === "today" && (<>
+      <div className="glass pad stack">
+        <div className="row"><h2>What sounds good?</h2>
+          <span className="dim tiny">{remainCal.toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g left</span></div>
+        <div className="chips">{MEALS.map((s) => (
+          <button key={s} className={slot === s ? "chip on" : "chip"} onClick={() => setSlot(s)}>{s}</button>))}</div>
+        <input placeholder="burgers, something Mexican, steak — or leave it blank" value={craving}
+          onChange={(e) => setCraving(e.target.value)} onKeyDown={(e) => e.key === "Enter" && build()} />
+        <button className="btn accent wide" onClick={build} disabled={busy}>
+          {busy ? "Thinking…" : `Ask the coach for three custom ${slot.toLowerCase()} options`}</button>
+        {err && <p className="alert">{err}</p>}
+      </div>
+
+      <div className="glass fadein">
+        <div className="mealhead">
+          <span className="dot" style={{ background: MEAL_COLOR[slot], boxShadow: `0 0 8px ${MEAL_COLOR[slot]}` }} />
+          {craving.trim() ? `${slot} ideas for “${craving.trim()}”` : `${slot} ideas`}
+        </div>
+        {ideas.length === 0 && (
+          <>
+            <p className="dim small pad">Nothing for “{craving.trim()}” at {slot.toLowerCase()}. {otherIdeas.length ? "These work at other meals:" : "Try the coach button above, or a simpler word like chicken, beef, fish, eggs or tacos."}</p>
+            {otherIdeas.map((m) => dishCard(m))}
+          </>
+        )}
+        {ideas.map((m) => dishCard(m))}
+      </div>
+
+      {menu && (
+        <div className="glass fadein">
+          <div className="mealhead">
+            <span className="dot" style={{ background: MEAL_COLOR[menu.slot], boxShadow: `0 0 8px ${MEAL_COLOR[menu.slot]}` }} />
+            {menu.slot}{menu.craving ? ` · ${menu.craving}` : ""}
+          </div>
+          {menu.note && <p className="dim tiny pad" style={{ paddingBottom: 0 }}>{menu.note}</p>}
+          {menu.flag && <p className="cue" style={{ color: C.warn, borderColor: `${C.warn}55`, margin: "10px 16px 0" }}>{menu.flag}</p>}
+          {menu.items.map((m) => dishCard(m))}
         </div>
       )}
       </>)}
@@ -3724,13 +3745,15 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
 function ProfileForm({ initial, title, cta, intro, onSave }) {
   const [p, setP] = useState(initial);
   const set = (k, v) => setP((x) => ({ ...x, [k]: v }));
-  const pv = computeTargets({ ...p, weight: +p.weight, goalWeight: +p.goalWeight, age: +p.age, heightIn: +p.heightIn }, []);
+  // Nothing is saved, and no budget is shown, until the numbers are real.
+  const numsOk = +p.age >= 13 && +p.age <= 100 && +p.weight >= 80 && +p.weight <= 600 && +p.goalWeight >= 80 && +p.goalWeight <= 600 && +p.heightIn >= 48 && +p.heightIn <= 90;
+  const pv = computeTargets({ ...p, weight: numsOk ? +p.weight : 180, goalWeight: numsOk ? +p.goalWeight : 160, age: numsOk ? +p.age : 30, heightIn: +p.heightIn || 69 }, []);
   const ft = Math.floor(p.heightIn / 12), inch = p.heightIn % 12;
   return (
     <div className="glass pad stack">
       <h2>{title}</h2>
       {intro && <p className="dim small">{intro}</p>}
-      <div><label>Your name</label><input placeholder="So your partner knows whose log is whose" value={p.name || ""} onChange={(e) => set("name", e.target.value)} /></div>
+      <div><label>Your name</label><input placeholder="So your crew knows who you are" value={p.name || ""} onChange={(e) => set("name", e.target.value)} /></div>
       <div className="chips">{["male", "female"].map((s) => (
         <button key={s} className={p.sex === s ? "chip on" : "chip"} onClick={() => set("sex", s)}>{s === "male" ? "Male" : "Female"}</button>))}</div>
       <div className="grid2">
@@ -3748,12 +3771,14 @@ function ProfileForm({ initial, title, cta, intro, onSave }) {
       <label>How fast</label>
       <div className="chips">{[0.5, 1, 1.5, 2].map((v) => (
         <button key={v} className={p.pace === v ? "chip on" : "chip"} onClick={() => set("pace", v)}>{v} lb/wk</button>))}</div>
-      <div className="quad">
-        <div><div className="midnum" style={{ color: C.cal }}>{pv.base.toLocaleString()}</div><div className="dim tiny">calories a day</div></div>
-        <div><div className="midnum" style={{ color: C.protein }}>{pv.protein}g</div><div className="dim tiny">protein a day</div></div>
-      </div>
-      {pv.clamped && <p className="alert">That pace pushes under a sensible floor, so the budget stops here.</p>}
-      <button className="btn solid wide" onClick={() => onSave({ ...p, age: +p.age, heightIn: +p.heightIn, weight: +p.weight, goalWeight: +p.goalWeight, waterOz: +p.waterOz || 100 })}>{cta}</button>
+      {numsOk ? (
+        <div className="quad">
+          <div><div className="midnum" style={{ color: C.cal }}>{pv.base.toLocaleString()}</div><div className="dim tiny">calories a day</div></div>
+          <div><div className="midnum" style={{ color: C.protein }}>{pv.protein}g</div><div className="dim tiny">protein a day</div></div>
+        </div>
+      ) : <p className="dim small">Fill in your age, weight and goal weight to see your daily numbers.</p>}
+      {numsOk && pv.clamped && <p className="alert">That pace pushes under a sensible floor, so the budget stops here.</p>}
+      <button className="btn solid wide" disabled={!numsOk} onClick={() => onSave({ ...p, age: +p.age, heightIn: +p.heightIn, weight: +p.weight, goalWeight: +p.goalWeight, waterOz: +p.waterOz || 100 })}>{cta}</button>
     </div>
   );
 }
