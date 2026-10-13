@@ -1111,49 +1111,40 @@ function GamesPanel() {
     return () => { dead = true; clearInterval(t); };
   }, []);
   const spc = spcView(SPC_GAMES);
+  const live = (nba || []).some((g) => g.state === "in");
   const gt = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
   const gd = (iso) => new Date(iso).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
   return (
-    <div className="glass pad stack gamespanel">
-      <h2>NBA today{(nba || []).some((g) => g.state === "in") ? <span className="live" style={{ marginLeft: 8 }}>● LIVE</span> : null}</h2>
-      {nba === null && !err && <p className="dim tiny">Checking the schedule…</p>}
-      {err && nba === null && <p className="dim tiny">Couldn't load today's NBA games right now.</p>}
-      {nba && nba.length === 0 && <p className="dim tiny">No NBA games today.</p>}
-      {(nba || []).map((g) => (
-        <div key={g.id} className="gamerow">
-          <div className="gameteams">
-            <div>{g.away.abbr || g.away.name}<span className="mono gscore">{g.state !== "pre" ? g.away.score : ""}</span></div>
-            <div>{g.home.abbr || g.home.name}<span className="mono gscore">{g.state !== "pre" ? g.home.score : ""}</span></div>
+    <div className="gamespanel">
+      <div className="row gamehead">
+        <strong>{live ? <><span className="live">● LIVE</span> Games</> : "Games"}</strong>
+        <span className="dim tiny">swipe →</span>
+      </div>
+      <div className="gamestrip" tabIndex={0} aria-label="Today's games, swipe sideways">
+        {nba === null && !err && <div className="gcard"><span className="dim tiny">Checking games…</span></div>}
+        {err && nba === null && <div className="gcard"><span className="dim tiny">NBA scores didn't load.</span></div>}
+        {nba && nba.length === 0 && <div className="gcard"><span className="gl">NBA today</span><span className="dim tiny">No games today.</span></div>}
+        {(nba || []).map((g) => (
+          <div key={g.id} className={g.state === "in" ? "gcard livecard" : "gcard"}>
+            <span className="gl">{g.phase || "NBA"}{g.state === "in" ? <span className="live"> ● {g.status}</span> : ""}</span>
+            <div className="grow"><span>{g.away.abbr || g.away.name}</span><b className="gscore">{g.state !== "pre" ? g.away.score : ""}</b></div>
+            <div className="grow"><span>{g.home.abbr || g.home.name}</span><b className="gscore">{g.state !== "pre" ? g.home.score : ""}</b></div>
+            <span className="gf">{g.state === "pre" ? gt(g.start) : g.state === "post" ? "Final" : "Live"}{g.tv ? ` · ${g.tv}` : ""}</span>
           </div>
-          <div className="gamewhen">
-            <span className={g.state === "in" ? "live" : "dim tiny"}>{g.state === "pre" ? gt(g.start) : g.state === "in" ? `LIVE · ${g.status}` : "Final"}</span>
-            {(g.phase && g.phase !== "Regular") || g.note ? <span className="dim tiny">{[g.phase, g.note].filter(Boolean).join(" · ")}</span> : null}
-            {g.tv && <span className="dim tiny">{g.tv}</span>}
+        ))}
+        {[...spc.today, ...spc.upcoming].map((g) => (
+          <div key={g.start} className="gcard spccard">
+            <span className="gl">Texans{g.event ? ` · ${g.event}` : g.conf ? " · Conf" : ""}</span>
+            <div className="grow"><span>South Plains</span></div>
+            <div className="grow"><span>{g.home === false ? "at " : "vs "}{g.opp}</span></div>
+            <span className="gf">{gd(g.start)} · {g.tba ? "Time TBA" : gt(g.start)}</span>
           </div>
-        </div>
-      ))}
-      <h2 style={{ marginTop: 6 }}>South Plains Texans</h2>
-      {spc.total === 0 ? (
-        <p className="dim tiny">Schedule isn't loaded yet. <a href={SPC_URL} target="_blank" rel="noreferrer">Official schedule</a></p>
-      ) : (
-        <>
-          {spc.today.length === 0 && <p className="dim tiny">No Texans game today.</p>}
-          {[...spc.today, ...spc.upcoming].map((g) => (
-            <div key={g.start} className="gamerow">
-              <div className="gameteams"><div>{g.home === false ? "at " : "vs "}{g.opp}</div>
-                {(g.where || g.event) && <div className="dim tiny">{[g.event, g.where].filter(Boolean).join(" · ")}{g.conf ? " · Conference" : ""}</div>}</div>
-              <div className="gamewhen"><span>{gd(g.start)}</span><span className="dim tiny">{g.tba ? "Time TBA" : gt(g.start)}{g.home ? " · Home" : ""}</span></div>
-            </div>
-          ))}
-          {spc.today.length === 0 && spc.upcoming.length === 0 && <p className="dim tiny">No more games on the schedule.</p>}
-          {news.length > 0 && (
-            <div className="stack" style={{ gap: 4 }}>
-              <div className="dim tiny">Latest from the Texans</div>
-              {news.map((n, i) => <div key={i} className="small">{n.link ? <a href={n.link} target="_blank" rel="noreferrer">{n.title}</a> : n.title}</div>)}
-            </div>)}
-          <p className="dim tiny"><a href={SPC_URL} target="_blank" rel="noreferrer">Full schedule and live stats</a></p>
-        </>
-      )}
+        ))}
+      </div>
+      <div className="gamefoot dim tiny">
+        {news[0] ? <span>Texans: {news[0].link ? <a href={news[0].link} target="_blank" rel="noreferrer">{news[0].title}</a> : news[0].title} · </span> : null}
+        <a href={SPC_URL} target="_blank" rel="noreferrer">Texans schedule and live stats</a>
+      </div>
     </div>
   );
 }
@@ -3764,8 +3755,8 @@ function Shell({ children, theme }) {
   return (
     <div className={cls} style={style}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600&family=JetBrains+Mono:wght@400;600&family=VT323&family=Oswald:wght@400;600;700&family=Orbitron:wght@500;700;900&display=swap');
-        .app { position:relative; min-height:100vh; font-family:'Sora',ui-sans-serif,system-ui,sans-serif;
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        .app { position:relative; min-height:100vh; font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
           color:#F1F5F9; font-size:15px; line-height:1.5; overflow-x:hidden;
           background:#0A0E1F; padding:16px 14px 106px; max-width:560px; margin:0 auto;
           font-variant-numeric:tabular-nums; }
@@ -3778,7 +3769,7 @@ function Shell({ children, theme }) {
         h2 { font-size:19px; font-weight:600; margin:0; letter-spacing:-.01em; }
         p { margin:0; }
         .dim { color:rgba(241,245,249,.55); } .tiny { font-size:11.5px; } .small { font-size:13px; }
-        .center { text-align:center; } .right { text-align:right; } .mono { font-family:'JetBrains Mono',ui-monospace,monospace; }
+        .center { text-align:center; } .right { text-align:right; } .mono { font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-variant-numeric:tabular-nums; }
         .row { display:flex; justify-content:space-between; align-items:center; gap:10px; }
         .gap { gap:8px; } .stack { display:flex; flex-direction:column; gap:11px; }
         .fadein { animation:rise .5s cubic-bezier(.22,1,.36,1) both; }
@@ -3844,7 +3835,7 @@ function Shell({ children, theme }) {
         input:focus, textarea:focus { border-color:#6EE7F9; background:rgba(110,231,249,.08); }
         input::placeholder, textarea::placeholder { color:rgba(241,245,249,.32); }
         input.mini { max-width:110px; text-align:right; } .wideinput { width:100%; }
-        textarea { font-size:12px; resize:vertical; font-family:'JetBrains Mono',monospace; }
+        textarea { font-size:12px; resize:vertical; font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-variant-numeric:tabular-nums; }
         .dropzone { display:block; text-align:center; padding:26px; border:1px dashed rgba(255,255,255,.24); border-radius:18px;
           color:#F1F5F9; font-size:14px; cursor:pointer; background:rgba(255,255,255,.03); margin:0; }
         .shot { width:100%; max-height:230px; object-fit:cover; border-radius:16px; display:block; }
@@ -3854,7 +3845,7 @@ function Shell({ children, theme }) {
         .tierbox { border-color:var(--tier); background:color-mix(in srgb, var(--tier) 10%, transparent); }
         .tierpill { display:inline-block; padding:1px 8px; border-radius:99px; background:var(--tier); color:#000; font-size:11.5px; font-weight:800; margin-right:4px; }
         .itemcard { border:1px solid rgba(255,255,255,.1); border-radius:16px; padding:12px; display:flex; flex-direction:column; gap:8px; background:rgba(255,255,255,.03); }
-        .badge { font-size:10px; padding:3px 8px; border-radius:99px; text-transform:uppercase; letter-spacing:.05em; white-space:nowrap;
+        .badge { font-size:10px; padding:3px 8px; border-radius:99px; letter-spacing:0; white-space:nowrap;
           background:rgba(255,255,255,.1); color:rgba(241,245,249,.7); }
         .badge.good { background:rgba(163,230,53,.18); color:#A3E635; }
         .badge.low { background:rgba(251,113,133,.18); color:#FB7185; }
@@ -3866,7 +3857,7 @@ function Shell({ children, theme }) {
           backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); box-shadow:0 10px 36px rgba(0,0,0,.5); }
         .timerow { display:flex; align-items:center; gap:8px; margin-top:2px; }
         .timeinput { width:auto; padding:2px 6px; font-size:11px; border-radius:7px; background:rgba(255,255,255,.06);
-          border:1px solid rgba(255,255,255,.1); color:rgba(241,245,249,.75); font-family:'JetBrains Mono',monospace; }
+          border:1px solid rgba(255,255,255,.1); color:rgba(241,245,249,.75); font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-variant-numeric:tabular-nums; }
         .tapable { cursor:pointer; flex:1; min-width:0; }
         .menuthumb { width:84px; height:84px; object-fit:cover; border-radius:12px; }
         .tweaks { margin:0; padding-left:18px; font-size:12.5px; color:rgba(241,245,249,.7); display:flex; flex-direction:column; gap:3px; }
@@ -3890,7 +3881,7 @@ function Shell({ children, theme }) {
         .ingredients { border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:6px 12px 10px; }
         .ingrow { padding:7px 0; border-bottom:1px solid rgba(255,255,255,.06); }
         .recipeRow { display:flex; align-items:center; gap:4px; }
-        .codebox { font-family:'JetBrains Mono',monospace; font-size:19px; letter-spacing:.08em; text-align:center; padding:14px;
+        .codebox { font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-variant-numeric:tabular-nums; font-size:19px; letter-spacing:0; text-align:center; padding:14px;
           border-radius:14px; background:rgba(110,231,249,.08); border:1px dashed rgba(110,231,249,.4); user-select:all; }
         .listitem { display:flex; align-items:center; gap:10px; width:100%; text-align:left; background:none; border:none;
           border-top:1px solid rgba(255,255,255,.06); padding:11px 16px; font:inherit; font-size:14px; color:#F1F5F9; cursor:pointer; }
@@ -3917,10 +3908,10 @@ function Shell({ children, theme }) {
             radial-gradient(1100px 500px at 50% -180px, color-mix(in srgb, var(--pri) 22%, transparent), transparent 70%),
             repeating-linear-gradient(90deg, #0B0D12 0 3px, #0A0C11 3px 6px),
             #05060A;
-          color:#E7EAF0; font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; font-size:14.5px; --pri:#552583; --sec:#FDB927;
+          color:#E7EAF0; font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; font-size:14.5px; --pri:#552583; --sec:#FDB927;
         }
         .app.arena::before, .app.arena::after { display:none; }
-        .app.arena h2 { font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:.05em; font-size:15px; }
+        .app.arena h2 { font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; font-weight:700; letter-spacing:0; font-size:15px; }
         .app.arena .dim { color:#8B93A1; } .app.arena .alert { color:#EF4444; font-weight:600; }
         .app.arena *:focus-visible { outline:2px solid var(--sec); outline-offset:2px; }
 
@@ -3931,14 +3922,14 @@ function Shell({ children, theme }) {
 
         /* the scoreboard digits */
         .app.arena .huge, .app.arena .bignum, .app.arena .midnum, .app.arena .mono, .app.arena .codebox {
-          font-family:'Orbitron','JetBrains Mono',monospace; letter-spacing:.02em; }
+          font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; letter-spacing:.02em; }
         .app.arena .huge, .app.arena .bignum { font-weight:900; text-shadow:0 0 14px currentColor, 0 0 3px currentColor; }
         .app.arena .midnum { font-weight:700; }
-        .app.arena .unit { opacity:.65; font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; text-transform:uppercase; font-size:13px; }
-        .app.arena .stagename { font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
+        .app.arena .unit { opacity:.65; font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; font-size:13px; }
+        .app.arena .stagename { font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; font-weight:700; letter-spacing:0; }
 
         .app.arena .btn, .app.arena .chip { background:linear-gradient(180deg,#2A303C,#171A21); color:#E7EAF0; border:1px solid #2c313d; border-radius:5px;
-          font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; text-transform:uppercase; letter-spacing:.03em; font-weight:600; font-size:12.5px; }
+          font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; letter-spacing:0; font-weight:600; font-size:12.5px; }
         .app.arena .btn:active, .app.arena .chip:active { transform:scale(.97); }
         .app.arena .btn.solid, .app.arena .btn.accent { background:var(--pri-btn,var(--pri)); border-color:var(--pri-btn,var(--pri)); color:var(--pri-ink,#fff); box-shadow:0 0 16px color-mix(in srgb, var(--pri) 50%, transparent); }
         .app.arena .btn.ghost { background:transparent; }
@@ -3948,18 +3939,18 @@ function Shell({ children, theme }) {
 
         .app.arena .listbtn { background:#0D0F14; border:1px solid #22262f; border-radius:5px; color:#E7EAF0; }
         .app.arena .listbtn.on { background:var(--pri-btn,var(--pri)); border-color:var(--pri-btn,var(--pri)); color:var(--pri-ink,#fff); font-weight:700; }
-        .app.arena input, .app.arena textarea { background:#0B0D12; border:1px solid #262b36; border-radius:5px; color:#E7EAF0; font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; }
+        .app.arena input, .app.arena textarea { background:#0B0D12; border:1px solid #262b36; border-radius:5px; color:#E7EAF0; font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; }
         .app.arena input:focus, .app.arena textarea:focus { border-color:var(--sec); background:#0B0D12; box-shadow:0 0 0 2px color-mix(in srgb, var(--sec) 35%, transparent); }
-        .app.arena label { color:#8B93A1; text-transform:uppercase; font-size:10.5px; letter-spacing:.05em; }
-        .app.arena .teampick { width:100%; box-sizing:border-box; background:#0B0D12; border:1px solid #262b36; border-radius:5px; color:#E7EAF0; padding:11px 13px; font:inherit; font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; }
-        .app.arena .timeinput { background:#0B0D12; color:#E7EAF0; border:1px solid #262b36; border-radius:4px; font-family:'JetBrains Mono',monospace; }
+        .app.arena label { color:#8B93A1; font-size:10.5px; letter-spacing:0; }
+        .app.arena .teampick { width:100%; box-sizing:border-box; background:#0B0D12; border:1px solid #262b36; border-radius:5px; color:#E7EAF0; padding:11px 13px; font:inherit; font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; }
+        .app.arena .timeinput { background:#0B0D12; color:#E7EAF0; border:1px solid #262b36; border-radius:4px; font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-variant-numeric:tabular-nums; }
 
         .app.arena .track, .app.arena .fuel { background:#111318; border-radius:3px; box-shadow:inset 0 0 0 1px #22262f; }
         .app.arena .track > div, .app.arena .fuel > div { border-radius:2px; box-shadow:0 0 8px currentColor; }
         .app.arena .overtick { background:#fff; }
         .app.arena .dot { box-shadow:0 0 6px currentColor; }
 
-        .app.arena .mealhead { background:linear-gradient(90deg, color-mix(in srgb, var(--pri) 30%, #0D0F14), #0D0F14); font-weight:700; text-transform:uppercase; font-size:11.5px; letter-spacing:.05em; }
+        .app.arena .mealhead { background:linear-gradient(90deg, color-mix(in srgb, var(--pri) 30%, #0D0F14), #0D0F14); font-weight:700; font-size:11.5px; letter-spacing:0; }
         .app.arena .fooditem, .app.arena .dish, .app.arena .listitem, .app.arena .histrow { background:transparent; border-top:1px solid #1c2029; }
         .app.arena .stagerow { border-top:1px solid #1c2029; } .app.arena .stagerow.on { background:color-mix(in srgb, var(--pri) 18%, transparent); }
         .app.arena .tick { border-radius:3px; border-color:#2c313d; }
@@ -3971,7 +3962,7 @@ function Shell({ children, theme }) {
         .app.arena .gradebox { background:#0B0D12; border:1px solid #22C55E; border-radius:5px; }
         .app.arena .tierbox { border-color:var(--tier); }
         .app.arena .tierbox strong { color:inherit; }
-        .app.arena .gradebox strong { color:#22C55E; text-transform:uppercase; letter-spacing:.03em; font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; }
+        .app.arena .gradebox strong { color:#22C55E; letter-spacing:0; font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; }
         .app.arena .badge { background:#1c2029; color:#8B93A1; border-radius:3px; }
         .app.arena .badge.good { background:color-mix(in srgb, #22C55E 22%, transparent); color:#22C55E; }
         .app.arena .badge.low { background:color-mix(in srgb, #EF4444 22%, transparent); color:#EF4444; }
@@ -3982,9 +3973,9 @@ function Shell({ children, theme }) {
         .app.arena .bubble { background:#0D0F14; border:1px solid #22262f; border-radius:6px; } .app.arena .bubble.me { background:color-mix(in srgb, var(--pri) 22%, #0D0F14); border-color:var(--pri); }
 
         .app.arena .dock { background:#0B0D12; border:1px solid #22262f; border-top:3px solid var(--pri); border-radius:14px; box-shadow:0 -6px 24px rgba(0,0,0,.5); backdrop-filter:none; -webkit-backdrop-filter:none; }
-        .app.arena .dockbtn { color:#6B7280; font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; text-transform:uppercase; font-size:10.5px; letter-spacing:.03em; }
+        .app.arena .dockbtn { color:#6B7280; font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; font-size:10.5px; letter-spacing:0; }
         .app.arena .dockbtn.on { color:var(--pri-ink,#fff); background:var(--pri-btn,var(--pri)); font-weight:700; box-shadow:0 0 14px color-mix(in srgb, var(--pri) 55%, transparent); }
-        .app.arena .tray { display:flex; align-items:center; padding:0 8px; font-family:'Orbitron',monospace; font-size:11px; color:var(--sec); }
+        .app.arena .tray { display:flex; align-items:center; padding:0 8px; font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; font-size:11px; color:var(--sec); }
         @media (max-width:430px) { .app.arena .tray { display:none; } }
 
         /* ================= Modern 2026 theme ================= */
@@ -4027,7 +4018,7 @@ function Shell({ children, theme }) {
         }
         .app.arena.court .dim { color:#CDBBA3; }
         .app.arena.court .glass { background:linear-gradient(180deg,rgba(24,17,12,.96),rgba(14,10,7,.97)); border-color:#4a3320; }
-        .app.arena.court .huge { font-family:'Orbitron',monospace; letter-spacing:.04em; }
+        .app.arena.court .huge { font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; letter-spacing:0; }
         .app.court .ringwrap { position:relative; }
         .app.court .ballseams { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); color:#E8892B; opacity:.2; pointer-events:none; }
         .app.court .ringinner { position:relative; z-index:1; }
@@ -4040,14 +4031,37 @@ function Shell({ children, theme }) {
         .chalcell.hit { background:#22C55E; border-color:#22C55E; } .chalcell.miss { background:transparent; border:1px solid #E8892B; } .chalcell.open { border:1px dashed #94A3B8; }
         .wl { width:24px; height:24px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; }
         .wl.w { background:#22C55E; color:#04210f; } .wl.l { background:transparent; color:#F59E0B; border:1px solid #F59E0B; } .wl.n { background:transparent; color:#8B93A1; border:1px dashed #5b6270; }
-        .gamespanel .gamerow { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:7px 0; border-top:1px solid rgba(255,255,255,.08); }
-        .gamespanel .gameteams { flex:1; font-weight:600; }
-        .gamespanel .gameteams > div { display:flex; justify-content:space-between; gap:8px; }
-        .gamespanel .gscore { min-width:30px; text-align:right; }
-        .gamespanel .gamewhen { display:flex; flex-direction:column; align-items:flex-end; min-width:92px; font-size:13px; }
+        .gamespanel { margin-bottom:12px; }
+        .gamespanel .gamehead { margin-bottom:6px; padding:0 2px; }
+        .gamespanel .gamestrip { display:flex; gap:8px; overflow-x:auto; scroll-snap-type:x proximity; -webkit-overflow-scrolling:touch; padding:2px 2px 8px; scrollbar-width:thin; }
+        .gamespanel .gcard { flex:0 0 148px; scroll-snap-align:start; box-sizing:border-box; display:flex; flex-direction:column; gap:3px; padding:9px 11px; border-radius:12px;
+          background:rgba(20,16,12,.92); border:1px solid rgba(255,255,255,.14); font-size:14px; line-height:1.25; }
+        .gamespanel .gcard.livecard { border-color:#EF4444; }
+        .gamespanel .gcard.spccard { border-color:#E8892B; }
+        .gamespanel .gl { font-size:11.5px; opacity:.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .gamespanel .grow { display:flex; justify-content:space-between; gap:6px; font-weight:600; font-size:15px; }
+        .gamespanel .grow > span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .gamespanel .gscore { min-width:26px; text-align:right; font-variant-numeric:tabular-nums; }
+        .gamespanel .gf { font-size:12px; opacity:.75; margin-top:2px; }
+        .gamespanel .gamefoot { padding:0 2px; overflow:hidden; text-overflow:ellipsis; }
         .gamespanel .live { color:#EF4444; font-weight:700; font-size:12px; }
         .gamespanel a { color:var(--sec,#60A5FA); }
         .app.arena.court .dock { border-top-color:#E8892B; }
+
+        /* ================= Readability pass: plain sans-serif, bigger small text, no thin numerals ================= */
+        .app, .app * { -webkit-font-smoothing:antialiased; }
+        .app { font-size:16px; line-height:1.45; }
+        .app .tiny { font-size:13px; } .app .small { font-size:14.5px; }
+        .app label { font-size:13px; font-weight:600; letter-spacing:0; }
+        .app h2 { font-size:17px; font-weight:700; letter-spacing:0; }
+        .app .huge, .app .bignum, .app .midnum { font-weight:600; }
+        .app .btn, .app .chip, .app .listbtn { font-size:15px; font-weight:600; letter-spacing:0; }
+        .app .dockbtn { font-size:12.5px; font-weight:600; letter-spacing:0; }
+        .app input, .app textarea, .app select { font-size:16px; }
+        .app .dim { color:rgba(241,245,249,.74); }
+        .app.arena .dim, .app.modern .dim { color:#B4BAC8; }
+        .app.arena.court .dim { color:#E0D2BD; }
+        .app.arena.court, .app.arena.court .glass { color:#F6EFE4; }
 
         @media (prefers-reduced-motion:reduce) { *, .app::before, .app::after { animation:none !important; transition:none !important; } }
       `}</style>
