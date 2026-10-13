@@ -1,0 +1,11 @@
+const fs=require("fs"),vm=require("vm");const src=fs.readFileSync("src/App.jsx","utf8");
+const grab=(a,b)=>{const i=src.indexOf(a);const j=src.indexOf(b,i);return src.slice(i,j)};
+const code="const ACTIVITY={mod:{mult:1.5}};"+grab("const TAGS = {","/* ---------- food table")+grab("/* ---------- accountability score","/* ---------- meal tiers");
+const sb={};vm.createContext(sb);vm.runInContext(code+";this.T={computeTargets,dayScore}",sb);const T=sb.T;
+let ok=0,bad=0;const eq=(a,b,m)=>{if(JSON.stringify(a)===JSON.stringify(b))ok++;else{bad++;console.log("FAIL",m,a,b)}};
+const p={weight:224,goalWeight:180,heightIn:72,age:35,sex:"male",activity:"mod",pace:1};
+const base=T.computeTargets(p,[]),lift=T.computeTargets(p,["lift"]),inj=T.computeTargets(p,["lift"],null,true),walk=T.computeTargets(p,["walk"]),str=T.computeTargets(p,["stretch"]);
+eq(base.protein,144,"rest protein");eq(lift.protein,180,"hard protein");eq(inj.earned,0,"recovery earns none");eq(inj.protein,180,"recovery protein high");eq(inj.calories,base.calories,"recovery budget unchanged");
+eq(str.protein,144,"stretch no protein bump");eq(walk.earned,60,"walk");
+eq(T.dayScore({steps:"3500"},base,{recovering:true}).parts[4].pts,10,"half steps in recovery");eq(T.dayScore({steps:"3500"},base,{}).parts[4].pts,0,"normal needs 6000");
+console.log(ok,"ok",bad,"bad");

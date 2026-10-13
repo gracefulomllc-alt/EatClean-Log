@@ -1,0 +1,18 @@
+const fs=require("fs"),vm=require("vm");const src=fs.readFileSync("src/App.jsx","utf8");
+const grab=(a,b)=>{const i=src.indexOf(a);return src.slice(i,src.indexOf(b,i))};
+const code="const ACTIVITY={moderate:{mult:1.55}};const dayKey=()=>'2026-10-12';"+grab("const TAGS = {","/* ---------- food table")+grab("const blankDay","const guessMeal")+grab("/* ---------- optional fasting","/* ---------- lifting log")+grab("/* ---------- accountability score","/* ---------- meal tiers")+fs.readFileSync(process.argv[2],"utf8");
+const sb={};vm.createContext(sb);vm.runInContext(code+";this.T={fastConfirmState,buildStatus,fmtHM,groupErr}",sb);const T=sb.T;
+let ok=0,bad=0;const eq=(a,b,m)=>{if(JSON.stringify(a)===JSON.stringify(b))ok++;else{bad++;console.log("FAIL",m,JSON.stringify(a),JSON.stringify(b))}};
+const H=36e5,s=1e9;
+eq(T.fastConfirmState(s,0,s+10*H).state,"ok","before 24h");eq(T.fastConfirmState(s,0,s+24*H+30*6e4).state,"due","24h mark, in grace");
+eq(T.fastConfirmState(s,0,s+27*H).state,"unconfirmed","past grace");eq(T.fastConfirmState(s,s+24.5*H,s+27*H).state,"confirmed","confirmed after mark");
+eq(T.fastConfirmState(s,s+24.5*H,s+38.5*H).state,"unconfirmed","next mark at 36h not answered");eq(T.fastConfirmState(s,s+24.5*H,s+36.5*H).state,"due","36h due");
+eq(T.fastConfirmState(s,s+83*H,s+84.1*H).state,"due","84h mark due even though confirmed at 83h");
+eq(T.fmtHM(3600e3*18+12*6e4),"18h 12m","fmt");eq(T.groupErr({message:'{"error":"x y"}'}),"x y","err parse");eq(T.groupErr({message:"plain"}),"plain","err plain");
+const data={profile:{weight:224,goalWeight:180,age:35,heightIn:72,sex:"male",activity:"moderate",pace:1},fastingOn:true,fast:{start:s,confirmedAt:s+5},days:{"2026-10-10":{weight:"222"},"2026-10-12":{foods:[{meal:"Lunch",calories:500,protein:40}],water:100}}};
+const tg={calories:2000,protein:150};
+let st=T.buildStatus(data,{},tg);eq(st.fast,{start:s,confirmedAt:s+5},"fast");eq(st.weight.current,222,"latest weight");eq(st.cal.eaten,500,"cal");eq(st.habits.water,true,"habit");eq(st.week.length,7,"week");
+st=T.buildStatus(data,{fast:false,weight:false,cal:false,habits:false},tg);eq(Object.keys(st).sort(),["scopes"],"all off publishes nothing but flags");
+st=T.buildStatus(data,{weight:false,cal:false},tg);eq([!!st.fast,!!st.weight,!!st.cal,!!st.habits],[true,false,false,true],"mixed");
+eq(T.buildStatus({...data,fastingOn:false},{},tg).fast,undefined,"fasting off => nothing published");eq("points" in T.buildStatus(data,{},tg)||"score" in T.buildStatus(data,{},tg).habits,false,"no points");
+console.log(ok,"ok",bad,"bad");

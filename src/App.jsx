@@ -62,6 +62,8 @@ function mergeData(a, b) {
     recipes: byKey(a.recipes, b.recipes, (r) => r.id, "recipe:"),
     photos: byKey(a.photos, b.photos, (p) => p.id, "photo:"),
     groups: byKey(a.groups, b.groups, (g) => g.id, "group:"),
+    orders: byKey(a.orders, b.orders, (o) => o.id, "order:"),
+    history: byKey(a.history, b.history, (h) => h.id, "chal:"),
     deleted: tomb,
     u: Math.max(a.u || 0, b.u || 0),
   };
@@ -1027,6 +1029,42 @@ function LiftLog({ data, setData, dayId, day, updateDay }) {
   );
 }
 
+function ChallengePanel({ data, setData }) {
+  const prof = { ...data.profile, recovering: !!data.recovery?.on };
+  const today = dayKey();
+  const ch = data.challenge || null;
+  const st = ch ? challengeStatus(ch, data.days, (day) => computeTargets(data.profile, day?.tags || [], null, false), prof, today) : null;
+  const start = (id) => setData((d) => ({ ...d, challenge: { id, start: dayKey(), u: Date.now() }, u: Date.now() }));
+  const archive = () => setData((d) => ({ ...d, history: st?.finished ? [...(d.history || []), { id: crypto.randomUUID(), challenge: st.def.name, start: ch.start, hits: st.hits, badge: st.badge, u: Date.now() }] : d.history || [], challenge: null, u: Date.now() }));
+  return (
+    <div className="glass pad stack">
+      <h2>{H("30-day challenge", "30-day challenge")}</h2>
+      {!st ? (
+        <>
+          <p className="dim small">Pick one habit and run it for thirty days. You get a weekly check and a final report.</p>
+          {CHALLENGES.map((c) => <button key={c.id} className="listbtn" onClick={() => start(c.id)}>{c.name}<span className="dim tiny" style={{ display: "block" }}>{c.blurb}</span></button>)}
+          {(data.history || []).length > 0 && <p className="dim tiny">Finished: {(data.history || []).map((h) => `${h.challenge}${h.badge ? ` (${h.badge})` : ""}`).join(", ")}</p>}
+        </>
+      ) : (
+        <>
+          <div className="row"><strong>{st.def.name}</strong><span className="dim tiny">{st.finished ? "Complete" : `Day ${st.dayNo} of 30`}</span></div>
+          <div className="chalgrid" role="img" aria-label={`${st.hits} of 30 days hit`}>
+            {st.cells.map((c) => <span key={c.key} className={`chalcell ${c.st}`} title={c.key} />)}
+          </div>
+          <div className="row small"><span>{st.hits} days hit</span><span className="dim">{st.streak} streak · best {st.best}</span></div>
+          {st.weeks.length > 0 && <div className="dim tiny">{st.weeks.map((w) => `Week ${w.n}: ${w.hits}/${w.of}`).join("  ·  ")}</div>}
+          {st.finished ? (
+            <>
+              <p className="small">{st.badge ? <><strong>{st.badge} badge.</strong> </> : ""}{st.hits} of 30 days ({st.pct}%), best run {st.best}. {st.badge ? "That is a real month of work." : "A month in the books. Start another and beat it."}</p>
+              <button className="btn solid wide" onClick={archive}>Finish and pick another</button>
+            </>
+          ) : <button className="btn ghost wide" onClick={() => { if (confirm("Stop this challenge?")) setData((d) => ({ ...d, challenge: null, u: Date.now() })); }}>Stop challenge</button>}
+        </>
+      )}
+    </div>
+  );
+}
+
 function StrengthPanel({ data }) {
   const rows = useMemo(() => strengthSummary(data.days), [data.days]);
   if (!rows.length) return null;
@@ -1064,6 +1102,14 @@ function GamesPanel() {
     const t = setInterval(() => { if (!document.hidden) load(); }, (nba || []).some((g) => g.state === "in") ? 15000 : 60000);
     return () => clearInterval(t);
   }, [load, (nba || []).some((g) => g.state === "in")]);
+  // Recent headlines/results from the school's own feed. Quietly absent if the feed isn't there.
+  const [news, setNews] = useState([]);
+  useEffect(() => {
+    let dead = false;
+    const go = () => fetch("/api/spc", { headers: { "x-access-code": ACCESS() } }).then((r) => (r.ok ? r.json() : null)).then((j) => { if (!dead && j?.items) setNews(j.items.slice(0, 3)); }).catch(() => {});
+    go(); const t = setInterval(() => { if (!document.hidden) go(); }, 300000);
+    return () => { dead = true; clearInterval(t); };
+  }, []);
   const spc = spcView(SPC_GAMES);
   const gt = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
   const gd = (iso) => new Date(iso).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
@@ -1100,6 +1146,11 @@ function GamesPanel() {
             </div>
           ))}
           {spc.today.length === 0 && spc.upcoming.length === 0 && <p className="dim tiny">No more games on the schedule.</p>}
+          {news.length > 0 && (
+            <div className="stack" style={{ gap: 4 }}>
+              <div className="dim tiny">Latest from the Texans</div>
+              {news.map((n, i) => <div key={i} className="small">{n.link ? <a href={n.link} target="_blank" rel="noreferrer">{n.title}</a> : n.title}</div>)}
+            </div>)}
           <p className="dim tiny"><a href={SPC_URL} target="_blank" rel="noreferrer">Full schedule and live stats</a></p>
         </>
       )}
@@ -1211,6 +1262,9 @@ function GroupBoard({ g, data, setData }) {
   const [sent, setSent] = useState({});
   const [msg, setMsg] = useState("");
   const [showCode, setShowCode] = useState(false);
+  const [pics, setPics] = useState({});          // memberId -> loaded image
+  const [caption, setCaption] = useState("");
+  const [posting, setPosting] = useState(false);
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 20000); return () => clearInterval(t); }, []);
   const call = (p) => groupsApi({ groupId: g.id, memberId: g.memberId, token: g.token, ...p });
   const patchGroup = (fn) => setData((d) => ({ ...d, groups: (d.groups || []).map((x) => (x.id === g.id ? { ...fn(x), u: Date.now() } : x)) }));
@@ -1231,6 +1285,26 @@ function GroupBoard({ g, data, setData }) {
   const ack = async () => { try { await call({ op: "ack", upTo: Math.max(...board.nudges.map((n) => n.at)) }); load(); } catch { /* try again next refresh */ } };
   const run = async (p, after) => { setMsg(""); try { const r = await call(p); after && after(r); load(); } catch (e) { setMsg(groupErr(e)); } };
   const grp = board?.group;
+  const viewPic = async (id) => {
+    if (pics[id]) { setPics((p) => { const n = { ...p }; delete n[id]; return n; }); return; }
+    setMsg("");
+    try { const r = await call({ op: "photoget", target: id }); setPics((p) => ({ ...p, [id]: r.image })); }
+    catch (e) { setMsg(groupErr(e)); load(); }
+  };
+  const postPic = async (e) => {
+    const f = e.target.files?.[0]; e.target.value = "";
+    if (!f) return;
+    setPosting(true); setMsg("");
+    try {
+      // Shrink until it fits what the server accepts; a meal photo doesn't need to be sharp.
+      let img = null;
+      for (const [max, q] of [[900, 0.6], [700, 0.5], [500, 0.45]]) { img = await shrinkPhoto(f, max, q); if (img.length <= 220000) break; }
+      if (!img || img.length > 220000) throw new Error("That photo is too big to share.");
+      await call({ op: "photo", image: img, caption });
+      setCaption(""); load();
+    } catch (er) { setMsg(groupErr(er)); }
+    setPosting(false);
+  };
 
   return (
     <>
@@ -1284,6 +1358,23 @@ function GroupBoard({ g, data, setData }) {
               </div>
             )}
             {s?.week && <div className="wlstrip">{s.week.map((w, i) => <span key={i} className={w === true ? "wl w" : w === false ? "wl l" : "wl n"}>{w === true ? "W" : w === false ? "L" : "–"}</span>)}</div>}
+            {m.photo && (
+              <div className="stack" style={{ gap: 6 }}>
+                <button className="chip" onClick={() => viewPic(m.id)}>{pics[m.id] ? "Hide photo" : `Meal photo${m.photo.caption ? `: ${m.photo.caption}` : ""} · ${fmtHM(now - m.photo.at)} ago`}</button>
+                {pics[m.id] && <img src={pics[m.id]} alt={m.photo.caption || "Shared meal"} style={{ width: "100%", borderRadius: 10 }} />}
+              </div>
+            )}
+            {m.isMe && (
+              <div className="stack" style={{ gap: 6 }}>
+                <input placeholder="Caption (optional)" value={caption} maxLength={60} onChange={(e) => setCaption(e.target.value)} aria-label="Photo caption" />
+                <div className="rowbtns">
+                  <label className="chip" style={{ cursor: "pointer" }}>{posting ? "Posting…" : "Share a meal photo"}
+                    <input type="file" accept="image/*" capture="environment" onChange={postPic} style={{ display: "none" }} disabled={posting} /></label>
+                  {m.photo && <button className="chip" onClick={() => run({ op: "photodel" })}>Remove mine</button>}
+                </div>
+                <p className="dim tiny">Meal photos only. The crew sees it for 24 hours. Progress photos can't be shared.</p>
+              </div>
+            )}
             {!m.isMe && (
               <div className="rowbtns">
                 <button className="chip" disabled={sent[m.id + "check"]} onClick={() => nudge(m.id, "check")}>{sent[m.id + "check"] ? "Sent" : "Check on them"}</button>
@@ -1582,6 +1673,46 @@ function weekRecord(days, endKey, targetsFor, profile) {
   return out;
 }
 const weekOnTrack = (days, endKey, targetsFor, profile) => weekRecord(days, endKey, targetsFor, profile).filter((x) => x === true).length;
+
+
+/* ---------- 30-day challenges: one habit, thirty days, a final report ---------- */
+// A day counts when it clears the habit. No points, and nothing about eating less or fasting longer.
+const CHALLENGES = [
+  { id: "board", name: "30 on the board", blurb: "Score 70+ every day.", pass: (sc) => sc.total >= ON_TRACK },
+  { id: "protein", name: "Protein 30", blurb: "Hit your protein target daily.", pass: (sc) => sc.parts.find((x) => x.key === "protein")?.done },
+  { id: "log", name: "Log every play", blurb: "Log at least two meals a day.", pass: (sc) => sc.parts.find((x) => x.key === "meals")?.done },
+  { id: "move", name: "Move daily", blurb: "A workout, a walk, or a logged rest day.", pass: (sc) => sc.parts.find((x) => x.key === "move")?.done },
+  { id: "water", name: "Water 30", blurb: "Reach your water goal daily.", pass: (sc) => sc.parts.find((x) => x.key === "water")?.done },
+];
+const ymdAdd = (key, n) => { const [y, m, d] = key.split("-").map(Number); const t = new Date(y, m - 1, d + n); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; };
+const ymdDiff = (a, b) => { const f = (k) => { const [y, m, d] = k.split("-").map(Number); return Date.UTC(y, m - 1, d); }; return Math.round((f(b) - f(a)) / 864e5); };
+// Bronze 18 days, silver 24, gold 27 (60 / 80 / 90%).
+const badgeFor = (hits) => (hits >= 27 ? "Gold" : hits >= 24 ? "Silver" : hits >= 18 ? "Bronze" : null);
+function challengeStatus(ch, days, targetsFor, profile, todayKey) {
+  const def = CHALLENGES.find((c) => c.id === ch?.id);
+  if (!def) return null;
+  const cells = [];
+  for (let i = 0; i < 30; i++) {
+    const k = ymdAdd(ch.start, i);
+    let st = "future";
+    if (k <= todayKey) {
+      const day = days?.[k];
+      const hit = !!day && !!def.pass(dayScore(day, targetsFor(day), profile));
+      st = hit ? "hit" : k === todayKey ? "open" : "miss";
+    }
+    cells.push({ key: k, st });
+  }
+  const dayNo = Math.min(31, ymdDiff(ch.start, todayKey) + 1);
+  const hits = cells.filter((c) => c.st === "hit").length;
+  let best = 0, run = 0;
+  for (const c of cells) { run = c.st === "hit" ? run + 1 : 0; best = Math.max(best, run); }
+  let streak = 0;
+  for (let i = cells.length - 1; i >= 0; i--) { if (cells[i].st === "future" || cells[i].st === "open") continue; if (cells[i].st === "hit") streak++; else break; }
+  const weeks = [];
+  for (let w = 0; w < 4; w++) { const seg = cells.slice(w * 7, w * 7 + 7); if (seg.every((c) => c.st !== "future" && c.st !== "open")) weeks.push({ n: w + 1, hits: seg.filter((c) => c.st === "hit").length, of: 7 }); }
+  const finished = dayNo > 30;
+  return { def, cells, dayNo: Math.max(1, Math.min(30, dayNo)), hits, best, streak, weeks, finished, badge: finished ? badgeFor(hits) : null, pct: Math.round((hits / 30) * 100) };
+}
 
 /* ---------- meal tiers: rated on the whole plate, never on a single food ---------- */
 // cls per item: 1 = whole / minimally processed, 2 = mixed or lightly processed, 3 = heavily processed.
@@ -2370,7 +2501,7 @@ Respond with ONLY JSON:
         {[["today", "Today"], ["out", "Eating out"], ["week", "Week"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
       </div>
-      {mode === "out" && <EatingOut remainCal={remainCal} remainP={remainP} onLog={logToday} />}
+      {mode === "out" && <EatingOut remainCal={remainCal} remainP={remainP} onLog={logToday} data={data} setData={setData} />}
       {mode === "week" && <WeekPlan data={data} setData={setData} onLog={logToday} onOpenList={() => setShowList(true)} />}
       {mode === "today" && (<>
       <div className="glass pad stack">
@@ -2433,7 +2564,14 @@ Respond with ONLY JSON:
   );
 }
 /* ---------- eating out: best orders from a menu photo or a restaurant name ---------- */
-function EatingOut({ remainCal, remainP, onLog }) {
+const CHAINS = ["Chipotle", "Chick-fil-A", "Subway", "McDonald's", "Starbucks", "Taco Bell", "Wendy's", "Panera", "Whataburger", "Raising Cane's", "Panda Express", "Jimmy John's"];
+const PORTIONS = [[0.5, "½"], [0.75, "¾"], [1, "Full"], [1.25, "1¼"]];
+// Eating half and saving the rest is the most useful trim there is, so macros scale with the portion.
+const scaleOrder = (m, f) => ({ ...m, calories: Math.round(m.calories * f), protein: Math.round(m.protein * f), carbs: Math.round(m.carbs * f), fat: Math.round(m.fat * f) });
+function EatingOut({ remainCal, remainP, onLog, data, setData }) {
+  const orders = data?.orders || [];
+  const [portion, setPortion] = useState({});
+  const [savedPick, setSavedPick] = useState({});
   const [where, setWhere] = useState("");
   const [img, setImg] = useState(null);
   const [slot, setSlot] = useState(guessMeal());
@@ -2473,7 +2611,8 @@ Respond with ONLY JSON:
       <div className="glass pad stack">
         <div className="row"><h2>Eating out</h2><span className="dim tiny">{Math.max(0, remainCal).toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g left</span></div>
         <div className="chips">{MEALS.map((m) => <button key={m} className={slot === m ? "chip on" : "chip"} onClick={() => setSlot(m)}>{m}</button>)}</div>
-        <input placeholder="Where? e.g. Chipotle, Texas Roadhouse, the diner" value={where} onChange={(e) => setWhere(e.target.value)} />
+        <div className="chips">{CHAINS.map((c) => <button key={c} className={where === c ? "chip on" : "chip"} onClick={() => setWhere(where === c ? "" : c)}>{c}</button>)}</div>
+        <input placeholder="Or type a place: Texas Roadhouse, the diner" value={where} onChange={(e) => setWhere(e.target.value)} />
         {img ? (
           <div className="row gap"><img src={img} alt="Menu" className="menuthumb" /><button className="btn ghost" onClick={() => setImg(null)}>Remove photo</button></div>
         ) : (
@@ -2484,25 +2623,51 @@ Respond with ONLY JSON:
         {err && <p className="alert">{err}</p>}
       </div>
 
+      {orders.length > 0 && (
+        <div className="glass">
+          <div className="mealhead">Saved orders</div>
+          {orders.map((o) => (
+            <div key={o.id} className="dish">
+              <div className="row gap"><div><div className="dishname">{o.name}</div>{o.where && <div className="dim tiny">{o.where}</div>}</div>
+                <span className="mono" style={{ color: C.cal }}>{o.calories}</span></div>
+              <span className="dim tiny">{o.protein}p · {o.carbs}c · {o.fat}f</span>
+              <div className="rowbtns">
+                <button className="btn solid wide" onClick={() => onLog({ meal: slot, name: `${o.name}${o.where ? ` (${o.where})` : ""}`, calories: o.calories, protein: o.protein, carbs: o.carbs, fat: o.fat })}>Eat this</button>
+                <button className="btn ghost" aria-label="Remove saved order" onClick={() => setData((d) => ({ ...d, orders: (d.orders || []).filter((x) => x.id !== o.id), deleted: tombstone(d, "order:" + o.id) }))}>Remove</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {res && (
         <div className="glass fadein">
           {res.known === false && <p className="cue" style={{ margin: "14px 16px 0", color: C.warn, borderColor: `${C.warn}55` }}>It doesn't know this place's menu well — treat these as ballpark. A menu photo gets you real items.</p>}
           {res.note && <p className="dim tiny pad" style={{ paddingBottom: 0 }}>{res.note}</p>}
-          {res.picks.map((m, i) => (
+          {res.picks.map((m0, i) => {
+            const f = portion[i] || 1, m = scaleOrder(m0, f);
+            return (
             <div key={i} className="dish">
-              <div><div className="dishname">{m.name}</div><div className="dim tiny">{m.why}</div></div>
+              <div><div className="dishname">{m0.name}</div><div className="dim tiny">{m0.why}</div></div>
               <div className="dishmacros">
-                <span className="mono" style={{ color: C.cal }}>{Math.round(m.calories)}</span>
-                <span className="dim tiny">{Math.round(m.protein)}p · {Math.round(m.carbs)}c · {Math.round(m.fat)}f · estimate</span>
+                <span className="mono" style={{ color: C.cal }}>{m.calories}</span>
+                <span className="dim tiny">{m.protein}p · {m.carbs}c · {m.fat}f · estimate</span>
               </div>
-              {m.tweaks?.length > 0 && <ul className="tweaks">{m.tweaks.map((t, j) => <li key={j}>{t}</li>)}</ul>}
-              <button className="btn solid wide" disabled={logged[i]} onClick={() => {
-                onLog({ meal: slot, name: `${m.name}${where.trim() ? ` (${where.trim()})` : ""}`, calories: Math.round(m.calories),
-                  protein: Math.round(m.protein), carbs: Math.round(m.carbs), fat: Math.round(m.fat) });
-                setLogged((x) => ({ ...x, [i]: true }));
-              }}>{logged[i] ? "Logged ✓" : "Eat this"}</button>
-            </div>
-          ))}
+              <div className="chips" aria-label="Portion">{PORTIONS.map(([v, l]) => <button key={v} className={f === v ? "chip on" : "chip"} onClick={() => setPortion((x) => ({ ...x, [i]: v }))}>{l}</button>)}</div>
+              {m0.tweaks?.length > 0 && <ul className="tweaks">{m0.tweaks.map((t, j) => <li key={j}>{t}</li>)}</ul>}
+              <div className="rowbtns">
+                <button className="btn solid wide" disabled={logged[i]} onClick={() => {
+                  onLog({ meal: slot, name: `${m0.name}${f !== 1 ? ` (${PORTIONS.find((p) => p[0] === f)[1]} portion)` : ""}${where.trim() ? ` (${where.trim()})` : ""}`, calories: m.calories,
+                    protein: m.protein, carbs: m.carbs, fat: m.fat });
+                  setLogged((x) => ({ ...x, [i]: true }));
+                }}>{logged[i] ? "Logged ✓" : "Eat this"}</button>
+                <button className="btn ghost" disabled={savedPick[i]} onClick={() => {
+                  setData((d) => ({ ...d, orders: [...(d.orders || []), { id: crypto.randomUUID(), name: m0.name, where: where.trim(), calories: Math.round(m0.calories), protein: Math.round(m0.protein), carbs: Math.round(m0.carbs), fat: Math.round(m0.fat), u: Date.now() }] }));
+                  setSavedPick((x) => ({ ...x, [i]: true }));
+                }}>{savedPick[i] ? "Saved ✓" : "Save order"}</button>
+              </div>
+            </div>);
+          })}
           {res.avoid && <p className="cue" style={{ margin: "0 16px 14px" }}>Skip: {res.avoid}</p>}
         </div>
       )}
@@ -2510,6 +2675,8 @@ Respond with ONLY JSON:
   );
 }
 
+// Totals come from the dishes themselves, not from anything the model summed.
+const weekCost = (w) => (w?.dishes || []).reduce((a, d) => ({ cost: a.cost + Math.max(0, Math.round(+d.costUsd || 0)), minutes: a.minutes + Math.max(0, Math.round(+d.cookMinutes || 0)) }), { cost: 0, minutes: 0 });
 /* ---------- week: batch-cook meal prep, one grocery list ---------- */
 function WeekPlan({ data, setData, onLog, onOpenList }) {
   const week = data.week;
@@ -2517,6 +2684,8 @@ function WeekPlan({ data, setData, onLog, onOpenList }) {
   const fasts = (data.fasts || []).length >= 3;
   const [ifMode, setIfMode] = useState(fasts);
   const [prefs, setPrefs] = useState("");
+  const [budget, setBudget] = useState("");            // weekly grocery budget, dollars
+  const [maxCook, setMaxCook] = useState(0);           // longest the person will cook in one go, minutes (0 = no limit)
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [open, setOpen] = useState(null);
@@ -2535,17 +2704,19 @@ function WeekPlan({ data, setData, onLog, onOpenList }) {
 Every day should land within 100 calories of ${base.calories} and reach at least ${base.protein}g protein.
 ${ifMode ? "They do intermittent fasting: plan 2 meals plus 1 snack a day inside an eating window — no breakfast." : "Plan breakfast, lunch, dinner and one snack each day."}
 ${prefs.trim() ? `Their preferences: ${prefs.trim()}.` : ""}
+${+budget > 0 ? `Grocery budget: about $${Math.round(+budget)} for the whole week. Choose cheap staples and keep the total ingredient cost at or under that.` : ""}
+${maxCook > 0 ? `No single dish may take more than ${maxCook} minutes of hands-on cooking.` : ""}
 ${likes.length ? `Foods they already eat: ${likes.join(", ")}.` : ""}
 Use 4 to 7 distinct dishes. Ingredient amounts are for the WHOLE batch, as you'd buy them. Keep steps to at most 4 short lines. Count cooking oil in the macros.
 
 Respond with ONLY JSON:
-{"dishes":[{"id":"d1","name":"...","servingsMade":number,"perServing":{"calories":number,"protein":number,"carbs":number,"fat":number},"ingredients":["amount + item"],"steps":["short step"]}],
+{"dishes":[{"id":"d1","name":"...","servingsMade":number,"cookMinutes":number,"costUsd":number,"perServing":{"calories":number,"protein":number,"carbs":number,"fat":number},"ingredients":["amount + item"],"steps":["short step"]}],
 "days":[{"meals":[{"slot":"Breakfast"|"Lunch"|"Dinner"|"Snack","dish":"d1"}]}],
 "prepDay":"one line on what to cook when",
 "note":"one line"}
 Exactly 7 entries in days.` }], 7000);
       if (!p.dishes?.length || !p.days?.length) throw new Error("The plan came back incomplete. Try again.");
-      setData((d) => ({ ...d, week: { start: dayKey(), dishes: p.dishes, days: p.days.slice(0, 7), prepDay: p.prepDay, note: p.note, u: Date.now() } }));
+      setData((d) => ({ ...d, week: { start: dayKey(), budget: +budget > 0 ? Math.round(+budget) : null, dishes: p.dishes, days: p.days.slice(0, 7), prepDay: p.prepDay, note: p.note, u: Date.now() } }));
       setDayIdx(0); setOpen(null); setSaved({}); setLogged({});
     } catch (e) { setErr(String(e.message || e).slice(0, 200)); }
     setBusy(false);
@@ -2585,6 +2756,10 @@ Exactly 7 entries in days.` }], 7000);
       <div className="glass pad stack">
         <div className="row"><h2>Meal prep week</h2><span className="dim tiny">{base.calories.toLocaleString()} cal · {base.protein}g / day</span></div>
         <input placeholder="Anything to include or avoid? e.g. chicken and rice, no fish, under $80" value={prefs} onChange={(e) => setPrefs(e.target.value)} />
+        <div className="grid2">
+          <div><label>Grocery budget ($/week)</label><input type="number" inputMode="numeric" placeholder="No limit" value={budget} onChange={(e) => setBudget(e.target.value)} /></div>
+          <div><label>Longest cook</label><div className="chips">{[[0, "Any"], [30, "30m"], [45, "45m"], [60, "60m"]].map(([v, l]) => <button key={v} className={maxCook === v ? "chip on" : "chip"} onClick={() => setMaxCook(v)}>{l}</button>)}</div></div>
+        </div>
         <button className={ifMode ? "listbtn on" : "listbtn"} onClick={() => setIfMode(!ifMode)}>{ifMode ? "✓ " : ""}I fast — 2 meals + a snack, no breakfast</button>
         <button className="btn accent wide" onClick={build} disabled={busy}>{busy ? "Planning the week — about 20 seconds…" : week ? "Plan a new week" : "Plan my week"}</button>
         {err && <p className="alert">{err}</p>}
@@ -2593,7 +2768,13 @@ Exactly 7 entries in days.` }], 7000);
       {week && (
         <>
           {since > 7 && <p className="cue" style={{ marginBottom: 12 }}>This plan is from {prettyDay(week.start)}. Plan a new week when you're ready.</p>}
-          {week.prepDay && <div className="glass pad"><p className="small"><strong>Prep:</strong> {week.prepDay}</p>{week.note && <p className="dim tiny" style={{ marginTop: 6 }}>{week.note}</p>}</div>}
+          {week.prepDay && <div className="glass pad"><p className="small"><strong>Prep:</strong> {week.prepDay}</p>{week.note && <p className="dim tiny" style={{ marginTop: 6 }}>{week.note}</p>}
+            {(() => { const t = weekCost(week); return (t.cost > 0 || t.minutes > 0) && (
+              <p className="dim tiny" style={{ marginTop: 6 }}>
+                {t.cost > 0 && <>Groceries about ${t.cost}{week.budget ? <span style={{ color: t.cost > week.budget * 1.1 ? C.warn : undefined }}> of your ${week.budget}{t.cost > week.budget * 1.1 ? " (over, an estimate)" : ""}</span> : ""}. </>}
+                {t.minutes > 0 && <>About {t.minutes} min of cooking in all.</>}
+              </p>); })()}
+          </div>}
 
           <div className="chips">{week.days.map((_, i) => {
             const t = dayTotal(i);
@@ -2632,7 +2813,7 @@ Exactly 7 entries in days.` }], 7000);
             <div className="mealhead">The dishes · {week.dishes.length} to cook</div>
             {week.dishes.map((x) => (
               <div key={x.id} className="dish">
-                <div className="row gap"><div className="dishname">{x.name}</div><span className="dim tiny">makes {x.servingsMade}</span></div>
+                <div className="row gap"><div className="dishname">{x.name}</div><span className="dim tiny">makes {x.servingsMade}{+x.cookMinutes > 0 ? ` · ${Math.round(x.cookMinutes)} min` : ""}{+x.costUsd > 0 ? ` · ~$${Math.round(x.costUsd)}` : ""}</span></div>
                 <div className="rowbtns">
                   <button className="btn ghost wide" onClick={() => setOpen(open === x.id ? null : x.id)}>{open === x.id ? "Hide recipe" : "Recipe"}</button>
                   <button className="btn ghost wide" disabled={saved[x.id]} onClick={() => saveRecipe(x)}>{saved[x.id] ? "Saved ✓" : "Save to my recipes"}</button>
@@ -2959,6 +3140,7 @@ function Weight({ data, setData, targets, updateDay }) {
         </div>
       ) : <div className="glass pad center"><p className="dim">Log a few days and the trend appears here.</p></div>}
 
+      <ChallengePanel data={data} setData={setData} />
       <StrengthPanel data={data} />
 
       {eta && <div className="glass pad"><p className="small">At {targets.actualPace.toFixed(1)} lb a week you reach {goal} around <strong>{eta}</strong>. After three weeks of real data, check that against what the scale actually did — the formula runs about 10% off either way.</p></div>}
@@ -3853,6 +4035,9 @@ function Shell({ children, theme }) {
         .app.court .wl { width:24px; height:24px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; }
         .app.court .wl.w { background:#22C55E; color:#04210f; } .app.court .wl.l { background:#3a2a22; color:#E8892B; border:1px solid #E8892B; } .app.court .wl.n { background:transparent; color:#8B7A68; border:1px dashed #5a4636; }
         .wlstrip { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
+        .chalgrid { display:grid; grid-template-columns:repeat(10,1fr); gap:5px; }
+        .chalcell { aspect-ratio:1; border-radius:50%; background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.14); }
+        .chalcell.hit { background:#22C55E; border-color:#22C55E; } .chalcell.miss { background:transparent; border:1px solid #E8892B; } .chalcell.open { border:1px dashed #94A3B8; }
         .wl { width:24px; height:24px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; }
         .wl.w { background:#22C55E; color:#04210f; } .wl.l { background:transparent; color:#F59E0B; border:1px solid #F59E0B; } .wl.n { background:transparent; color:#8B93A1; border:1px dashed #5b6270; }
         .gamespanel .gamerow { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:7px 0; border-top:1px solid rgba(255,255,255,.08); }

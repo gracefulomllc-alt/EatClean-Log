@@ -1,0 +1,12 @@
+import { SPC_GAMES } from "../src/spcSchedule.js";
+const t=(c,m)=>console.log(c?"PASS":"FAIL",m);
+t(SPC_GAMES.length===34,"34 games ("+SPC_GAMES.length+")");
+t(SPC_GAMES.every(g=>!Number.isNaN(new Date(g.start).getTime())),"all dates valid");
+const sorted=[...SPC_GAMES].sort((a,b)=>new Date(a.start)-new Date(b.start));t(JSON.stringify(sorted)===JSON.stringify(SPC_GAMES),"in date order");
+const mo={};SPC_GAMES.forEach(g=>{const m=g.start.slice(0,7);mo[m]=(mo[m]||0)+1});console.log(JSON.stringify(mo));
+t(mo["2026-10"]===4&&mo["2026-11"]===7&&mo["2026-12"]===7&&mo["2027-01"]===7&&mo["2027-02"]===7&&mo["2027-03"]===2,"month counts match the site (4,7,7,7,7,2)");
+const dow=(g)=>new Date(g.start).toLocaleDateString("en-US",{weekday:"short",timeZone:"America/Chicago"});
+const want={"2026-11-05":"Thu","2026-11-10":"Tue","2026-11-13":"Fri","2026-11-14":"Sat","2026-11-19":"Thu","2026-11-21":"Sat","2026-11-29":"Sun","2026-12-03":"Thu","2026-12-04":"Fri","2026-12-05":"Sat","2026-12-11":"Fri","2026-12-12":"Sat","2026-12-17":"Thu","2026-12-18":"Fri","2027-01-04":"Mon","2027-01-07":"Thu","2027-01-11":"Mon","2027-01-14":"Thu","2027-01-18":"Mon","2027-01-25":"Mon","2027-01-28":"Thu","2027-02-01":"Mon","2027-02-04":"Thu","2027-02-08":"Mon","2027-02-11":"Thu","2027-02-15":"Mon","2027-02-18":"Thu","2027-02-25":"Thu","2027-03-01":"Mon","2027-03-04":"Thu","2026-10-02":"Fri","2026-10-03":"Sat","2026-10-10":"Sat"};
+let bad=0;for(const g of SPC_GAMES){const d=g.start.slice(0,10);if(want[d]&&want[d]!==dow(g)){bad++;console.log("weekday mismatch",d,dow(g),want[d])}}t(bad===0,"weekdays match the site's day-of-week labels");
+const ct=(g)=>new Date(g.start).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:"America/Chicago",timeZoneName:"short"});
+console.log(ct(SPC_GAMES[0]),"|",ct(SPC_GAMES[4]),"|",ct(SPC_GAMES[18]),"|",ct(SPC_GAMES[29]));

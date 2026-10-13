@@ -1,0 +1,10 @@
+globalThis.Netlify={env:{get:()=>undefined}};
+const sample={events:[{id:"9",date:"2027-04-20T23:00Z",season:{type:3},status:{type:{state:"in",shortDetail:"Q2 5:00"}},competitions:[{notes:[{headline:"East 1st Round - Game 1"}],broadcasts:[{names:["ESPN","TNT"]}],competitors:[{homeAway:"home",score:"50",team:{displayName:"Boston Celtics",abbreviation:"BOS",logo:"x"},records:[{summary:"60-22"}]},{homeAway:"away",score:"44",team:{displayName:"Miami Heat",abbreviation:"MIA"}}]}]},{id:"8",date:"2027-04-20T20:00Z",season:{type:1},status:{type:{state:"post",shortDetail:"Final"}},competitions:[{competitors:[]}]}]};
+let url;globalThis.fetch=async(u)=>{url=u;return {ok:true,json:async()=>sample}};
+const {default:h}=await import("../netlify/functions/scores.js");
+const r=await h(new Request("http://x/api/scores?dates=20270420"));const j=await r.json();
+const t=(c,m)=>console.log(c?"PASS":"FAIL",m);
+t(url.endsWith("?dates=20270420"),"date passed");t(j.games.length===2&&j.games[0].id==="8","sorted by start");
+const g=j.games[1];t(g.state==="in"&&g.home.abbr==="BOS"&&g.home.score==="50"&&g.away.score==="44","live score");t(g.phase==="Playoffs"&&/Game 1/.test(g.note)&&g.tv==="ESPN, TNT","playoffs info");t(j.games[0].phase==="Preseason","preseason");
+globalThis.fetch=async()=>{throw new Error("x")};t((await (await h(new Request("http://x/api/scores"))).json()).error==="unreachable","outage handled");
+globalThis.fetch=async()=>({ok:true,json:async()=>({})});t((await (await h(new Request("http://x/api/scores?dates=bad"))).json()).games.length===0,"empty feed");

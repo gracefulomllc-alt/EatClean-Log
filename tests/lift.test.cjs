@@ -1,0 +1,12 @@
+const fs=require("fs"),vm=require("vm");const sb={};vm.createContext(sb);vm.runInContext(fs.readFileSync(process.argv[2],"utf8")+";this.T={e1rm,exerciseNames,lastSets,strengthSummary,cleanSets}",sb);const T=sb.T;
+let ok=0,bad=0;const eq=(a,b,m)=>{if(JSON.stringify(a)===JSON.stringify(b))ok++;else{bad++;console.log("FAIL",m,a,b)}};
+const L=(n,...s)=>({name:n,sets:s.map(([reps,wt])=>({reps,wt}))});
+const days={"2026-10-01":{lifts:[L("Bench Press",[5,135],[5,135])]},"2026-10-05":{lifts:[L("bench  press",[5,145])]},"2026-10-09":{lifts:[L("Bench press",[5,155]),L("Squat",[3,225])]},"2026-10-10":{}};
+eq(Math.round(T.e1rm(100,10)),133,"epley");eq(T.e1rm(0,5),0,"zero wt");eq(T.e1rm(100,0),0,"zero reps");
+eq(T.exerciseNames(days),["Bench press","Squat"],"names deduped (case/space)");
+eq(T.lastSets(days,"BENCH PRESS","2026-10-09").day,"2026-10-05","last before");eq(T.lastSets(days,"Deadlift","2026-10-30"),null,"none");
+const s=T.strengthSummary(days);const b=s.find(x=>x.name.toLowerCase().includes("bench"));
+eq(b.sessions,3,"3 sessions");eq(b.first,Math.round(135*(1+5/30)),"first");eq(b.change,Math.round(((155-135)/135)*100),"change");eq(s.find(x=>x.name==="Squat").change,null,"single session no change");
+eq(T.strengthSummary(days,"2026-10-08").length,2,"since filter");eq(T.strengthSummary({},"x").length,0,"empty");
+eq(T.strengthSummary({"a":{lifts:[{name:"X",sets:[{reps:"",wt:""}]}]}}).length,0,"blank sets ignored");
+console.log(ok,"ok",bad,"bad");

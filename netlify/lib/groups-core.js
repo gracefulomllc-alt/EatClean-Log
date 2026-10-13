@@ -6,6 +6,8 @@ export const MAX_MEMBERS = 20;
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const MAX_STATUS_BYTES = 6000;
 const NUDGE_KINDS = new Set(["check", "cheer"]);
+export const PHOTO_MAX_CHARS = 230000;        // ~170 KB of image once base64'd; the app shrinks to fit
+export const PHOTO_TTL = 24 * 36e5;            // a shared meal photo disappears after a day
 
 const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 export const sha = async (s) => hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)));
@@ -114,8 +116,38 @@ export async function handle(store, body, ctx = {}) {
       members.push({ id, name: m.name, isMe: id === me, creator: id === g.creator, joined: m.joined, status: status || null });
     }
     members.sort((a, b) => a.joined - b.joined);
+    for (const m of members) {
+      const pm = await store.get(`pm:${g.id}:${m.id}`, { type: "json" });
+      if (pm && now - pm.at < PHOTO_TTL) m.photo = { at: pm.at, caption: pm.caption };
+    }
     const nudges = (await store.get(`n:${g.id}:${me}`, { type: "json" })) || [];
     return ok({ group: { id: g.id, name: g.name, locked: !!g.locked, count: members.length, ready: members.length >= MIN_MEMBERS, isCreator }, members, nudges });
+  }
+
+  // Meal photos only, posted on purpose, one per person, gone after a day. Progress photos never come here.
+  if (op === "photo") {
+    const img = String(body.image || "");
+    if (!img.startsWith("data:image/jpeg;base64,")) return err(400, "Photos need to be JPEG.");
+    if (img.length > PHOTO_MAX_CHARS) return err(413, "That photo is too big.");
+    if (!(await limit(`photo:${me}`, 8))) return err(429, "That's plenty of photos for one hour.");
+    const caption = cleanName(body.caption, 60);
+    await store.set(`p:${g.id}:${me}`, img);
+    await store.setJSON(`pm:${g.id}:${me}`, { at: now, caption });
+    return ok({ at: now });
+  }
+
+  if (op === "photoget") {
+    const target = String(body.target || "");
+    if (!g.members[target]) return err(404, "Not in the group.");
+    const pm = await store.get(`pm:${g.id}:${target}`, { type: "json" });
+    if (!pm || now - pm.at >= PHOTO_TTL) return err(404, "That photo is gone.");
+    const image = await store.get(`p:${g.id}:${target}`);
+    return image ? ok({ image, caption: pm.caption, at: pm.at }) : err(404, "That photo is gone.");
+  }
+
+  if (op === "photodel") {
+    await store.delete(`p:${g.id}:${me}`); await store.delete(`pm:${g.id}:${me}`);
+    return ok();
   }
 
   if (op === "nudge") {
@@ -144,6 +176,7 @@ export async function handle(store, body, ctx = {}) {
     delete g.members[target];
     await store.delete(`s:${g.id}:${target}`);
     await store.delete(`n:${g.id}:${target}`);
+    await store.delete(`p:${g.id}:${target}`); await store.delete(`pm:${g.id}:${target}`);
     const ids = Object.keys(g.members);
     if (!ids.length) {
       await store.delete("inv:" + g.inv); await store.delete("g:" + g.id);

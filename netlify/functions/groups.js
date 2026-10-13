@@ -10,7 +10,7 @@ export default async (req) => {
 
   let body;
   try { body = await req.json(); } catch { return new Response("Bad JSON", { status: 400 }); }
-  if (JSON.stringify(body).length > 12000) return new Response("Too large", { status: 413 });
+  if (JSON.stringify(body).length > (body.op === "photo" ? 260000 : 12000)) return new Response("Too large", { status: 413 });
 
   const store = getStore("cutlog-groups");
   const lim = getStore("cutlog-limits");

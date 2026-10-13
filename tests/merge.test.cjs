@@ -1,0 +1,15 @@
+const fs=require("fs"),vm=require("vm");const src=fs.readFileSync("src/App.jsx","utf8");
+const code=src.slice(src.indexOf("const TOMB_TTL"),src.indexOf("async function api("));
+const sb={Date,Object,Set,Map,Math};vm.createContext(sb);vm.runInContext(code+";this.T={mergeData,tombstone}",sb);const {mergeData,tombstone}=sb.T;
+let ok=0,bad=0;const eq=(a,b,m)=>{if(JSON.stringify(a)===JSON.stringify(b))ok++;else{bad++;console.log("FAIL",m,a,b)}};
+const now=Date.now();
+const A={u:now-10,days:{d1:{u:now-10,foods:[],lifts:[{id:"a",name:"Bench",sets:[{reps:5,wt:135}],u:now-10}],veg:true}}};
+const B={u:now-5,days:{d1:{u:now-5,foods:[],lifts:[{id:"b",name:"Squat",sets:[],u:now-5}]}}};
+const m=mergeData(A,B);eq(m.days.d1.lifts.map(l=>l.id).sort(),["a","b"],"lifts from both devices kept");
+const A2={u:now-10,days:{d1:{u:now-10,foods:[],lifts:[{id:"a",name:"Bench",sets:[],u:now-10}]}}};
+const B2={u:now,deleted:{"lift:a":now},days:{d1:{u:now,foods:[],lifts:[]}}};
+eq(mergeData(A2,B2).days.d1.lifts||[],[],"deleted lift stays dead");
+eq(mergeData({u:1,days:{d:{u:1,foods:[]}}},{u:2,days:{d:{u:2,foods:[]}}}).days.d.lifts,undefined,"no lifts key when none");
+const e1={u:now-5,days:{d:{u:now-5,foods:[],lifts:[{id:"x",name:"Bench",sets:[{reps:5,wt:100}],u:now-5}]}}},e2={u:now,days:{d:{u:now,foods:[],lifts:[{id:"x",name:"Bench",sets:[{reps:5,wt:100},{reps:5,wt:105}],u:now}]}}};
+eq(mergeData(e1,e2).days.d.lifts[0].sets.length,2,"newer edit of same exercise wins");eq(mergeData(e2,e1).days.d.lifts[0].sets.length,2,"order independent");
+console.log(ok,"ok",bad,"bad");

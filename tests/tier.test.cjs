@@ -1,0 +1,15 @@
+const fs=require("fs");const vm=require("vm");const sb={};vm.createContext(sb);vm.runInContext(fs.readFileSync(process.argv[2],"utf8")+";this.T={tierMeal,guessClass}",sb);const T=sb.T;
+const tierMeal=T.tierMeal,guessClass=T.guessClass;let ok=0,bad=0;const eq=(a,b,m)=>{if(JSON.stringify(a)===JSON.stringify(b))ok++;else{bad++;console.log("FAIL",m,a,b)}};
+const m=(c,p)=>({calories:c,protein:p});
+const ctx={budget:2000,budgetLeft:1200};
+eq(tierMeal([m(400,40),m(200,5)],[1,1],ctx).tier,1,"whole");
+eq(tierMeal([m(400,10),m(200,5)],[1,1],ctx).tier,2,"whole low protein");
+eq(tierMeal([m(450,20),m(200,2)],[3,3],ctx).tier,3,"processed");
+eq(tierMeal([m(500,40),m(200,0)],[1,3],ctx).tier,2,"mixed");
+eq(tierMeal([m(1500,60)],[1],ctx).tier,"off","huge whole meal over budget");
+eq(tierMeal([m(750,15)],[3],{budget:2000,budgetLeft:1500}).tier,"off","big processed");
+eq(tierMeal([m(300,10)],[3],{budget:2000,budgetLeft:1500}).tier,3,"small processed is T3 not off");
+eq(tierMeal([],[],ctx).tier,2,"empty");
+eq(tierMeal([m(500,40)],undefined,{}).tier,2,"no cls/budget");
+eq(guessClass("Chicken breast, cooked"),1,"g1");eq(guessClass("French fries"),3,"g3");eq(guessClass("Mystery stew"),2,"g2");
+console.log(ok,"ok",bad,"bad");

@@ -70,3 +70,14 @@ device to share the same log. Lab values never go into the shared group log.
 - Each person picks what friends see (fasting clock, weight, calories and protein, daily habits). Anything switched off is never sent, and the server re-filters to a fixed whitelist. Lab values and points are never shared.
 - Fast watch: friends see who is fasting and for how long. Every 12 hours from hour 24 the faster gets an in-app "Still fasting?" check-in; no answer within 2 hours shows friends "not confirmed". Friends can send "Check on them" or "Cheer". No automatic alerts go to friends.
 - The old Desktop '95 theme is gone (existing logs land on Hardwood). New: Modern.
+
+## Alerts, challenges, photos, eating out
+- **Push alerts** (Settings > Fasting alerts, then the toggles): tip-off and final for the team you pick, Texans tip-off (from the posted schedule), fast check-in prompts, nudges from friends, water pings, and a Sunday weekly review. A scheduled function (`push-tick`, every 10 minutes) sends them. Friends' fasts never trigger an alert. Nudge alerts only go to a device that proved it belongs to that group member.
+- **Texans headlines**: `/api/spc` reads the school's news feed and shows the latest three on the Court tab. There is no live-score source for NJCAA, so the schedule links out to the school's live stats.
+- **30-day challenges** (Stats tab): five habits, a 30-day grid, weekly summaries, Bronze/Silver/Gold badge (18/24/27 days) and a final report.
+- **Group meal photos**: JPEG only, one per person, visible to the group for 24 hours, loaded only when tapped. Progress photos can never be shared.
+- **Eating out**: chain picker, portion trim (half, three-quarters, full, 1 1/4), saved orders. **Meal prep** takes a weekly grocery budget and a longest-cook limit.
+- Backups ("Copy my whole log") leave out group logins; restoring keeps the groups this phone is already in.
+
+## Tests
+`npm test` runs every file in `tests/` (about 190 checks). Pure rules are pulled straight out of `src/App.jsx` so the tests run the code that ships. GitHub Actions runs the tests and a production build on every push (`.github/workflows/test.yml`).
