@@ -1147,8 +1147,8 @@ function GamesPanel() {
         {(nba || []).map((g) => (
           <div key={g.id} className={g.state === "in" ? "gcard livecard" : "gcard"}>
             <span className="gl">{g.phase || "NBA"}{g.state === "in" ? <span className="live"> ● {g.status}</span> : ""}</span>
-            <div className="grow"><span>{g.away.logo && <img className="glogo" src={g.away.logo} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }} />}{g.away.abbr || g.away.name}</span><b className="gscore">{g.state !== "pre" ? g.away.score : ""}</b></div>
-            <div className="grow"><span>{g.home.logo && <img className="glogo" src={g.home.logo} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }} />}{g.home.abbr || g.home.name}</span><b className="gscore">{g.state !== "pre" ? g.home.score : ""}</b></div>
+            <div className="grow"><span>{g.away.logo && <img className="glogo" width="18" height="18" src={g.away.logo} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }} />}{g.away.abbr || g.away.name}</span><b className="gscore">{g.state !== "pre" ? g.away.score : ""}</b></div>
+            <div className="grow"><span>{g.home.logo && <img className="glogo" width="18" height="18" src={g.home.logo} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }} />}{g.home.abbr || g.home.name}</span><b className="gscore">{g.state !== "pre" ? g.home.score : ""}</b></div>
             <span className="gf">{g.state === "pre" ? gt(g.start) : g.state === "post" ? "Final" : "Live"}{g.tv ? ` · ${g.tv}` : ""}</span>
           </div>
         ))}
@@ -4086,6 +4086,7 @@ function Shell({ children, theme, top }) {
         .gamespanel .grow { display:flex; justify-content:space-between; gap:6px; font-weight:600; font-size:15px; }
         .gamespanel .grow > span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .gamespanel .gscore { min-width:26px; text-align:right; font-variant-numeric:tabular-nums; }
+        .gamespanel .glogo { width:18px; height:18px; max-width:18px; max-height:18px; object-fit:contain; margin-right:6px; vertical-align:-4px; flex:none; }
         .gamespanel .gf { font-size:12px; opacity:.75; margin-top:2px; }
         .gamespanel .gamefoot { padding:0 2px; overflow:hidden; text-overflow:ellipsis; }
         .gamespanel .live { color:#EF4444; font-weight:700; font-size:12px; }
