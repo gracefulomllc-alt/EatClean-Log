@@ -1,6 +1,7 @@
 import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
 import { roadPicks, ROAD_CHAINS, modsFor, applyMods, modLabel } from "./fastFood.js";
 import { gradeFood, gradeTone } from "./grade.js";
+import { decodeFrame } from "./barcode.js";
 import { scaleIngredient, tagsFor, TAG_FILTERS, swapsFor, applySwaps } from "./mealTools.js";
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { SPC_GAMES, SPC_URL } from "./spcSchedule.js";
@@ -1881,12 +1882,13 @@ function AddFood({ onAdd, onCancel, calib, onCalib, recipes, setData, budget, bu
   return (
     <div className="glass pad stack fadein">
       <div className="chips">
-        {[["meal", "Meal"], ["weigh", "Weigh"], ["label", "Label"], ["recipe", "Recipe"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
+        {[["meal", "Meal"], ["scan", "Scan"], ["weigh", "Weigh"], ["label", "Label"], ["recipe", "Recipe"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
       </div>
       {mode === "meal" && <MealBuilder meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} calib={calib} onCalib={onCalib} budget={budget} budgetLeft={budgetLeft} />}
       {mode === "recipe" && <Recipes recipes={recipes} setData={setData} meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "weigh" && <WeighIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
+      {mode === "scan" && <ScanIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "label" && <LabelIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "photo" && <SnapIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} calib={calib} onCalib={onCalib} />}
       {mode === "desc" && <DescribeIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
@@ -2162,10 +2164,11 @@ Respond with ONLY JSON: {"classes":[one number 1-3 per item, in order],"tip":"on
       {adding ? (
         <div className="subpanel stack">
           <div className="chips">
-            {[["weigh", "Weigh"], ["label", "Label"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
+            {[["scan", "Scan"], ["weigh", "Weigh"], ["label", "Label"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
               <button key={k} className={adding === k ? "chip on" : "chip"} onClick={() => setAdding(k)}>{l}</button>))}
           </div>
           {adding === "weigh" && <WeighIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
+          {adding === "scan" && <ScanIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
           {adding === "label" && <LabelIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
           {adding === "photo" && <SnapIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} calib={calib} onCalib={onCalib} />}
           {adding === "desc" && <DescribeIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
@@ -2348,28 +2351,43 @@ function Scanner({ onCode, onClose }) {
   const [err, setErr] = useState("");
 
   useEffect(() => {
-    let stream, raf, stop = false;
+    let stream, raf, stop = false, last = "", seen = 0, lastAt = 0;
+    // A code counts once two reads in a row agree, so a smudge can't log the wrong food.
+    const hit = (code) => {
+      if (!code) return false;
+      seen = code === last ? seen + 1 : 1; last = code;
+      if (seen >= 2) { stop = true; try { navigator.vibrate?.(30); } catch { /* fine */ } onCode(code); return true; }
+      return false;
+    };
     (async () => {
-      if (!("BarcodeDetector" in window)) {
-        setErr("This browser can't scan barcodes. Type the number instead.");
-        return;
-      }
       try {
-        const det = new window.BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128"] });
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        // Chrome and Android have a built-in reader. iPhones don't, so we read the frames ourselves.
+        const det = "BarcodeDetector" in window ? new window.BarcodeDetector({ formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128"] }) : null;
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
         ref.current.srcObject = stream;
         await ref.current.play();
+        const cv = document.createElement("canvas"), cx = cv.getContext("2d", { willReadFrequently: true });
         const tick = async () => {
           if (stop) return;
-          try {
-            const codes = await det.detect(ref.current);
-            if (codes[0]?.rawValue) { stop = true; onCode(codes[0].rawValue); return; }
-          } catch { /* frame not ready */ }
+          const now = Date.now();
+          if (now - lastAt > 110) {
+            lastAt = now;
+            try {
+              const v = ref.current;
+              if (det) { const codes = await det.detect(v); if (hit(codes[0]?.rawValue)) return; }
+              else if (v.videoWidth) {
+                cv.width = Math.min(1280, v.videoWidth); cv.height = Math.round((cv.width * v.videoHeight) / v.videoWidth);
+                cx.drawImage(v, 0, 0, cv.width, cv.height);
+                const img = cx.getImageData(0, 0, cv.width, cv.height);
+                if (hit(decodeFrame(img.data, cv.width, cv.height))) return;
+              }
+            } catch { /* frame not ready */ }
+          }
           raf = requestAnimationFrame(tick);
         };
         tick();
       } catch {
-        setErr("Couldn't open the camera. Allow camera access, or type the number.");
+        setErr("Couldn't open the camera. Allow camera access in your browser settings, or type the number under the barcode.");
       }
     })();
     return () => { stop = true; cancelAnimationFrame(raf); stream?.getTracks().forEach((t) => t.stop()); };
@@ -2377,11 +2395,87 @@ function Scanner({ onCode, onClose }) {
 
   return (
     <div className="qbox">
-      <video ref={ref} className="shot" playsInline muted />
-      <p className="dim tiny">Hold the barcode steady in frame.</p>
+      <div className="scanwrap"><video ref={ref} className="shot" playsInline muted /><div className="scanline" /></div>
+      <p className="dim tiny">Hold the barcode flat, about a hand's width away, with light on it.</p>
       {err && <p className="alert">{err}</p>}
       <button className="btn ghost wide" onClick={onClose}>Close scanner</button>
     </div>
+  );
+}
+
+// Scan the barcode on a package and pull its nutrition: per serving when the package says, plus fiber, sugar and sodium.
+function ScanIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Log" }) {
+  const [scanning, setScanning] = useState(true);
+  const [food, setFood] = useState(null);
+  const [note, setNote] = useState("");
+  const [bc, setBc] = useState("");
+  const [qty, setQty] = useState("1");
+  const [unit, setUnit] = useState("s");   // s = servings, g = grams
+
+  const lookup = async (codeIn) => {
+    const code = String(codeIn || bc).trim();
+    if (!code) return;
+    setScanning(false); setNote("Looking it up…"); setFood(null);
+    try {
+      const d = await foodApi({ op: "barcode", barcode: code });
+      if (d.food) { setFood(d.food); setNote(""); setUnit(d.food.s ? "s" : "g"); setQty(d.food.s ? "1" : "100"); }
+      else setNote(d.reason || "Not found.");
+    } catch { setNote("The lookup didn't go through. Check your connection and try again."); }
+  };
+  const again = () => { setFood(null); setNote(""); setBc(""); setScanning(true); };
+
+  const n = +qty || 0;
+  const grams = food ? (unit === "s" ? n * (food.s?.g || 0) : n) : 0;
+  const tot = food ? food.m.map((v) => (v * grams) / 100) : [0, 0, 0, 0];
+  const ex = food?.extra ? { fiber: (food.extra.fiber * grams) / 100, sugar: (food.extra.sugar * grams) / 100, sodium: (food.extra.sodiumMg * grams) / 100 } : null;
+  const asFood = food ? { name: food.name, calories: tot[0], protein: tot[1], carbs: tot[2], fat: tot[3] } : null;
+
+  return (
+    <>
+      {scanning && <Scanner onClose={() => setScanning(false)} onCode={(c) => { setBc(c); lookup(c); }} />}
+      {!scanning && !food && (
+        <>
+          <button className="btn accent wide" onClick={again}>Scan a barcode</button>
+          <div className="row gap">
+            <input placeholder="Or type the number under it" value={bc} inputMode="numeric" onChange={(e) => setBc(e.target.value)} onKeyDown={(e) => e.key === "Enter" && lookup()} />
+            <button className="btn ghost" onClick={() => lookup()} disabled={!bc.trim()}>Look up</button>
+          </div>
+        </>
+      )}
+      {note && <p className={/Looking/.test(note) ? "dim tiny" : "alert"}>{note}</p>}
+      {food && (
+        <div className="fadein stack">
+          <div className="row"><strong>{food.name}</strong>{asFood && grams > 0 && <GradeBadge food={asFood} />}</div>
+          <p className="dim tiny">From the package label{food.size ? ` · serving: ${food.size}` : ""}{!food.s ? " · no serving size on file, so enter grams" : ""}</p>
+          <div className="row gap">
+            <input type="number" inputMode="decimal" step={unit === "s" ? "0.25" : "1"} value={qty} onChange={(e) => setQty(e.target.value)} aria-label="Amount" />
+            <div className="chips">
+              {food.s && <button className={unit === "s" ? "chip on" : "chip"} onClick={() => { setUnit("s"); setQty("1"); }}>servings</button>}
+              <button className={unit === "g" ? "chip on" : "chip"} onClick={() => { setUnit("g"); setQty(String(Math.round(food.s?.g || 100))); }}>grams</button>
+            </div>
+          </div>
+          <div className="quad">
+            {[["calories", tot[0]], ["protein", tot[1]], ["carbs", tot[2]], ["fat", tot[3]]].map(([l, v], i) => (
+              <div key={l}><div className="midnum" style={{ color: [C.cal, C.protein, C.carbs, C.fat][i] }}>{Math.round(v)}</div><div className="dim tiny">{l}</div></div>))}
+          </div>
+          {ex && <p className="dim tiny">Fiber {Math.round(ex.fiber)}g · Sugar {Math.round(ex.sugar)}g · Sodium {Math.round(ex.sodium)}mg</p>}
+          {!hideMeal && <MealPick meal={meal} setMeal={setMeal} />}
+          <button className="btn ghost wide" onClick={again}>Scan a different one</button>
+        </div>
+      )}
+      <div className="rowbtns">
+        <button className="btn ghost wide" onClick={onCancel}>Cancel</button>
+        <button className="btn solid wide" disabled={!food || !(grams > 0)} onClick={() => {
+          const perG = food.m.map((v) => v / 100);
+          const useS = unit === "s";
+          onAdd([{ id: crypto.randomUUID(), meal,
+            name: `${food.name}, ${useS ? fmtQty(n, "serving") : fmtQty(n, "g")}`,
+            baseName: food.name, unit: useS ? "serving" : "g", qty: n,
+            per: perG.map((v) => +(v * (useS ? food.s.g : 1)).toFixed(4)),
+            calories: Math.round(tot[0]), protein: +tot[1].toFixed(1), carbs: +tot[2].toFixed(1), fat: +tot[3].toFixed(1) }]);
+        }}>{cta}</button>
+      </div>
+    </>
   );
 }
 
@@ -4545,6 +4639,10 @@ function Shell({ children, theme, top }) {
           color:#F1F5F9; font-size:14px; cursor:pointer; background:rgba(255,255,255,.03); margin:0; }
         .shot { width:100%; max-height:230px; object-fit:cover; border-radius:16px; display:block; }
         .qbox { border:1px solid rgba(110,231,249,.3); background:rgba(110,231,249,.07); border-radius:16px; padding:14px; display:flex; flex-direction:column; gap:10px; }
+        .scanwrap { position:relative; border-radius:12px; overflow:hidden; background:#000; }
+        .scanwrap .shot { width:100%; display:block; max-height:300px; object-fit:cover; }
+        .scanline { position:absolute; left:8%; right:8%; top:50%; height:2px; background:#EF4444; box-shadow:0 0 10px #EF4444; animation:scanpulse 1.4s ease-in-out infinite; }
+        @keyframes scanpulse { 0%,100% { opacity:.35; } 50% { opacity:1; } }
         .grade { font:700 12px/1 'Inter',ui-sans-serif,system-ui,sans-serif; min-width:30px; padding:5px 6px; margin-right:8px; border-radius:7px; color:var(--g); background:color-mix(in srgb, var(--g) 14%, transparent); border:1px solid color-mix(in srgb, var(--g) 55%, transparent); cursor:pointer; text-align:center; }
         .mealhead .grade { margin-right:4px; }
         .gradebox { margin:8px 16px 12px; padding:11px 14px; border-radius:12px; background:rgba(163,230,53,.08); border:1px solid rgba(163,230,53,.3); }

@@ -68,31 +68,63 @@ export default async (req) => {
   if (body.op === "barcode") {
     const bc = String(body.barcode || "").replace(/\D/g, "");
     if (bc.length < 6) return json({ food: null, reason: "That doesn't look like a barcode." });
+    const r1 = (v) => Math.round(Number(v || 0) * 10) / 10;
 
-    const r = await fetch(
-      `https://world.openfoodfacts.org/api/v2/product/${bc}.json?fields=product_name,brands,nutriments`,
-      { headers: { "User-Agent": "CutLog/1.0 (personal food log)" } }
-    );
-    const d = await r.json().catch(() => null);
+    // 1) Open Food Facts: packaged goods, straight off the label.
+    try {
+      const r = await fetch(
+        `https://world.openfoodfacts.org/api/v2/product/${bc}.json?fields=product_name,brands,nutriments,serving_size,serving_quantity,quantity`,
+        { headers: { "User-Agent": "CutLog/1.0 (personal food log)" } }
+      );
+      const d = await r.json().catch(() => null);
+      // Open Food Facts answers 200 with status 0 for unknown products. Trust the payload, not the status code.
+      if (d && d.status === 1 && d.product) {
+        const n = d.product.nutriments || {};
+        const cal = Number(n["energy-kcal_100g"] ?? 0);
+        if (cal) {
+          const sg = Number(d.product.serving_quantity) || 0;
+          return json({
+            food: {
+              name: [d.product.brands?.split(",")[0], d.product.product_name].filter(Boolean).join(" ").trim() || `Barcode ${bc}`,
+              source: "Label",
+              m: [cal, n.proteins_100g, n.carbohydrates_100g, n.fat_100g].map(r1),
+              ...(sg > 0 ? { s: { g: sg, label: `serving (${Math.round(sg)} g)` } } : {}),
+              extra: { fiber: r1(n.fiber_100g), sugar: r1(n.sugars_100g), sodiumMg: Math.round(Number(n.sodium_100g || 0) * 1000), satFat: r1(n["saturated-fat_100g"]) },
+              size: d.product.serving_size || "",
+            },
+          });
+        }
+      }
+    } catch { /* fall through to USDA */ }
 
-    // Open Food Facts answers 200 with status 0 for unknown products.
-    // Trust the payload, not the status code.
-    if (!d || d.status !== 1 || !d.product) {
-      return json({ food: null, reason: "Not in the database. Weigh it or enter it by hand." });
-    }
+    // 2) USDA branded foods carry the UPC too.
+    try {
+      const key = Netlify.env.get("USDA_API_KEY") || "DEMO_KEY";
+      const r = await fetch(`https://api.nal.usda.gov/fdc/v1/foods/search?api_key=${encodeURIComponent(key)}&query=${encodeURIComponent(bc)}&dataType=Branded&pageSize=5`);
+      if (r.ok) {
+        const d = await r.json();
+        const strip = (x) => String(x || "").replace(/\D/g, "").replace(/^0+/, "");
+        const f = (d.foods || []).find((x) => strip(x.gtinUpc) === strip(bc));
+        if (f) {
+          const cal = energy(f.foodNutrients);
+          if (cal > 0) {
+            const sg = (f.servingSizeUnit || "").toLowerCase().startsWith("g") || (f.servingSizeUnit || "").toLowerCase() === "ml" ? Number(f.servingSize) : 0;
+            return json({
+              food: {
+                name: [tidy(f.brandName || f.brandOwner), tidy(f.description)].filter(Boolean).join(" ").trim() || `Barcode ${bc}`,
+                source: "Label",
+                m: [cal, pick(f.foodNutrients, N.protein), pick(f.foodNutrients, N.carbs), pick(f.foodNutrients, N.fat)].map(r1),
+                ...(sg > 0 ? { s: { g: sg, label: `serving (${Math.round(sg)} g)` } } : {}),
+                extra: { fiber: r1(pick(f.foodNutrients, 1079)), sugar: r1(pick(f.foodNutrients, 2000)), sodiumMg: Math.round(pick(f.foodNutrients, 1093)), satFat: r1(pick(f.foodNutrients, 1258)) },
+                size: f.householdServingFullText || "",
+              },
+            });
+          }
+        }
+      }
+    } catch { /* nothing more to try */ }
 
-    const n = d.product.nutriments || {};
-    const cal = Number(n["energy-kcal_100g"] ?? 0);
-    if (!cal) return json({ food: null, reason: "That product has no calorie data on file." });
-
-    return json({
-      food: {
-        name: [d.product.brands?.split(",")[0], d.product.product_name].filter(Boolean).join(" ").trim() || `Barcode ${bc}`,
-        source: "Label",
-        m: [cal, Number(n.proteins_100g ?? 0), Number(n.carbohydrates_100g ?? 0), Number(n.fat_100g ?? 0)]
-             .map((v) => Math.round(v * 10) / 10),
-      },
-    });
+    return json({ food: null, reason: "Not in the database yet. Use Label to photograph the panel, or Weigh to enter it." });
   }
 
   return new Response("Unknown op", { status: 400 });
