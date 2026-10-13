@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/32488029/README.md)
+[Uploading README.md…]()
 # Cut Log
 
 Fasting timer, food log, meal planner and recipe builder. React + Vite on Netlify.
@@ -53,3 +53,21 @@ Push notification keys are generated automatically on first use and kept in Netl
 Your log is saved in the browser. Turn on **Setup → Sync** and it's also stored
 server-side under a hash of a 16-character sync code; enter that code on another
 device to share the same log. Lab values never go into the shared group log.
+
+## Phase 1 additions
+- **Meal tiers**: "Rate this meal" sorts each food by processing level, then plain rules set Tier 1 / 2 / 3 / Off-plan from the whole plate and its portion against what's left today.
+- **Accountability score** (100 pts/day): meals 20, calorie range 20 (within 10% only), protein 20, veggies/fiber 15 (tap), activity or recovery 10, water 5, group check-in 10 (unlocks with groups). Nothing rewards eating less or fasting longer.
+- **Optional fasting**: off for new logs; Settings > Fasting tracker, with a safety notice, blocked under 18 or BMI under 18.5, and warnings past 20/24/36 hours.
+- **Recovery mode / rest days**: no earned calories, protein stays high, step goal halved, never penalized.
+- **Lifting log**: exercises with sets x reps x weight, "last time" hints, strength trend in the Weight tab.
+
+## Hardwood theme, live NBA scores, South Plains
+- Hardwood court look is the default (Settings > Look to switch). Hoops language, box score with a W/L strip, basketball on the fasting clock.
+- `/api/scores` (Netlify function) reads ESPN's free scoreboard: preseason, regular season, play-in and playoffs, with live scores (refreshes every 15s during live games).
+- South Plains Texans games live in `src/spcSchedule.js`. Add one line per game.
+
+## Groups and fast watch
+- Open shared log removed. `/api/groups` runs invite-only groups (3 to 20 people, 12-character invite code stored only as a hash).
+- Each person picks what friends see (fasting clock, weight, calories and protein, daily habits). Anything switched off is never sent, and the server re-filters to a fixed whitelist. Lab values and points are never shared.
+- Fast watch: friends see who is fasting and for how long. Every 12 hours from hour 24 the faster gets an in-app "Still fasting?" check-in; no answer within 2 hours shows friends "not confirmed". Friends can send "Check on them" or "Cheer". No automatic alerts go to friends.
+- The old Desktop '95 theme is gone (existing logs land on Hardwood). New: Modern.
