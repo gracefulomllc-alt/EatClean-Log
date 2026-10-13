@@ -57,7 +57,7 @@ function mergeData(a, b) {
   const top = newer(a, b);
   return {
     ...top, days,
-    fasts: byKey(a.fasts, b.fasts, (f) => f.end, "fast:").sort((x, y) => y.end - x.end).slice(0, 30),
+    fasts: byKey(a.fasts, b.fasts, (f) => String(f.id ?? f.end), "fast:").sort((x, y) => y.end - x.end).slice(0, 30),
     favorites: byKey(a.favorites, b.favorites, (f) => f.name, "fav:"),
     labs: byKey(a.labs, b.labs, (l) => l.id, "lab:"),
     list: byKey(a.list, b.list, (l) => l.id, "list:"),
@@ -701,6 +701,10 @@ export default function CutLog() {
   return (
     <Shell theme={THEME} top={PRO ? <ProTop /> : null}>
       {saveErr && <div className="glass pad alert">That change didn’t save. Back up from Setup before closing.</div>}
+      <div className="tabtitle" role="heading" aria-level="1">
+        <span>{(TABS.find((t) => t[0] === tab) || [])[1]}</span>
+        <small>{{ now: "Your day at a glance", plan: "Ideas for what to eat", out: "Best picks when you're on the road", coach: "Ask anything about your food", weight: "Your weight and progress", log: "Everything you've logged", setup: "Your profile and options" }[tab]}</small>
+      </div>
       <div key={tab} className="fadein">
         {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay, goTab: () => { setTab("setup"); setTimeout(() => document.getElementById("fasting-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 250); } }} />}
         {tab === "out" && <RoadTab data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} />}
@@ -750,10 +754,34 @@ function Welcome({ onDone }) {
   );
 }
 
+/* ---------- fast edits: forgot to start or stop? Fix the times. ---------- */
+const MAX_FAST_H = 7 * 24;
+// <input type="datetime-local"> speaks local time as "YYYY-MM-DDTHH:mm".
+const toLocalInput = (ms) => { const d = new Date(ms), z = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}T${z(d.getHours())}:${z(d.getMinutes())}`; };
+const fromLocalInput = (str) => { const t = new Date(str).getTime(); return Number.isFinite(t) ? t : null; };
+// An active fast's start can be moved earlier (forgot to tap Start) or a bit later, never into the future.
+function checkFastStart(start, now = Date.now()) {
+  if (!Number.isFinite(start)) return "Pick a date and time.";
+  if (start > now + 60000) return "The start can't be in the future.";
+  if (now - start > MAX_FAST_H * 36e5) return "That's more than 7 days ago. Pick a closer time.";
+  return "";
+}
+// A finished fast: validates the times and builds the record. `prev` keeps the same id when editing.
+function fastRecord(start, end, prev = null, now = Date.now()) {
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return { error: "Pick both times." };
+  if (end > now + 60000) return { error: "The end can't be in the future." };
+  if (end <= start) return { error: "The end has to be after the start." };
+  if (end - start > MAX_FAST_H * 36e5) return { error: "That's longer than 7 days. Check the dates." };
+  return { rec: { id: String(prev?.id ?? prev?.end ?? end), start, end, hours: +((end - start) / 36e5).toFixed(1), u: now } };
+}
+const saveFastIn = (fasts, rec, oldKey) => [rec, ...(fasts || []).filter((f) => String(f.id ?? f.end) !== String(oldKey ?? rec.id))].sort((x, y) => y.end - x.end).slice(0, 30);
+/* ---------- fast edits end ---------- */
+
 /* ---------- starting a fast: say what it is before the clock starts ---------- */
 function FastStart({ data, onStart, onCancel }) {
   const crew = (data.groups || []).filter((g) => !g.lost && (g.scopes?.fast ?? DEFAULT_SCOPES.fast));
   const [ago, setAgo] = useState(0);   // hours since the last meal
+  const [exact, setExact] = useState(null);   // or an exact time
   return (
     <div className="glass pad stack">
       <h2>You're about to start a fast</h2>
@@ -761,7 +789,10 @@ function FastStart({ data, onStart, onCancel }) {
       <div>
         <label>When did you last eat?</label>
         <div className="chips">{[[0, "Just now"], [2, "2h ago"], [4, "4h ago"], [8, "8h ago"]].map(([v, l]) => (
-          <button key={v} className={ago === v ? "chip on" : "chip"} onClick={() => setAgo(v)}>{l}</button>))}</div>
+          <button key={v} className={!exact && ago === v ? "chip on" : "chip"} onClick={() => { setExact(null); setAgo(v); }}>{l}</button>))}
+          <button className={exact ? "chip on" : "chip"} onClick={() => setExact(exact ? null : Date.now() - 36e5)}>Pick a time</button></div>
+        {exact && <TimeField label="I stopped eating at" ms={exact} onChange={setExact} max={Date.now()} />}
+        {exact && checkFastStart(exact) && <p className="alert">{checkFastStart(exact)}</p>}
       </div>
       <p className="small">{crew.length
         ? <>Your crew ({crew.map((g) => g.name).join(", ")}) will see that you're fasting and for how long. At 24 hours, and every 12 hours after, you'll be asked to confirm you're still going, and friends can check on you. Change this under Crew → sharing.</>
@@ -769,8 +800,116 @@ function FastStart({ data, onStart, onCancel }) {
       <p className="dim tiny">Skip it if you're pregnant or nursing, have a history of disordered eating, take diabetes or blood-pressure medication, or just don't feel right. If you feel dizzy, faint or unwell, end it and eat. A longer fast never scores higher.</p>
       <div className="rowbtns">
         <button className="btn ghost wide" onClick={onCancel}>Not now</button>
-        <button className="btn solid wide" onClick={() => onStart(Date.now() - ago * 36e5)}>Start fast</button>
+        <button className="btn solid wide" disabled={!!exact && !!checkFastStart(exact)} onClick={() => onStart(exact || Date.now() - ago * 36e5)}>Start fast</button>
       </div>
+    </div>
+  );
+}
+
+function TimeField({ label, ms, onChange, min, max }) {
+  return (
+    <div><label>{label}</label>
+      <input type="datetime-local" value={Number.isFinite(ms) ? toLocalInput(ms) : ""} min={min ? toLocalInput(min) : undefined} max={max ? toLocalInput(max) : undefined}
+        onChange={(e) => onChange(fromLocalInput(e.target.value))} /></div>
+  );
+}
+const fmtWhen = (ms) => new Date(ms).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+// Changing when the running fast began.
+function FastStartEdit({ start, onSave, onCancel }) {
+  const [v, setV] = useState(start);
+  const err = checkFastStart(v);
+  const nudge = (min) => setV((x) => (Number.isFinite(x) ? x + min * 6e4 : x));
+  return (
+    <div className="glass pad stack fadein">
+      <h2>Change the start time</h2>
+      <p className="dim small">Forgot to tap Start? Set the time you actually stopped eating.</p>
+      <TimeField label="I started fasting at" ms={v} onChange={setV} max={Date.now()} />
+      <div className="chips">{[[-60, "1h earlier"], [-30, "30m earlier"], [30, "30m later"]].map(([m, l]) => <button key={m} className="chip" onClick={() => nudge(m)}>{l}</button>)}</div>
+      {!err && <p className="small">That makes it <strong>{((Date.now() - v) / 36e5).toFixed(1)} hours</strong> so far.</p>}
+      {err && <p className="alert">{err}</p>}
+      <div className="rowbtns">
+        <button className="btn ghost wide" onClick={onCancel}>Cancel</button>
+        <button className="btn solid wide" disabled={!!err} onClick={() => onSave(v)}>Save</button>
+      </div>
+    </div>
+  );
+}
+
+// Ending the running fast: now, or the time you really stopped.
+function FastEndEdit({ start, onSave, onCancel }) {
+  const [end, setEnd] = useState(Date.now());
+  const r = fastRecord(start, end);
+  return (
+    <div className="glass pad stack fadein">
+      <h2>End your fast</h2>
+      <p className="dim small">Forgot to stop it? Pick the time you really ate.</p>
+      <div className="chips">{[[0, "Just now"], [30, "30 min ago"], [60, "1 hour ago"], [120, "2 hours ago"]].map(([m, l]) => <button key={m} className="chip" onClick={() => setEnd(Date.now() - m * 6e4)}>{l}</button>)}</div>
+      <TimeField label="I ended my fast at" ms={end} onChange={setEnd} min={start} max={Date.now()} />
+      {r.rec && <p className="small">Total fast: <strong>{r.rec.hours} hours</strong> ({fmtWhen(start)} to {fmtWhen(end)})</p>}
+      {r.error && <p className="alert">{r.error}</p>}
+      <div className="rowbtns">
+        <button className="btn ghost wide" onClick={onCancel}>Keep fasting</button>
+        <button className="btn solid wide" disabled={!r.rec} onClick={() => onSave(r.rec)}>Save fast</button>
+      </div>
+    </div>
+  );
+}
+
+// The list of finished fasts, with edit, delete, and "add one I forgot".
+function PastFasts({ data, setData }) {
+  const fasts = data.fasts || [];
+  const [editing, setEditing] = useState(null);   // fast key, or "new"
+  const [s, setS] = useState(0), [e, setE] = useState(0);
+  const open = (f) => {
+    if (f) { setEditing(String(f.id ?? f.end)); setE(f.end); setS(f.start ?? f.end - (f.hours || 16) * 36e5); }
+    else { setEditing("new"); setE(Date.now()); setS(Date.now() - 16 * 36e5); }
+  };
+  const prev = editing && editing !== "new" ? fasts.find((f) => String(f.id ?? f.end) === editing) : null;
+  const r = fastRecord(s, e, prev);
+  const save = () => {
+    if (!r.rec) return;
+    setData((d) => ({ ...d, fasts: saveFastIn(d.fasts, editing === "new" ? { ...r.rec, id: crypto.randomUUID() } : r.rec, editing === "new" ? null : editing) }));
+    setEditing(null);
+  };
+  const del = (f) => { if (!confirm("Delete this fast?")) return;
+    const key = String(f.id ?? f.end);
+    setData((d) => ({ ...d, deleted: tombstone(d, "fast:" + key), fasts: (d.fasts || []).filter((x) => String(x.id ?? x.end) !== key) })); setEditing(null); };
+  return (
+    <div className="glass">
+      <div className="mealhead">Past fasts</div>
+      {fasts.length === 0 && editing !== "new" && <p className="dim small pad">No finished fasts yet.</p>}
+      {fasts.slice(0, 10).map((f) => {
+        const key = String(f.id ?? f.end);
+        return (
+          <div key={key} className="dish">
+            <div className="row gap"><div><div className="dishname">{f.hours} hours</div>
+              <div className="dim tiny">{f.start ? `${fmtWhen(f.start)} to ${fmtWhen(f.end)}` : `Ended ${fmtWhen(f.end)}`}</div></div>
+              <button className="chip" onClick={() => (editing === key ? setEditing(null) : open(f))}>{editing === key ? "Close" : "Edit"}</button></div>
+            {editing === key && (
+              <div className="stack fadein" style={{ marginTop: 8 }}>
+                <TimeField label="Started" ms={s} onChange={setS} max={Date.now()} />
+                <TimeField label="Ended" ms={e} onChange={setE} min={s} max={Date.now()} />
+                {r.rec && <p className="small">Total: <strong>{r.rec.hours} hours</strong></p>}
+                {r.error && <p className="alert">{r.error}</p>}
+                <div className="rowbtns">
+                  <button className="btn ghost" onClick={() => del(f)}>Delete</button>
+                  <button className="btn solid wide" disabled={!r.rec} onClick={save}>Save</button>
+                </div>
+              </div>)}
+          </div>);
+      })}
+      {editing === "new"
+        ? (
+          <div className="dish stack fadein">
+            <div className="dishname">Add a fast I forgot to log</div>
+            <TimeField label="Started" ms={s} onChange={setS} max={Date.now()} />
+            <TimeField label="Ended" ms={e} onChange={setE} min={s} max={Date.now()} />
+            {r.rec && <p className="small">Total: <strong>{r.rec.hours} hours</strong></p>}
+            {r.error && <p className="alert">{r.error}</p>}
+            <div className="rowbtns"><button className="btn ghost wide" onClick={() => setEditing(null)}>Cancel</button><button className="btn solid wide" disabled={!r.rec} onClick={save}>Save</button></div>
+          </div>)
+        : <div className="pad"><button className="btn ghost wide" onClick={() => open(null)}>+ Add a fast I forgot to log</button></div>}
     </div>
   );
 }
@@ -783,6 +922,9 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
     days: { ...d.days, [dayId]: { ...(d.days[dayId] || blankDay()), foods: (d.days[dayId]?.foods || []).filter((x) => x.id !== id), u: Date.now() } } }));
   const [showStages, setShowStages] = useState(false);
   const [confirmFast, setConfirmFast] = useState(false);
+  const [editStart, setEditStart] = useState(false);
+  const [endOpen, setEndOpen] = useState(false);
+  const [showPast, setShowPast] = useState(false);
   const [now, setNow] = useState(Date.now());
   const fast = data.fast;
   const fastOn = fastingEnabled(data);
@@ -815,8 +957,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
             <p className="small">{Math.floor(hours)} hours in. Still fasting, and feeling okay? {cs.state === "unconfirmed" && inGroup ? "Your group can see you haven't confirmed." : ""}</p>
             <div className="rowbtns">
               <button className="btn solid" onClick={() => setData((d) => ({ ...d, fast: { ...d.fast, confirmedAt: Date.now() } }))}>Still fasting</button>
-              <button className="btn ghost" onClick={() => setData((d) => ({ ...d, fast: null,
-                fasts: [{ end: Date.now(), hours: +((Date.now() - d.fast.start) / 36e5).toFixed(1) }, ...(d.fasts || [])].slice(0, 30) }))}>{H("Final buzzer", "End fast")}</button>
+              <button className="btn ghost" onClick={() => setEndOpen(true)}>End fast</button>
             </div>
             <p className="dim tiny">If you feel dizzy, faint or unwell, break it and eat.</p>
           </div>
@@ -829,7 +970,13 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
           <button className="btn ghost wide" onClick={goTab}>Set up fasting</button>
         </div>
       )}
-      {!fastOn ? null : fast ? (
+      {!fastOn ? null : fast && endOpen ? (
+        <FastEndEdit start={fast.start} onCancel={() => setEndOpen(false)}
+          onSave={(rec) => { setData((d) => ({ ...d, fast: null, fasts: saveFastIn(d.fasts, rec, null) })); setEndOpen(false); }} />
+      ) : fast && editStart ? (
+        <FastStartEdit start={fast.start} onCancel={() => setEditStart(false)}
+          onSave={(v) => { setData((d) => ({ ...d, fast: { ...d.fast, start: v } })); setEditStart(false); }} />
+      ) : fast ? (
         <div className="glass hero">
           <Ring pct={Math.min(1, hours / 24)} color={st.hue}
             ticks={STAGES.map((sg) => ({ at: sg.at / 24, hit: hours >= sg.at, color: sg.hue }))}>
@@ -837,13 +984,13 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
             <div className="stagename" style={{ color: st.hue }}>{st.name}</div>
             <div className="dim tiny">{nx ? `${nx.name} in ${(nx.at - hours).toFixed(1)}h` : "deep fast"}</div>
           </Ring>
+          <p className="dim tiny center">Started {fmtWhen(fast.start)}</p>
           <p className="stagebody">{st.body}</p>
           {(() => { const c = fastCaution(hours, { trained: day.tags.some((x) => x === "lift" || x === "ball"), recovering: !!day.rest || !!data.recovery?.on }); return c ? <p className={c.level === "note" ? "cue" : "alert"}>{c.text}</p> : null; })()}
           <div className="rowbtns">
             <button className="btn ghost" onClick={() => setShowStages(!showStages)}>{showStages ? "Hide" : "All stages"}</button>
-            <button className="btn ghost" onClick={() => setData((d) => ({ ...d, fast: { ...d.fast, start: d.fast.start - 18e5 } }))}>−30m</button>
-            <button className="btn solid" onClick={() => setData((d) => ({ ...d, fast: null,
-              fasts: [{ end: Date.now(), hours: +((Date.now() - d.fast.start) / 36e5).toFixed(1) }, ...(d.fasts || [])].slice(0, 30) }))}>{H("Final buzzer", "End fast")}</button>
+            <button className="btn ghost" onClick={() => setEditStart(true)}>Edit start</button>
+            <button className="btn solid" onClick={() => setEndOpen(true)}>End fast</button>
           </div>
         </div>
       ) : confirmFast ? (
@@ -858,8 +1005,10 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
           <button className="btn solid wide big" onClick={() => setConfirmFast(true)}>{H("Start the clock", "Start fasting")}</button>
           <p className="dim tiny center">Starting a fast means no food until you end it. You'll see what it involves first.</p>
           {(data.fasts || [])[0] && <p className="dim tiny center">{H("Last game", "Last fast")}: {data.fasts[0].hours}h</p>}
+          <button className="chip" onClick={() => setShowPast(!showPast)}>{showPast ? "Hide past fasts" : "Forgot to log a fast? Edit or add one"}</button>
         </div>
       )}
+      {fastOn && !fast && showPast && <PastFasts data={data} setData={setData} />}
 
       {showStages && (
         <div className="glass fadein">
@@ -2688,7 +2837,7 @@ function RoadTab({ data, setData, targets, day, updateDay }) {
   return (
     <>
       <div className="glass pad stack">
-        <div className="row"><h2>Eating Out</h2><span className="dim tiny">{Math.max(0, Math.round(remainCal)).toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g protein left</span></div>
+        <div className="row"><h2>What's left today</h2><span className="dim tiny">{Math.max(0, Math.round(remainCal)).toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g protein left</span></div>
         <p className="dim small">Stopping for food on the road? These are the best orders for what you have left today. Tap Eat this to log it.</p>
         <div className="chips">{MEALS.map((m) => <button key={m} className={slot === m ? "chip on" : "chip"} onClick={() => { setSlot(m); setMore(false); }}>{m}</button>)}</div>
         <label>Only show one place <span className="dim tiny">(swipe for more)</span></label>
@@ -3354,7 +3503,7 @@ function LogTab({ data, setData, onPick }) {
         <button className={view === "mine" ? "chip on" : "chip"} onClick={() => setView("mine")}>My history</button>
         <button className={view === "group" ? "chip on" : "chip"} onClick={() => setView("group")}>{H("Crew", "Friends")}</button>
       </div>
-      {view === "mine" ? <History data={data} onPick={onPick} /> : <GroupsView data={data} setData={setData} />}
+      {view === "mine" ? <><History data={data} onPick={onPick} />{fastingEnabled(data) && <PastFasts data={data} setData={setData} />}</> : <GroupsView data={data} setData={setData} />}
     </>
   );
 }
@@ -4301,6 +4450,9 @@ function Shell({ children, theme, top }) {
         .recipe { border-top:1px solid rgba(255,255,255,.08); padding-top:10px; font-size:13px; }
         .recipe ul, .recipe ol { margin:8px 0 0; padding-left:18px; display:flex; flex-direction:column; gap:5px; }
         .recipe ul { color:rgba(241,245,249,.7); }
+        .tabtitle { text-align:center; margin:6px 0 14px; }
+        .tabtitle span { display:inline-block; font-size:34px; font-weight:800; letter-spacing:-.5px; line-height:1.1; padding-bottom:6px; border-bottom:4px solid var(--nbared, var(--pri, #6EE7F9)); }
+        .tabtitle small { display:block; margin-top:8px; font-size:13.5px; opacity:.7; }
         .dockbtn { flex:1; min-width:0; background:none; border:none; color:rgba(241,245,249,.55); font:inherit; font-size:11px; cursor:pointer;
           display:flex; flex-direction:column; align-items:center; gap:4px; padding:10px 2px; border-radius:16px; transition:all .2s; }
         .dockbtn.on { color:#0A0E1F; background:#F1F5F9; font-weight:700; }

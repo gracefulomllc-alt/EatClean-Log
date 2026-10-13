@@ -21,6 +21,7 @@ const args = {
   "gates.test.cjs": [extract("groups.js", between("/* ---------- groups: what a phone publishes", "/* ---------- groups UI"))],
   "spcview.test.cjs": [extract("spcview.js", fn("spcView"))],
   "water.test.cjs": [extract("water.js", fn("waterPlan"))],
+  "fastedit.test.cjs": [extract("fastedit.js", between("/* ---------- fast edits:", "/* ---------- fast edits end"))],
 };
 
 let failed = 0;
