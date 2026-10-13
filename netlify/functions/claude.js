@@ -8,6 +8,10 @@ const MAX_TOKENS = 8192;   // a week of meal prep is a long answer
 // Gemini model names change often. Override with a GEMINI_MODEL env var
 // if this one 404s - check aistudio.google.com for the current name.
 const DEFAULT_MODEL = "gemini-2.5-flash";
+// Google retires and renames models. If the first choice is gone (404), out of quota (429) or
+// overloaded (503), the next one is tried before the person ever sees an error.
+const FALLBACK_MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-lite-latest"];
+const RETRY_NEXT = new Set([404, 429, 500, 503]);
 
 const hourKey = () => `h:${new Date().toISOString().slice(0, 13)}`;
 const dayKey = () => `d:${new Date().toISOString().slice(0, 10)}`;
@@ -60,8 +64,8 @@ export default async (req) => {
   try { body = await req.json(); } catch { return new Response("Bad JSON", { status: 400 }); }
   if (!Array.isArray(body.messages)) return new Response("No messages", { status: 400 });
 
-  const model = Netlify.env.get("GEMINI_MODEL") || DEFAULT_MODEL;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+  const first = Netlify.env.get("GEMINI_MODEL") || DEFAULT_MODEL;
+  const models = [...new Set([first, ...FALLBACK_MODELS])];
 
   const generationConfig = {
     maxOutputTokens: Math.min(body.max_tokens || 1500, MAX_TOKENS),
@@ -74,23 +78,32 @@ export default async (req) => {
   // Structured answers (menus, labels, estimates) come back as JSON. The coach chats in plain text.
   if (body.json !== false) generationConfig.responseMimeType = "application/json";
 
-  const call = (cfg) => fetch(url, {
+  const call = (model, cfg) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "x-goog-api-key": key },
     body: JSON.stringify({ contents: toGemini(body.messages), generationConfig: cfg }),
   });
 
-  let r = await call(generationConfig);
-  // Some models (2.5 Pro, and whatever Google ships next) reject a zero thinking budget.
-  // If GEMINI_MODEL points at one of those, retry once with the model's own default.
-  if (r.status === 400) {
-    const { thinkingConfig, ...rest } = generationConfig;
-    r = await call(rest);
+  let r, lastDetail = "", used = first;
+  for (const model of models) {
+    used = model;
+    try {
+      r = await call(model, generationConfig);
+      // Some models (2.5 Pro, and whatever Google ships next) reject a zero thinking budget.
+      // Retry once with the model's own default.
+      if (r.status === 400) {
+        const { thinkingConfig, ...rest } = generationConfig;
+        r = await call(model, rest);
+      }
+    } catch (e) { lastDetail = `network error: ${String(e.message || e).slice(0, 120)}`; r = null; continue; }
+    if (r.ok) break;
+    lastDetail = (await r.text()).slice(0, 300);
+    if (!RETRY_NEXT.has(r.status)) break;
   }
+  if (!r) return new Response(`Couldn't reach Gemini (${lastDetail})`, { status: 502 });
 
   if (!r.ok) {
-    const detail = await r.text();
-    return new Response(`Gemini error ${r.status}: ${detail.slice(0, 400)}`, { status: r.status });
+    return new Response(`Gemini error ${r.status} (model ${used}): ${lastDetail}`, { status: r.status });
   }
 
   const data = await r.json();

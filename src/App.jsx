@@ -443,7 +443,14 @@ async function askClaude(content, maxTokens = 2000) {
   if (!r.ok) throw new Error(await r.text());
   const j = await r.json();
   const txt = j.content.filter((b) => b.type === "text").map((b) => b.text).join("");
-  return JSON.parse(txt.replace(/```json|```/g, "").trim());
+  const clean = txt.replace(/```json|```/g, "").trim();
+  try { return JSON.parse(clean); }
+  catch {
+    // Models sometimes wrap the JSON in a sentence. Take the outermost object.
+    const i = clean.indexOf("{"), j = clean.lastIndexOf("}");
+    if (i >= 0 && j > i) return JSON.parse(clean.slice(i, j + 1));
+    throw new Error("The coach's answer came back garbled. Try again.");
+  }
 }
 
 /* ---------- motion helpers ---------- */
