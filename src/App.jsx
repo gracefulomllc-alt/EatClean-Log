@@ -1,4 +1,4 @@
-import { suggestMeals } from "./mealLibrary.js";
+import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { SPC_GAMES, SPC_URL } from "./spcSchedule.js";
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, CartesianGrid } from "recharts";
@@ -419,8 +419,9 @@ const PALETTES = {
 let TEAM = "Lakers";
 let THEME = "glass";
 let PRO = true;
+let FOOD_RULES = "";   // allergies and diet, told to the AI on every request
 let COURT = true;   // the hardwood basketball look + hoops language (default for everyone)
-const H = (court, plain) => (COURT ? court : plain);
+const H = (court, plain) => plain;   // plain words everywhere; the basketball is in the look, not the wording
 const QTR = { Breakfast: "Q1", Lunch: "Q2", Dinner: "Q3", Snack: "OT" };
 const C = new Proxy({}, { get: (_, k) => PALETTES[THEME][k] });
 const MEAL_COLOR = new Proxy({}, { get: (_, k) => PALETTES[THEME].meal[k] });
@@ -441,7 +442,7 @@ async function foodApi(payload) {
 async function askClaude(content, maxTokens = 2000) {
   const r = await fetch("/api/claude", {
     method: "POST", headers: { "Content-Type": "application/json", "x-access-code": ACCESS() },
-    body: JSON.stringify({ max_tokens: maxTokens, messages: [{ role: "user", content }] }),
+    body: JSON.stringify({ max_tokens: maxTokens, messages: [{ role: "user", content: FOOD_RULES ? [{ type: "text", text: FOOD_RULES + " Follow these rules in every answer." }, ...(Array.isArray(content) ? content : [{ type: "text", text: String(content) }])] : content }] }),
   });
   if (!r.ok) throw new Error(await r.text());
   const j = await r.json();
@@ -539,6 +540,7 @@ export default function CutLog() {
   COURT = th === "court";                          // basketball language (Court, Plays, box score) only on Hardwood
   THEME = PRO ? "pro" : COURT ? "arena" : ["modern", "arena"].includes(th) ? th : "glass";
   TEAM = data?.team || "Lakers";
+  FOOD_RULES = avoidNote(data?.profile);
   const [sync, setSync] = useState({ state: localStorage.getItem("cutlog:sync") ? "idle" : "off" });
   const dataRef = useRef(null);
   const syncBusy = useRef(false);
@@ -686,9 +688,9 @@ export default function CutLog() {
   </Shell>;
   if (!data.profile) return <Shell theme={THEME}>
     <JoinSync onJoin={joinSync} />
-    <ProfileForm
-      initial={{ name: "", sex: "male", age: "", heightIn: 69, weight: "", goalWeight: "", activity: "light", pace: 1 }}
-      title="Set your numbers" cta="Start" intro="Sets your daily budget. Change any of it later."
+    <ProfileForm wizard
+      initial={BLANK_PROFILE}
+      title="Let's build your plan" cta="Start"
       onSave={(profile) => setData((d) => ({ ...d, profile }))} /></Shell>;
 
   const TABS = [["now", H("Court", "Today"), COURT ? Dribbble : Timer], ["plan", H("Plays", "Meals"), ChefHat], ["coach", "Coach", MessageCircle], ["weight", H("Stats", "Progress"), Scale], ["log", H("Scores", "History"), CalendarDays], ["setup", H("Locker", "Settings"), Cog]];
@@ -926,7 +928,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
         {day.foods.length === 0 ? <p className="dim center pad">{H("Empty box score. Get on the board.", "Nothing logged yet. Press Add a meal below to start.")}</p> :
           MEALS.filter((m) => day.foods.some((f) => f.meal === m)).map((m) => (
             <div key={m}>
-              <div className="mealhead"><span className="dot" style={{ background: MEAL_COLOR[m], boxShadow: `0 0 8px ${MEAL_COLOR[m]}` }} />{COURT ? `${QTR[m]} · ` : ""}{m}
+              <div className="mealhead"><span className="dot" style={{ background: MEAL_COLOR[m], boxShadow: `0 0 8px ${MEAL_COLOR[m]}` }} />{m}
                 <span className="right dim">{day.foods.filter((f) => f.meal === m).reduce((a, f) => a + f.calories, 0)}</span></div>
               {(() => { const rows = day.foods.slice().sort((a, b) => (a.at || 0) - (b.at || 0)).filter((f) => f.meal === m);
                 return rows.map((f, i) => {
@@ -2602,8 +2604,8 @@ Respond with ONLY JSON:
               )}
             </div>
   );
-  const ideas = suggestMeals(craving, slot, remainCal, remainP, 6).map((m) => ({ ...m, slot, id: "lib-" + slot + m.name }));
-  const otherIdeas = ideas.length || !craving.trim() ? [] : suggestMeals(craving, null, remainCal, remainP, 4).map((m) => ({ ...m, slot: m.slots[0], id: "lib-x" + m.name }));
+  const ideas = suggestMeals(craving, slot, remainCal, remainP, 6, data.profile).map((m) => ({ ...m, slot, id: "lib-" + slot + m.name }));
+  const otherIdeas = ideas.length || !craving.trim() ? [] : suggestMeals(craving, null, remainCal, remainP, 4, data.profile).map((m) => ({ ...m, slot: m.slots[0], id: "lib-x" + m.name }));
   return (
     <>
       <div className="chips">
@@ -3195,18 +3197,21 @@ function Weight({ data, setData, targets, updateDay }) {
   });
   const { weight: start, goalWeight: goal } = data.profile;
   const latest = entries.length ? entries[entries.length - 1].w : start;
-  const lost = start - latest;
+  const gaining = goal > start;                       // a bulk: the goal is above the starting weight
+  const lost = gaining ? latest - start : start - latest;
   const shown = useCountUp(latest);
-  const wks = targets.actualPace > 0 ? Math.ceil((latest - goal) / targets.actualPace) : null;
+  const toGo = gaining ? goal - latest : latest - goal;
+  const pace = gaining ? -targets.actualPace : targets.actualPace;
+  const wks = pace > 0 && toGo > 0 ? Math.ceil(toGo / pace) : null;
   const eta = wks ? new Date(Date.now() + wks * 7 * 864e5).toLocaleDateString(undefined, { month: "long", year: "numeric" }) : null;
 
   return (
     <>
       <div className="glass hero">
-        <Ring pct={start > goal ? lost / (start - goal) : 0} color={C.protein} size={220}>
+        <Ring pct={start !== goal ? Math.max(0, lost) / Math.abs(start - goal) : 0} color={C.protein} size={220}>
           <div className="huge">{shown.toFixed(1)}<span className="unit">lb</span></div>
-          <div className="dim tiny">{lost > 0 ? `${lost.toFixed(1)} down` : "no change yet"}</div>
-          <div className="dim tiny">{(latest - goal).toFixed(1)} to go</div>
+          <div className="dim tiny">{lost > 0 ? `${lost.toFixed(1)} ${gaining ? "up" : "down"}` : "no change yet"}</div>
+          <div className="dim tiny">{Math.max(0, toGo).toFixed(1)} to go</div>
         </Ring>
         <div className="row wideinput">
           <label>Weigh in</label>
@@ -3243,7 +3248,7 @@ function Weight({ data, setData, targets, updateDay }) {
       <ChallengePanel data={data} setData={setData} />
       <StrengthPanel data={data} />
 
-      {eta && <div className="glass pad"><p className="small">At {targets.actualPace.toFixed(1)} lb a week you reach {goal} around <strong>{eta}</strong>. After three weeks of real data, check that against what the scale actually did — the formula runs about 10% off either way.</p></div>}
+      {eta && <div className="glass pad"><p className="small">At {Math.abs(targets.actualPace).toFixed(1)} lb a week you reach {goal} around <strong>{eta}</strong>. After three weeks of real data, check that against what the scale actually did — the formula runs about 10% off either way.</p></div>}
     </>
   );
 }
@@ -3278,7 +3283,9 @@ function coachContext(data, targets, adaptive) {
   return [
     p.age < 18
       ? `Person: ${p.sex}, ${p.age} (UNDER 18), ${Math.floor(p.heightIn / 12)}'${p.heightIn % 12}", ${p.weight} lb. IMPORTANT: this is a young athlete. Never suggest cutting calories, fasting, skipping meals or losing weight. Talk about fueling growth and sports, sleep, water and real food. For any weight question, tell them to talk with a parent, a doctor and their coach. Use short, simple words.`
-      : `Person: ${p.sex}, ${p.age}, ${Math.floor(p.heightIn / 12)}'${p.heightIn % 12}", started ${p.weight} lb, goal ${p.goalWeight} lb, losing ~${p.pace} lb/week.`,
+      : `Person: ${p.sex}, ${p.age}, ${Math.floor(p.heightIn / 12)}'${p.heightIn % 12}", started ${p.weight} lb, goal ${p.goalWeight} lb, ${goalPhrase(p)}.`,
+    lifestyleNote(p),
+    avoidNote(p),
     `Today's budget: ${targets.calories} cal, ${targets.protein}g protein (${targets.carbs}g carbs, ${targets.fat}g fat).${targets.earned ? ` Includes ${targets.earned} earned from activity.` : ""}`,
     adaptive?.ready ? `Measured maintenance from their own data: ${adaptive.tdee} cal (formula said ${adaptive.formula}); trending ${adaptive.lbPerWeek} lb/week.` : `Maintenance is still a formula estimate.`,
     `Eaten today: ${Math.round(t.c)} cal, ${Math.round(t.p)}g protein — ${Math.round(targets.calories - t.c)} cal and ${Math.max(0, Math.round(targets.protein - t.p))}g protein left.`,
@@ -3300,7 +3307,7 @@ function coachContext(data, targets, adaptive) {
   ].filter(Boolean).join("\n");
 }
 
-const COACH_RULES = `You are the diet coach inside this person's food-logging app. Everyone using this app played or coached basketball, so talk like a good coach: game plans, halftime adjustments, huddles, reps. Keep it natural, never corny, and never shame anyone. A bad day is a missed shot, and the next play is what matters. You can see their numbers below — use them. Answer like a sharp, practical coach texting back: short, specific, grounded in their actual remaining calories and protein. Name real foods and portions. No lectures, no generic advice they could get anywhere.
+const COACH_RULES = `You are the diet coach inside this person's food-logging app. Talk like a good coach and a good nutritionist: warm, plain words, no jargon, no sports slang. Never shame anyone. A bad day is just a bad day, and the next meal is what matters. You can see their numbers below — use them. Answer like a sharp, practical coach texting back: short, specific, grounded in their actual remaining calories and protein. Name real foods and portions. No lectures, no generic advice they could get anywhere.
 
 Hard lines:
 - You are not a doctor. Don't diagnose, interpret symptoms, or advise on medications or medical conditions — tell them to ask their doctor.
@@ -3339,7 +3346,7 @@ function Coach({ data, setData, targets, adaptive }) {
     setBusy(false);
   };
 
-  const quick = ["Halftime check: how's my day?", "What should I eat tonight?", "How do I make this Tier 1?", "What should I eat next?", "I'm at a gas station — what do I grab?", "How's my week going?", "I'm starving and have 400 cal left", "I blew my budget today. Now what?"];
+  const quick = ["How's my day going?", "What should I eat tonight?", "How do I make this Tier 1?", "What should I eat next?", "I'm at a gas station — what do I grab?", "How's my week going?", "I'm starving and have 400 cal left", "I blew my budget today. Now what?"];
 
   return (
     <>
@@ -3637,8 +3644,8 @@ function Reminders() {
 }
 
 const ALERT_KEYS = [
-  ["team", "Tip-off and final for my team", "Uses the team you picked under Look."],
-  ["spc", "South Plains Texans tip-off", "Fires when a posted game time arrives."],
+  ["team", "Game start and final score for my team", "Uses the team you picked under Look."],
+  ["spc", "South Plains Texans game start", "Fires when a posted game time arrives."],
   ["fastCheck", "My fast check-in", "At 24h, then every 12h while you're fasting."],
   ["nudges", "Nudges from friends", "When someone taps Check on them or Cheer."],
   ["water", "Water reminders", "11:00 and 16:00, your time."],
@@ -3724,7 +3731,7 @@ function AlertsPanel({ data, setData }) {
                 <select value={data.team || "Lakers"} onChange={(e) => setData((d) => ({ ...d, team: e.target.value }))} className="teampick" aria-label="My team">
                   {NBA_TEAMS.map(([name]) => <option key={name} value={name}>{name}</option>)}
                 </select>)}
-              <p className="dim tiny">Friends' fasts never send you alerts. Checked every 10 minutes, so a tip-off can land a few minutes late.</p>
+              <p className="dim tiny">Friends' fasts never send you alerts. Checked every 10 minutes, so a game-start alert can land a few minutes late.</p>
             </div>
           </>
         ) : (
@@ -3801,7 +3808,7 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
         <div className="row"><span className="dim">Rest-day protein</span><strong className="mono">{t.protein}g</strong></div>
         {t.clamped && <p className="alert">Budget is held at the floor. Add movement instead of cutting lower.</p>}
       </div>
-      <ProfileForm initial={data.profile} title="Your numbers" cta="Save" onSave={onSave} />
+      <ProfileForm initial={data.profile} title="Your profile" cta="Save" onSave={onSave} />
       <div className="glass pad stack">
         <h2>Backup</h2>
         <p className="dim tiny">This lives in one browser. Copy it somewhere safe now and again.</p>
@@ -3821,49 +3828,167 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
   );
 }
 
-function ProfileForm({ initial, title, cta, intro, onSave }) {
-  const [p, setP] = useState(initial);
+const BLANK_PROFILE = { name: "", sex: "male", age: "", heightIn: 69, weight: "", goalWeight: "", activity: "light", pace: 1, goal: "lose",
+  health: [], allergies: [], allergyOther: "", diet: "", dislikes: "", meals: 3, cooking: "", budget: "", workouts: "", sleep: "", waterOz: 100 };
+const goalOf = (p) => p.goal || (+p.goalWeight > +p.weight ? "gain" : +p.goalWeight === +p.weight ? "maintain" : "lose");
+const goalPhrase = (p) => (goalOf(p) === "gain" ? `gaining ~${Math.abs(p.pace || 0.5)} lb/week` : goalOf(p) === "maintain" ? "keeping their weight steady" : `losing ~${p.pace} lb/week`);
+const HEALTH = { pregnant: "Pregnant or nursing", sugar: "Diabetes or blood sugar", heart: "Heart or blood pressure", other: "Something else my doctor watches" };
+const COOKING = { none: "I don't cook", basic: "Simple stuff", good: "I cook well" };
+const BUDGET = { tight: "Tight", ok: "Normal", free: "Flexible" };
+const SLEEP = { "5": "Under 6 hours", "6.5": "6 to 7", "7.5": "7 to 8", "9": "8 or more" };
+const lifestyleNote = (p) => {
+  const bits = [];
+  if (p.workouts !== "" && p.workouts != null) bits.push(`works out ${p.workouts} day${+p.workouts === 1 ? "" : "s"} a week`);
+  if (p.sleep) bits.push(`sleeps about ${p.sleep} hours`);
+  if (p.meals) bits.push(`prefers ${p.meals} meals a day`);
+  if (p.cooking) bits.push(`cooking: ${COOKING[p.cooking]}`);
+  if (p.budget) bits.push(`food budget: ${BUDGET[p.budget]}`);
+  const h = (p.health || []).length ? " They have told us a doctor watches something (pregnancy, blood sugar, heart or similar). Keep advice gentle and tell them to follow their doctor." : "";
+  return bits.length || h ? `About their life: ${bits.join(", ")}.${h}` : "";
+};
+
+function ProfileForm({ initial, title, cta, intro, onSave, wizard }) {
+  const [p, setP] = useState({ ...BLANK_PROFILE, ...initial });
+  const [step, setStep] = useState(0);
   const set = (k, v) => setP((x) => ({ ...x, [k]: v }));
-  // Nothing is saved, and no budget is shown, until the numbers are real.
-  const numsOk = +p.age >= 13 && +p.age <= 100 && +p.weight >= 80 && +p.weight <= 600 && +p.goalWeight >= 80 && +p.goalWeight <= 600 && +p.heightIn >= 48 && +p.heightIn <= 90;
-  const pv = computeTargets({ ...p, weight: numsOk ? +p.weight : 180, goalWeight: numsOk ? +p.goalWeight : 160, age: numsOk ? +p.age : 30, heightIn: +p.heightIn || 69 }, []);
+  const toggle = (k, v) => setP((x) => ({ ...x, [k]: (x[k] || []).includes(v) ? x[k].filter((y) => y !== v) : [...(x[k] || []), v] }));
+  const goal = goalOf(p);
+  const setGoal = (g) => setP((x) => ({ ...x, goal: g, pace: g === "maintain" ? 0 : g === "gain" ? -0.5 : (x.pace > 0 ? x.pace : 1) }));
+  const ageOk = +p.age >= 13 && +p.age <= 100;
+  const bodyOk = +p.weight >= 80 && +p.weight <= 600 && +p.heightIn >= 48 && +p.heightIn <= 90;
+  const goalOk = goal === "maintain" || (+p.goalWeight >= 80 && +p.goalWeight <= 600);
+  const numsOk = ageOk && bodyOk && goalOk;
+  const eff = { ...p, goalWeight: goal === "maintain" ? p.weight : p.goalWeight };
+  const pv = computeTargets({ ...eff, weight: numsOk ? +eff.weight : 180, goalWeight: numsOk ? +eff.goalWeight : 160, age: numsOk ? +p.age : 30, heightIn: +p.heightIn || 69 }, []);
   const ft = Math.floor(p.heightIn / 12), inch = p.heightIn % 12;
-  return (
-    <div className="glass pad stack">
-      <h2>{title}</h2>
-      {intro && <p className="dim small">{intro}</p>}
-      <div><label>Your name</label><input placeholder="So your crew knows who you are" value={p.name || ""} onChange={(e) => set("name", e.target.value)} /></div>
-      <div className="chips">{["male", "female"].map((s) => (
-        <button key={s} className={p.sex === s ? "chip on" : "chip"} onClick={() => set("sex", s)}>{s === "male" ? "Male" : "Female"}</button>))}</div>
-      <div className="grid2">
-        <div><label>Age</label><input type="number" value={p.age} onChange={(e) => set("age", e.target.value)} /></div>
-        <div><label>Height</label><div className="row gap">
-          <input aria-label="Feet" type="number" value={ft} onChange={(e) => set("heightIn", (+e.target.value) * 12 + inch)} />
-          <input aria-label="Inches" type="number" value={inch} onChange={(e) => set("heightIn", ft * 12 + (+e.target.value))} /></div></div>
-        <div><label>Current weight</label><input type="number" value={p.weight} onChange={(e) => set("weight", e.target.value)} /></div>
-        <div><label>Goal weight</label><input type="number" value={p.goalWeight} onChange={(e) => set("goalWeight", e.target.value)} /></div>
-        <div><label>Daily water (oz)</label><input type="number" value={p.waterOz ?? 100} onChange={(e) => set("waterOz", e.target.value)} /></div>
-      </div>
-      <label>How your days usually go</label>
-      <div className="stack">{Object.entries(ACTIVITY).map(([k, v]) => (
-        <button key={k} className={p.activity === k ? "listbtn on" : "listbtn"} onClick={() => set("activity", k)}>{v.label}</button>))}</div>
-      {numsOk && pv.minor ? (
-        <p className="cue">You're under 18, so Cut Log doesn't set a calorie cut. Your numbers are the fuel your body needs to grow and play. If you want to change your weight, talk with a parent, a doctor and your coach first.</p>
-      ) : (
+  const save = () => onSave({ ...p, goal, age: +p.age, heightIn: +p.heightIn, weight: +p.weight, goalWeight: goal === "maintain" ? +p.weight : +p.goalWeight,
+    waterOz: +p.waterOz || 100, meals: +p.meals || 3, workouts: p.workouts === "" ? "" : +p.workouts });
+  const q = (text, hint) => <div><label>{text}</label>{hint && <p className="dim tiny" style={{ margin: "2px 0 6px" }}>{hint}</p>}</div>;
+  const pick = (map, k) => <div className="chips">{Object.entries(map).map(([v, l]) => (
+    <button key={v} className={String(p[k]) === v ? "chip on" : "chip"} onClick={() => set(k, String(p[k]) === v ? "" : v)}>{l}</button>))}</div>;
+
+  const S = {
+    you: { title: "About you", need: () => ageOk, body: (
+      <>
+        <div><label>What should we call you?</label><input placeholder="First name is fine" value={p.name || ""} onChange={(e) => set("name", e.target.value)} /></div>
+        {q("Are you male or female?", "Your body burns calories a little differently, so this sets your starting number.")}
+        <div className="chips">{["male", "female"].map((x) => (
+          <button key={x} className={p.sex === x ? "chip on" : "chip"} onClick={() => set("sex", x)}>{x === "male" ? "Male" : "Female"}</button>))}</div>
+        <div><label>How old are you?</label><input type="number" inputMode="numeric" value={p.age} onChange={(e) => set("age", e.target.value)} /></div>
+        {p.age !== "" && !ageOk && <p className="alert">Enter an age from 13 to 100.</p>}
+      </>) },
+    body: { title: "Your body", need: () => bodyOk, body: (
+      <>
+        <div><label>How tall are you?</label><div className="row gap">
+          <input aria-label="Feet" type="number" inputMode="numeric" value={ft} onChange={(e) => set("heightIn", (+e.target.value) * 12 + inch)} /><span className="dim">ft</span>
+          <input aria-label="Inches" type="number" inputMode="numeric" value={inch} onChange={(e) => set("heightIn", ft * 12 + (+e.target.value))} /><span className="dim">in</span></div></div>
+        <div><label>What do you weigh right now? (lb)</label><input type="number" inputMode="decimal" value={p.weight} onChange={(e) => set("weight", e.target.value)} /></div>
+        {p.weight !== "" && !bodyOk && <p className="alert">Check your height and weight. Weight should be 80 to 600 lb.</p>}
+      </>) },
+    goal: { title: "Your goal", need: () => goalOk, body: (
+      <>
+        {q("What do you want to do?")}
+        <div className="stack">{[["lose", "Lose weight"], ["maintain", "Stay where I am"], ["gain", "Gain weight or build muscle"]].map(([k, l]) => (
+          <button key={k} className={goal === k ? "listbtn on" : "listbtn"} onClick={() => setGoal(k)}>{l}</button>))}</div>
+        {goal !== "maintain" && <div><label>What weight do you want to reach? (lb)</label>
+          <input type="number" inputMode="decimal" value={p.goalWeight} onChange={(e) => set("goalWeight", e.target.value)} /></div>}
+        {numsOk && pv.minor ? (
+          <p className="cue">You're under 18, so we don't set a calorie cut. Your numbers are the fuel your body needs to grow. If you want to change your weight, talk with a parent, a doctor and your coach first.</p>
+        ) : goal !== "maintain" && (
+          <>
+            {q(goal === "gain" ? "How fast?" : "How fast do you want to lose?", "Slower is easier to stick with. Most people do well at 1 lb a week.")}
+            <div className="chips">{(goal === "gain" ? [0.5, 1] : [0.5, 1, 1.5, 2]).map((v) => {
+              const val = goal === "gain" ? -v : v;
+              return <button key={v} className={p.pace === val ? "chip on" : "chip"} onClick={() => set("pace", val)}>{v} lb a week</button>; })}</div>
+          </>)}
+      </>) },
+    health: { title: "Your health", skip: true, body: (
+      <>
+        {q("Does a doctor watch anything for you?", "Pick any that fit. This only makes the advice gentler and reminds you to follow your doctor. Skip it if none.")}
+        <div className="stack">{Object.entries(HEALTH).map(([k, l]) => (
+          <button key={k} className={(p.health || []).includes(k) ? "listbtn on" : "listbtn"} onClick={() => toggle("health", k)}>{(p.health || []).includes(k) ? "✓ " : ""}{l}</button>))}</div>
+        {(p.health || []).length > 0 && <p className="cue">Please check this plan with your doctor before you start. We give general guidance, not medical advice.</p>}
+      </>) },
+    allergy: { title: "Allergies", skip: true, body: (
+      <>
+        {q("Are you allergic to any foods?", "Tap all that apply. Meal ideas and the coach will stay away from them.")}
+        <div className="chips">{Object.entries(ALLERGENS).map(([k, a]) => (
+          <button key={k} className={(p.allergies || []).includes(k) ? "chip on" : "chip"} onClick={() => toggle("allergies", k)}>{a.label}</button>))}</div>
+        <div><label>Anything else?</label><input placeholder="Like mustard, corn, kiwi" value={p.allergyOther || ""} onChange={(e) => set("allergyOther", e.target.value)} /></div>
+        {(p.allergies || []).length === 0 && !(p.allergyOther || "").trim() && <p className="dim tiny">No allergies? Just tap Next.</p>}
+        <p className="dim tiny">Always read the label. This is a helper, not a safety guarantee.</p>
+      </>) },
+    eating: { title: "How you eat", skip: true, body: (
+      <>
+        {q("Do you follow a special way of eating?")}
+        <div className="chips">{Object.entries(DIETS).map(([k, d]) => (
+          <button key={k} className={p.diet === k ? "chip on" : "chip"} onClick={() => set("diet", p.diet === k ? "" : k)}>{d.label}</button>))}</div>
+        <div><label>Foods you won't eat</label><input placeholder="Like mushrooms, liver, olives" value={p.dislikes || ""} onChange={(e) => set("dislikes", e.target.value)} /></div>
+        {q("How many meals do you like to eat a day?")}
+        <div className="chips">{[2, 3, 4, 5].map((n) => <button key={n} className={+p.meals === n ? "chip on" : "chip"} onClick={() => set("meals", n)}>{n}</button>)}</div>
+        {q("How's your cooking?")}
+        {pick(COOKING, "cooking")}
+        {q("What's your food budget?")}
+        {pick(BUDGET, "budget")}
+      </>) },
+    days: { title: "Your days", skip: true, body: (
+      <>
+        {q("How do your days usually go?")}
+        <div className="stack">{Object.entries(ACTIVITY).map(([k, v]) => (
+          <button key={k} className={p.activity === k ? "listbtn on" : "listbtn"} onClick={() => set("activity", k)}>{v.label}</button>))}</div>
+        {q("How many days a week do you work out?")}
+        <div className="chips">{[0, 1, 2, 3, 4, 5, 6, 7].map((n) => <button key={n} className={p.workouts !== "" && +p.workouts === n && p.workouts != null ? "chip on" : "chip"} onClick={() => set("workouts", n)}>{n}</button>)}</div>
+        {q("How much do you sleep a night?")}
+        {pick(SLEEP, "sleep")}
+        <div><label>Water goal each day (oz)</label><input type="number" inputMode="numeric" value={p.waterOz ?? 100} onChange={(e) => set("waterOz", e.target.value)} /></div>
+      </>) },
+    plan: { title: "Your plan", body: (
+      numsOk ? (
         <>
-          <label>How fast</label>
-          <div className="chips">{[0.5, 1, 1.5, 2].map((v) => (
-            <button key={v} className={p.pace === v ? "chip on" : "chip"} onClick={() => set("pace", v)}>{v} lb/wk</button>))}</div>
+          <div className="quad">
+            <div><div className="midnum" style={{ color: C.cal }}>{pv.base.toLocaleString()}</div><div className="dim tiny">calories a day</div></div>
+            <div><div className="midnum" style={{ color: C.protein }}>{pv.protein}g</div><div className="dim tiny">protein a day</div></div>
+          </div>
+          {pv.clamped && <p className="alert">That pace goes under a safe minimum, so your calories stop here.</p>}
+          <p className="small">{goal === "maintain" ? "These numbers keep your weight steady." : goal === "gain" ? "These numbers add a small surplus so you gain slowly." : "These numbers put you in a steady, safe deficit."}</p>
+          {((p.allergies || []).length > 0 || (p.allergyOther || "").trim() || p.diet) && <p className="small">Meals will skip: {[...(p.allergies || []).map((k) => ALLERGENS[k]?.label), (p.allergyOther || "").trim(), p.diet && DIETS[p.diet]?.label].filter(Boolean).join(", ")}.</p>}
+          <p className="dim tiny">You can change any answer later in Settings.</p>
         </>
-      )}
-      {numsOk ? (
-        <div className="quad">
+      ) : <p className="dim small">Go back and fill in your age, height and weight to see your numbers.</p>) },
+  };
+  const order = ["you", "body", "goal", "health", "allergy", "eating", "days", "plan"];
+
+  if (!wizard) {
+    // Settings: every question on one page.
+    return (
+      <div className="glass pad stack">
+        <h2>{title}</h2>
+        {intro && <p className="dim small">{intro}</p>}
+        {order.filter((k) => k !== "plan").map((k) => (
+          <div key={k} className="stack"><h3 style={{ margin: "10px 0 0" }}>{S[k].title}</h3>{S[k].body}</div>))}
+        {numsOk ? <div className="quad">
           <div><div className="midnum" style={{ color: C.cal }}>{pv.base.toLocaleString()}</div><div className="dim tiny">calories a day</div></div>
           <div><div className="midnum" style={{ color: C.protein }}>{pv.protein}g</div><div className="dim tiny">protein a day</div></div>
-        </div>
-      ) : <p className="dim small">Fill in your age, weight and goal weight to see your daily numbers.</p>}
-      {numsOk && pv.clamped && <p className="alert">That pace pushes under a sensible floor, so the budget stops here.</p>}
-      <button className="btn solid wide" disabled={!numsOk} onClick={() => onSave({ ...p, age: +p.age, heightIn: +p.heightIn, weight: +p.weight, goalWeight: +p.goalWeight, waterOz: +p.waterOz || 100 })}>{cta}</button>
+        </div> : <p className="dim small">Fill in your age, weight and goal to see your daily numbers.</p>}
+        <button className="btn solid wide" disabled={!numsOk} onClick={save}>{cta}</button>
+      </div>
+    );
+  }
+  const key = order[step], cur = S[key], last = step === order.length - 1;
+  const canNext = cur.need ? cur.need() : true;
+  return (
+    <div className="glass pad stack">
+      <div className="row"><span className="dim tiny">Step {step + 1} of {order.length}</span>{cur.skip && !last && <button className="chip" onClick={() => setStep(step + 1)}>Skip</button>}</div>
+      <div className="track"><div style={{ width: `${((step + 1) / order.length) * 100}%`, background: C.water }} /></div>
+      <h2>{step === 0 ? title : cur.title}</h2>
+      {step === 0 && <p className="dim small">A few quick questions, like a nutritionist would ask, so your plan fits you. Tap an answer or type. Takes about 2 minutes.</p>}
+      {cur.body}
+      <div className="row gap">
+        {step > 0 && <button className="btn ghost" onClick={() => setStep(step - 1)}>Back</button>}
+        {last
+          ? <button className="btn solid wide" disabled={!numsOk} onClick={save}>{cta}</button>
+          : <button className="btn solid wide" disabled={!canNext} onClick={() => setStep(step + 1)}>Next</button>}
+      </div>
     </div>
   );
 }

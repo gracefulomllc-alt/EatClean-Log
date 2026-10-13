@@ -90,6 +90,24 @@ export const MEAL_LIBRARY = [
   M("Rice cake with turkey and avocado", ["Snack"], "snack rice cake turkey avocado", [200, 14, 20, 7], "grab", "Crunchy and quick.", null),
   M("Berry protein smoothie", ["Snack", "Breakfast"], "smoothie berries protein shake whey", [240, 28, 26, 3], "grab", "Whey, frozen berries, water, ice.", null),
   M("Dark chocolate and almonds", ["Snack"], "snack chocolate sweet dessert nuts", [200, 5, 14, 15], "grab", "Two squares and eight almonds. Satisfies the sweet tooth.", null),
+  // ---- meatless (vegetarian, no fish, no meat)
+  M("Black bean and sweet potato bowl", ["Lunch", "Dinner"], "vegetarian vegan beans sweet potato bowl meatless", [480, 18, 85, 8], "cook", "Black beans, roasted sweet potato, corn, salsa, avocado.",
+    R(1, ["1 cup black beans", "1 medium sweet potato", "1/2 cup corn", "salsa", "1/4 avocado"], ["Roast the cubed sweet potato at 425F for 25 minutes.", "Warm the beans and corn.", "Build the bowl and top with salsa and avocado."])),
+  M("Lentil and vegetable soup", ["Lunch", "Dinner"], "vegetarian vegan lentil soup meatless comfort", [340, 22, 56, 4], "cook", "Lentils, carrots, celery, tomatoes. Makes a big pot.",
+    R(3, ["1.5 cups dry lentils", "2 carrots", "2 celery stalks", "1 can diced tomatoes", "6 cups vegetable broth", "garlic, cumin"], ["Sauté the vegetables 5 minutes.", "Add lentils, tomatoes and broth.", "Simmer 30 minutes."])),
+  M("Chickpea and spinach curry over rice", ["Dinner"], "vegetarian vegan chickpea curry indian rice meatless", [520, 20, 88, 10], "cook", "Canned chickpeas, spinach, curry powder, a little coconut milk.",
+    R(2, ["1 can chickpeas", "4 cups spinach", "1 can diced tomatoes", "2 tbsp curry powder", "1/4 cup light coconut milk", "1.5 cups cooked rice"], ["Simmer chickpeas, tomatoes, curry powder and coconut milk 10 minutes.", "Stir in spinach until wilted.", "Serve over rice."])),
+  M("Tofu veggie stir-fry", ["Dinner"], "vegetarian vegan tofu stir fry asian meatless", [430, 30, 40, 16], "cook", "Firm tofu seared until crisp, plus mixed vegetables.",
+    R(1, ["8 oz firm tofu", "2 cups stir-fry vegetables", "3/4 cup rice", "1 tsp oil", "2 tbsp soy sauce"], ["Press and cube the tofu, sear until golden.", "Stir-fry the vegetables 4 minutes.", "Add soy sauce and serve over rice."])),
+  M("Veggie egg scramble with toast", ["Breakfast"], "vegetarian eggs scramble toast spinach meatless", [350, 24, 28, 15], "simple", "Three eggs, spinach, peppers, one slice of toast.", null),
+  M("Egg and bean breakfast tacos", ["Breakfast", "Lunch"], "vegetarian eggs beans tacos tortilla meatless mexican", [420, 26, 44, 15], "simple", "Scrambled egg, black beans, salsa, two small tortillas.", null),
+  M("Greek yogurt with berries and nuts", ["Breakfast", "Snack"], "vegetarian yogurt berries nuts fruit meatless", [290, 24, 28, 9], "grab", "Plain nonfat yogurt, a cup of berries, small handful of almonds.", null),
+  M("Cottage cheese and pineapple", ["Snack", "Breakfast"], "vegetarian cottage cheese fruit pineapple meatless", [210, 25, 20, 3], "grab", "One cup 2% cottage cheese with fruit.", null),
+  M("Hummus veggie plate", ["Snack", "Lunch"], "vegetarian vegan hummus vegetables carrots cucumber meatless", [260, 10, 28, 12], "grab", "Hummus with carrots, cucumber and peppers.", null),
+  M("Vegetable omelet with fruit", ["Breakfast"], "vegetarian eggs omelet vegetables fruit meatless", [340, 25, 20, 18], "simple", "Three eggs, mushrooms, peppers, a piece of fruit.", null),
+  M("Peanut butter apple and milk", ["Snack"], "vegetarian peanut butter apple milk meatless", [330, 14, 42, 13], "grab", "An apple, a spoon of peanut butter, a glass of milk.", null),
+  M("Rice and beans with salsa", ["Lunch", "Dinner"], "vegetarian vegan rice beans mexican cheap meatless", [440, 16, 82, 5], "simple", "Cheap, filling, and easy to scale up.", null),
+  M("Veggie pasta with white beans", ["Dinner"], "vegetarian vegan pasta beans tomato italian meatless", [520, 24, 90, 7], "cook", "Whole-wheat pasta, white beans, spinach, marinara.", null),
 ];
 
 // How a typed word maps to the meals above. Plural, near-miss and casual words all count.
@@ -103,9 +121,56 @@ const norm = (w) => { const a = ALIASES[w]; if (a !== undefined) return a; retur
 
 // Pure: score every meal for a typed craving, the meal slot, and what's left today.
 // Anything for the slot comes back even with no words typed, so the list is never empty.
-export function suggestMeals(query, slot, remainCal = Infinity, remainP = 0, limit = 6) {
+/* ---------- allergies and diets ---------- */
+// Words that mean an allergen is in a meal. Matched against the name, tags, blurb and recipe.
+export const ALLERGENS = {
+  peanuts: { label: "Peanuts", re: /peanut/i },
+  treenuts: { label: "Tree nuts", re: /almond|walnut|pecan|cashew|pistachio|hazelnut|macadamia|nut butter|trail mix/i },
+  dairy: { label: "Dairy", re: /milk|cheese|cheddar|mozzarella|feta|parmesan|yogurt|yoghurt|butter(?! ?nut)|cream|cottage|whey|ranch|queso|quesadilla|latte|alfredo/i },
+  eggs: { label: "Eggs", re: /\begg|omelet|omelette|scramble|frittata|mayo/i },
+  gluten: { label: "Gluten / wheat", re: /bread|toast|bagel|tortilla|wrap|pasta|noodle|spaghetti|sandwich|burger|bun\b|pita|wheat|flour|oats|oatmeal|granola|cracker|pancake|waffle|burrito|quesadilla|soy sauce|couscous|barley|panini|sub\b/i },
+  soy: { label: "Soy", re: /soy|tofu|edamame|tempeh|miso/i },
+  fish: { label: "Fish", re: /salmon|tuna|cod\b|tilapia|fish|trout|sardine|halibut|mahi|anchov/i },
+  shellfish: { label: "Shellfish", re: /shrimp|crab|lobster|scallop|prawn|clam|mussel|oyster/i },
+  sesame: { label: "Sesame", re: /sesame|tahini|hummus/i },
+};
+const MEAT = /chicken|beef|steak|turkey|pork|bacon|ham\b|sausage|burger|lamb|meatball|brisket|jerky|pepperoni|salami|bison|meat(?!less)/i;
+const PORK = /pork|bacon|ham\b|pepperoni|salami|prosciutto|(?<!chicken |turkey )sausage|chorizo/i;
+export const DIETS = {
+  vegetarian: { label: "Vegetarian", bad: (t) => MEAT.test(t) || ALLERGENS.fish.re.test(t) || ALLERGENS.shellfish.re.test(t) },
+  pescatarian: { label: "Pescatarian", bad: (t) => MEAT.test(t) },
+  halal: { label: "Halal (no pork)", bad: (t) => PORK.test(t) },
+  kosher: { label: "Kosher style (no pork or shellfish)", bad: (t) => PORK.test(t) || ALLERGENS.shellfish.re.test(t) },
+  lowcarb: { label: "Low carb", bad: (t, m) => m.carbs > 35 },
+};
+const mealText = (m) => `${m.name} ${m.tags} ${m.blurb} ${m.recipe ? m.recipe.ingredients.join(" ") : ""}`;
+
+// avoid = { allergies: [keys], diet: key, dislikes: "free text, comma separated" }
+export function mealOk(m, avoid) {
+  if (!avoid) return true;
+  const t = mealText(m);
+  for (const k of avoid.allergies || []) if (ALLERGENS[k] && ALLERGENS[k].re.test(t)) return false;
+  const d = DIETS[avoid.diet];
+  if (d && d.bad(t, m)) return false;
+  for (const w of `${avoid.dislikes || ""},${avoid.allergyOther || ""}`.toLowerCase().split(/[,;\n]+/).map((x) => x.trim().replace(/s$/, "")).filter((x) => x.length >= 3))
+    if (t.toLowerCase().includes(w)) return false;
+  return true;
+}
+// One sentence the AI is told, so its menus respect the same rules.
+export function avoidNote(avoid) {
+  if (!avoid) return "";
+  const a = (avoid.allergies || []).map((k) => ALLERGENS[k]?.label).filter(Boolean);
+  const parts = [];
+  if (a.length) parts.push(`ALLERGIES (never include these or anything made with them, not even a little): ${a.join(", ")}`);
+  if (avoid.diet && DIETS[avoid.diet]) parts.push(`eats ${DIETS[avoid.diet].label}`);
+  if ((avoid.allergyOther || "").trim()) parts.push(`ALSO ALLERGIC TO (never include): ${String(avoid.allergyOther).trim().slice(0, 120)}`);
+  if ((avoid.dislikes || "").trim()) parts.push(`will not eat: ${String(avoid.dislikes).trim().slice(0, 120)}`);
+  return parts.length ? `Food rules for this person: ${parts.join("; ")}.` : "";
+}
+
+export function suggestMeals(query, slot, remainCal = Infinity, remainP = 0, limit = 6, avoid = null) {
   const words = String(query || "").toLowerCase().split(/[^a-z0-9']+/).map(norm).filter((w) => w.length >= 2);
-  const pool = MEAL_LIBRARY.filter((m) => !slot || m.slots.includes(slot));
+  const pool = MEAL_LIBRARY.filter((m) => (!slot || m.slots.includes(slot)) && mealOk(m, avoid));
   const scored = pool.map((m) => {
     const hay = `${m.name} ${m.tags} ${m.blurb}`.toLowerCase();
     const hits = words.filter((w) => hay.includes(w)).length;
