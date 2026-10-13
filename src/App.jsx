@@ -80,6 +80,9 @@ async function api(path, payload) {
 const syncApi = (p) => api("/api/sync", p);
 const pushApi = (p) => api("/api/push", p);
 const groupsApi = (p) => api("/api/groups", p);
+// A backup is something people paste into chats and notes. Group logins (member token, invite
+// code) never go in it; restoring keeps whatever groups this phone is already in.
+const backupJson = (d) => JSON.stringify({ ...d, groups: [] });
 
 // 16 characters from an alphabet with no look-alikes (no 0/O, 1/I/L) - about 79 bits.
 const genCode = () => {
@@ -3349,11 +3352,37 @@ function Reminders() {
   );
 }
 
-function AlertsPanel({ data }) {
+const ALERT_KEYS = [
+  ["team", "Tip-off and final for my team", "Uses the team you picked under Look."],
+  ["spc", "South Plains Texans tip-off", "Fires when a posted game time arrives."],
+  ["fastCheck", "My fast check-in", "At 24h, then every 12h while you're fasting."],
+  ["nudges", "Nudges from friends", "When someone taps Check on them or Cheer."],
+  ["water", "Water reminders", "11:00 and 16:00, your time."],
+  ["review", "Weekly film session", "Sunday at 6 PM."],
+];
+const loadAlertPrefs = () => { try { return JSON.parse(localStorage.getItem("cutlog:alertprefs")) || {}; } catch { return {}; } };
+// Tells the server which alerts this device wants. Group logins are sent only so the server
+// can confirm you're really that member before it will push you that group's nudges.
+const syncAlerts = (prefs, data) => pushApi({
+  op: "alerts", deviceId: deviceId(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  alerts: { ...prefs, team: prefs.team ? (data.team || "Lakers") : null },
+  links: (data.groups || []).filter((g) => !g.lost).map((g) => ({ groupId: g.id, memberId: g.memberId, token: g.token })),
+});
+
+function AlertsPanel({ data, setData }) {
   const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
   const [on, setOn] = useState(localStorage.getItem("cutlog:alerts") === "1");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [prefs, setPrefs] = useState(loadAlertPrefs);
+  const groupSig = (data.groups || []).filter((g) => !g.lost).map((g) => g.id).join();
+  const pushPrefs = (next) => {
+    setPrefs(next);
+    try { localStorage.setItem("cutlog:alertprefs", JSON.stringify(next)); } catch { /* fine */ }
+    return syncAlerts(next, data).catch((e) => setMsg(String(e.message || e)));
+  };
+  // Joining a group, or changing the team, has to reach the server too.
+  useEffect(() => { if (on) syncAlerts(loadAlertPrefs(), data).catch(() => {}); }, [on, groupSig, data.team]);
   // serviceWorker.ready never settles if the worker failed to register, so don't wait forever.
   const worker = () => Promise.race([navigator.serviceWorker.ready,
     new Promise((_, rej) => setTimeout(() => rej(new Error("The app's background worker isn't running. Reload the page and try again.")), 8000))]);
@@ -3368,6 +3397,7 @@ function AlertsPanel({ data }) {
       const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
       await pushApi({ op: "subscribe", deviceId: deviceId(), sub: sub.toJSON(), start: data.fast?.start || null });
       localStorage.setItem("cutlog:alerts", "1");
+      syncAlerts(loadAlertPrefs(), data).catch(() => {});
       setOn(true);
       setMsg("On. You'll get a notification each time a fast reaches a new stage — checked every 10 minutes.");
     } catch (e) { setMsg(String(e.message || e)); }
@@ -3401,6 +3431,17 @@ function AlertsPanel({ data }) {
               <button className="btn ghost wide" disabled={busy} onClick={disable}>Turn off</button>
             </div>
             <Reminders />
+            <div className="subpanel stack" style={{ marginTop: 4 }}>
+              {ALERT_KEYS.map(([k, label, hint]) => (
+                <button key={k} className={prefs[k] ? "listbtn on" : "listbtn"} onClick={() => pushPrefs({ ...prefs, [k]: !prefs[k] })}>
+                  {prefs[k] ? "✓ " : ""}{label}<span className="dim tiny" style={{ display: "block" }}>{hint}</span>
+                </button>))}
+              {prefs.team && (
+                <select value={data.team || "Lakers"} onChange={(e) => setData((d) => ({ ...d, team: e.target.value }))} className="teampick" aria-label="My team">
+                  {NBA_TEAMS.map(([name]) => <option key={name} value={name}>{name}</option>)}
+                </select>)}
+              <p className="dim tiny">Friends' fasts never send you alerts. Checked every 10 minutes, so a tip-off can land a few minutes late.</p>
+            </div>
           </>
         ) : (
           <>
@@ -3468,7 +3509,7 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
       <SyncPanel {...{ sync, syncNow, startSync, joinSync, leaveSync }} />
       <InstallPanel />
       <FastingPanel data={data} setData={setData} />
-      <AlertsPanel data={data} />
+      <AlertsPanel data={data} setData={setData} />
       <div className="glass pad">
         <div className="row"><span className="dim">Maintenance {useAdaptive ? "(measured)" : "(formula)"}</span><strong className="mono">{t.tdee.toLocaleString()}</strong></div>
         <div className="row"><span className="dim">Rest-day budget</span><strong className="mono">{t.base.toLocaleString()}</strong></div>
@@ -3479,11 +3520,12 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
       <div className="glass pad stack">
         <h2>Backup</h2>
         <p className="dim tiny">This lives in one browser. Copy it somewhere safe now and again.</p>
-        <button className="btn ghost wide" onClick={() => { navigator.clipboard.writeText(JSON.stringify(data)); setCopied(true); }}>{copied ? "Copied" : "Copy my whole log"}</button>
+        <button className="btn ghost wide" onClick={() => { navigator.clipboard.writeText(backupJson(data)); setCopied(true); }}>{copied ? "Copied" : "Copy my whole log"}</button>
+        <p className="dim tiny">Group logins stay out of backups, so a pasted backup can't be used to act as you in a group.</p>
         <input placeholder="Paste a backup to restore" value={paste} onChange={(e) => setPaste(e.target.value)} />
         <button className="btn ghost wide" disabled={!paste.trim()} onClick={() => {
           try { const d = JSON.parse(paste); if (!d.profile || !d.days) throw new Error();
-            setData({ favorites: [], fasts: [], calib: [], list: [], labs: [], menus: {}, fast: null, ...d });
+            setData((cur) => ({ favorites: [], fasts: [], calib: [], list: [], labs: [], menus: {}, fast: null, ...d, groups: cur.groups || [] }));
             setMsg("Restored."); setPaste(""); }
           catch { setMsg("That isn't a valid backup."); }
         }}>Restore</button>

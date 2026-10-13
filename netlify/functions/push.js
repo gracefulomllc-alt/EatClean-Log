@@ -1,4 +1,7 @@
+import { getStore } from "@netlify/blobs";
 import { pushStore, vapid, pusher, stageAt, hoursSince } from "../lib/push-shared.js";
+import { auth } from "../lib/groups-core.js";
+import { markIndex } from "../lib/alerts-core.js";
 
 const json = (o) => new Response(JSON.stringify(o), { headers: { "Content-Type": "application/json" } });
 const okId = (id) => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id);
@@ -22,7 +25,9 @@ export default async (req) => {
     const start = body.start || null;
     // Mark the stage you're already in as announced, so switching alerts on mid-fast
     // doesn't fire off every stage you've already passed.
-    await store.setJSON(k, { sub: body.sub, start, lastAt: start ? stageAt(hoursSince(start)).at : -1 });
+    // Re-subscribing (new browser token, reinstall) keeps the alert choices already made.
+    const prev = (await store.get(k, { type: "json" })) || {};
+    await store.setJSON(k, { ...prev, sub: body.sub, start, lastAt: start ? stageAt(hoursSince(start)).at : -1, fcMark: start ? markIndex(hoursSince(start)) : -1 });
     return json({ ok: true });
   }
 
@@ -33,6 +38,7 @@ export default async (req) => {
     if (rec.start !== start) {
       rec.start = start;
       rec.lastAt = start ? stageAt(hoursSince(start)).at : -1;
+      rec.fcMark = start ? markIndex(hoursSince(start)) : -1;   // switching alerts on mid-fast shouldn't replay old marks
       await store.setJSON(k, rec);
     }
     return json({ ok: true });
@@ -46,6 +52,29 @@ export default async (req) => {
     rec.reminders = { times, tz: body.tz };
     await store.setJSON(k, rec);
     return json({ ok: true, times });
+  }
+
+  // Which alerts this device wants. Group links are checked against the group's own login so a
+  // device can only ever get nudges meant for a member it actually is.
+  if (body.op === "alerts") {
+    const rec = await store.get(k, { type: "json" });
+    if (!rec) return new Response("Turn alerts on first", { status: 404 });
+    const a = body.alerts || {};
+    const team = typeof a.team === "string" && /^[A-Za-z0-9 .'-]{2,24}$/.test(a.team) ? a.team : null;
+    rec.alerts = { team, spc: !!a.spc, fastCheck: !!a.fastCheck, nudges: !!a.nudges, water: !!a.water, review: !!a.review };
+    if (body.tz) {
+      try { new Intl.DateTimeFormat("en-US", { timeZone: body.tz }); rec.tz = body.tz; } catch { return new Response("Unknown time zone", { status: 400 }); }
+    }
+    const groups = getStore("cutlog-groups");
+    const links = [];
+    for (const l of (Array.isArray(body.links) ? body.links : []).slice(0, 5)) {
+      const g = await auth(groups, l);
+      if (g) links.push({ gid: g.id, mid: l.memberId });
+    }
+    rec.links = links;
+    rec.nseen = Object.fromEntries(links.map((l) => [l.gid, rec.nseen?.[l.gid] ?? Date.now()]));
+    await store.setJSON(k, rec);
+    return json({ ok: true, links: links.length });
   }
 
   if (body.op === "logged") {

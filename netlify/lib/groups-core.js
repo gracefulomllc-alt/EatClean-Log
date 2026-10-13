@@ -51,7 +51,7 @@ async function loadGroup(store, gid) {
   if (!/^[0-9a-f-]{36}$/i.test(String(gid || ""))) return null;
   return store.get("g:" + gid, { type: "json" });
 }
-async function auth(store, body) {
+export async function auth(store, body) {
   const g = await loadGroup(store, body.groupId);
   const m = g?.members?.[body.memberId];
   if (!g || !m || !body.token || (await sha("tok:" + body.token)) !== m.th) return null;
