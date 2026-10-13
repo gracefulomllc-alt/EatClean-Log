@@ -391,6 +391,16 @@ const PALETTES = {
     stages: ["#4B5563", "#38BDF8", "#22D3EE", "#22C55E", "#FACC15", "#FB923C", "#F58426", "#EF4444"],
     get primary() { return teamCue(TEAM).primary; }, get secondary() { return teamCue(TEAM).secondary; },
   },
+  pro: {
+    cal: "#4C8DFF", protein: "#22C55E", carbs: "#8FB8FF", fat: "#FFC72C", bad: "#E5384F",
+    water: "#4C8DFF", warn: "#FFC72C", idle: "#3A3D47",
+    track: "#23252C", tickOff: "#3A3D47", dimText: "#A3A7B3", faint: "#5A5E6B",
+    grid: "#23252C", axis: "#A3A7B3",
+    tip: { fontSize: 12, borderRadius: 8, border: "1px solid #2E313A", background: "#15161A", color: "#fff" },
+    cap: "butt", glow: false, ringFade: 0.5,
+    meal: { Breakfast: "#4C8DFF", Lunch: "#22C55E", Dinner: "#A78BFA", Snack: "#FFC72C" },
+    stages: ["#5A5E6B", "#4C8DFF", "#38BDF8", "#22C55E", "#FFC72C", "#FB923C", "#F58426", "#E5384F"],
+  },
   modern: {
     cal: "#818CF8", protein: "#34D399", carbs: "#22D3EE", fat: "#FBBF24", bad: "#FB7185",
     water: "#38BDF8", warn: "#FBBF24", idle: "#475569",
@@ -404,6 +414,7 @@ const PALETTES = {
 };
 let TEAM = "Lakers";
 let THEME = "glass";
+let PRO = true;
 let COURT = true;   // the hardwood basketball look + hoops language (default for everyone)
 const H = (court, plain) => (COURT ? court : plain);
 const QTR = { Breakfast: "Q1", Lunch: "Q2", Dinner: "Q3", Snack: "OT" };
@@ -477,7 +488,7 @@ function Ring({ pct, color, size = 240, stroke = 16, ticks = [], children, glow 
             fill={t.hit ? t.color : C.tickOff} />;
         })}
       </svg>
-      {COURT && (
+      {COURT && !PRO && (
         <svg className="ballseams" width={size * 0.6} height={size * 0.6} viewBox="0 0 100 100" aria-hidden="true">
           <g fill="none" stroke="currentColor" strokeWidth="1.6">
             <circle cx="50" cy="50" r="46" /><line x1="50" y1="4" x2="50" y2="96" /><line x1="4" y1="50" x2="96" y2="50" />
@@ -512,8 +523,9 @@ export default function CutLog() {
   }), []);
   const [locked, setLocked] = useState(null);
   const th = data?.theme === "retro" ? "court" : data?.theme;   // the old Desktop '95 look is gone; those logs land on hardwood
-  COURT = !th || th === "court";
-  THEME = COURT ? "arena" : ["modern", "arena"].includes(th) ? th : "glass";
+  PRO = !th || th === "pro";                      // the default look: ESPN layout in NBA colors
+  COURT = PRO || th === "court";                   // basketball language (Court, Plays, box score)
+  THEME = PRO ? "pro" : COURT ? "arena" : ["modern", "arena"].includes(th) ? th : "glass";
   TEAM = data?.team || "Lakers";
   const [sync, setSync] = useState({ state: localStorage.getItem("cutlog:sync") ? "idle" : "off" });
   const dataRef = useRef(null);
@@ -565,7 +577,7 @@ export default function CutLog() {
 
   // The strip above the app (phone status bar, page edges) matches the theme too
   useEffect(() => {
-    const bg = data?.theme === "arena" ? "#05060A" : data?.theme === "modern" ? "#08090D" : (!data?.theme || data.theme === "court" || data.theme === "retro") ? "#2A190C" : "#0A0E1F";
+    const bg = (!data?.theme || data.theme === "pro") ? "#0B0B0D" : data?.theme === "arena" ? "#05060A" : data?.theme === "modern" ? "#08090D" : (data.theme === "court" || data.theme === "retro") ? "#2A190C" : "#0A0E1F";
     document.body.style.background = bg;
     document.querySelector('meta[name="theme-color"]')?.setAttribute("content", bg);
   }, [data?.theme, data?.team]);
@@ -667,7 +679,7 @@ export default function CutLog() {
   const TABS = [["now", H("Court", "Now"), COURT ? Dribbble : Timer], ["plan", H("Plays", "Plan"), ChefHat], ["coach", "Coach", MessageCircle], ["weight", H("Stats", "Weight"), Scale], ["log", H("Scores", "Log"), CalendarDays], ["setup", H("Locker", "Setup"), Cog]];
 
   return (
-    <Shell theme={THEME}>
+    <Shell theme={THEME} top={PRO ? <ProTop /> : null}>
       {saveErr && <div className="glass pad alert">That change didn’t save. Back up from Setup before closing.</div>}
       <div key={tab} className="fadein">
         {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay }} />}
@@ -723,7 +735,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
 
   return (
     <>
-      {isToday && <GamesPanel />}
+      {isToday && !PRO && <GamesPanel />}
       {isToday && (data.groups || []).length > 0 && <CrewFastStrip data={data} />}
       {fastOn && fast && (() => {
         const cs = fastConfirmState(fast.start, fast.confirmedAt, now);
@@ -1127,8 +1139,8 @@ function GamesPanel() {
         {(nba || []).map((g) => (
           <div key={g.id} className={g.state === "in" ? "gcard livecard" : "gcard"}>
             <span className="gl">{g.phase || "NBA"}{g.state === "in" ? <span className="live"> ● {g.status}</span> : ""}</span>
-            <div className="grow"><span>{g.away.abbr || g.away.name}</span><b className="gscore">{g.state !== "pre" ? g.away.score : ""}</b></div>
-            <div className="grow"><span>{g.home.abbr || g.home.name}</span><b className="gscore">{g.state !== "pre" ? g.home.score : ""}</b></div>
+            <div className="grow"><span>{g.away.logo && <img className="glogo" src={g.away.logo} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }} />}{g.away.abbr || g.away.name}</span><b className="gscore">{g.state !== "pre" ? g.away.score : ""}</b></div>
+            <div className="grow"><span>{g.home.logo && <img className="glogo" src={g.home.logo} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }} />}{g.home.abbr || g.home.name}</span><b className="gscore">{g.state !== "pre" ? g.home.score : ""}</b></div>
             <span className="gf">{g.state === "pre" ? gt(g.start) : g.state === "post" ? "Final" : "Live"}{g.tv ? ` · ${g.tv}` : ""}</span>
           </div>
         ))}
@@ -3665,8 +3677,8 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
       <div className="glass pad stack">
         <h2>Look</h2>
         <div className="chips">
-          {[["court", "Hardwood"], ["modern", "Modern"], ["arena", "Scoreboard"], ["glass", "Glass"]].map(([k, l]) => (
-            <button key={k} className={(data.theme === "retro" ? "court" : data.theme || "court") === k ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: k }))}>{l}</button>))}
+          {[["pro", "Pro"], ["court", "Hardwood"], ["modern", "Modern"], ["arena", "Scoreboard"], ["glass", "Glass"]].map(([k, l]) => (
+            <button key={k} className={(data.theme === "retro" ? "court" : data.theme || "pro") === k ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: k }))}>{l}</button>))}
         </div>
         <p className="dim tiny">Switches the whole app. Nothing about your data changes.</p>
         {THEME === "arena" && (
@@ -3747,8 +3759,8 @@ function ProfileForm({ initial, title, cta, intro, onSave }) {
 }
 
 /* ---------- shell ---------- */
-function Shell({ children, theme }) {
-  const cls = theme === "modern" ? "app modern" : theme === "arena" ? (COURT ? "app arena court" : "app arena") : "app";
+function Shell({ children, theme, top }) {
+  const cls = theme === "pro" ? "app pro" : theme === "modern" ? "app modern" : theme === "arena" ? (COURT ? "app arena court" : "app arena") : "app";
   const cue = theme === "arena" ? teamCue(TEAM) : null;
   const style = cue ? { "--pri": cue.primary, "--sec": cue.secondary, "--pri-btn": cue.button, "--pri-ink": cue.ink,
     "--sec-btn": cue.chipBg, "--sec-ink": cue.chipInk } : undefined;
@@ -4063,9 +4075,65 @@ function Shell({ children, theme }) {
         .app.arena.court .dim { color:#E0D2BD; }
         .app.arena.court, .app.arena.court .glass { color:#F6EFE4; }
 
+        /* ================= Pro: ESPN layout, NBA colors (default) ================= */
+        .app.pro { background:#0B0B0D; color:#F4F5F7; --nbablue:#1D63ED; --nbadeep:#17408B; --nbared:#C8102E; padding-bottom:84px; }
+        .app.pro::before, .app.pro::after { display:none; }
+        .app.pro .glass { background:#15161A; border:1px solid #26282F; border-radius:10px; box-shadow:none; backdrop-filter:none; -webkit-backdrop-filter:none; animation:none; margin-bottom:10px; }
+        .app.pro .fadein { animation:none; }
+        .app.pro h2 { font-size:18px; font-weight:800; letter-spacing:-.01em; padding-left:10px; border-left:4px solid var(--nbared); line-height:1.1; }
+        .app.pro .mealhead { background:#1B1D23; border-bottom:1px solid #26282F; font-weight:700; }
+        .app.pro .dim { color:#A3A7B3; }
+        .app.pro .huge, .app.pro .bignum, .app.pro .midnum { font-weight:800; letter-spacing:-.02em; text-shadow:none; }
+        .app.pro .btn, .app.pro .chip, .app.pro .listbtn { background:#1E2026; color:#F4F5F7; border:1px solid #2E313A; border-radius:8px; }
+        .app.pro .chip { border-radius:999px; }
+        .app.pro .btn.ghost { background:transparent; }
+        .app.pro .btn.solid, .app.pro .btn.accent { background:var(--nbablue); border-color:var(--nbablue); color:#fff; box-shadow:none; }
+        .app.pro .chip.on, .app.pro .listbtn.on { background:var(--nbared); border-color:var(--nbared); color:#fff; font-weight:700; }
+        .app.pro .btn:disabled, .app.pro .chip:disabled { opacity:.45; }
+        .app.pro input, .app.pro textarea, .app.pro select { background:#0F1013; border:1px solid #2E313A; border-radius:8px; color:#F4F5F7; }
+        .app.pro input:focus, .app.pro textarea:focus { border-color:var(--nbablue); box-shadow:0 0 0 2px rgba(29,99,237,.35); outline:none; }
+        .app.pro .track, .app.pro .fuel { background:#23252C; border-radius:3px; }
+        .app.pro .track > div, .app.pro .fuel > div { border-radius:3px; }
+        .app.pro .fooditem, .app.pro .histrow, .app.pro .stagerow { border-top:1px solid #23252C; }
+        .app.pro .gradebox, .app.pro .subpanel { background:#0F1013; border:1px solid #26282F; border-radius:8px; }
+        .app.pro .tierbox { border-color:var(--tier); }
+        .app.pro .bubble { background:#1B1D23; border-radius:12px; } .app.pro .bubble.me { background:var(--nbadeep); }
+        .app.pro .alert { color:#FF6B7F; }
+        .app.pro .wl.w { background:#22C55E; color:#04210f; } .app.pro .wl.l { background:transparent; color:#FF6B7F; border:1px solid #FF6B7F; }
+        .app.pro .tray { display:none; }
+        .app.pro .btn.ghost { border-color:#3A3D47; }
+        .app.pro .daynav, .app.pro .daylabel { font-weight:700; }
+        /* top bar and scores strip */
+        .app.pro .probar { position:sticky; top:0; z-index:40; display:flex; justify-content:space-between; align-items:center; height:46px; padding:0 14px; background:#0B0B0D; border-bottom:2px solid var(--nbared); }
+        .app.pro .prologo { font-weight:900; font-size:19px; letter-spacing:.02em; color:#fff; } .app.pro .prologo b { color:var(--nbablue); font-weight:900; }
+        .app.pro .prodate { font-size:13px; color:#A3A7B3; font-weight:600; }
+        .app.pro .proscores { padding:10px 10px 2px; background:#0B0B0D; }
+        .app.pro .gamespanel { margin:0; }
+        .app.pro .gamehead strong { font-size:14px; font-weight:800; }
+        .app.pro .gamespanel .gcard { background:#15161A; border:1px solid #26282F; border-radius:8px; flex-basis:158px; }
+        .app.pro .gamespanel .gcard.livecard { border-color:var(--nbared); box-shadow:inset 3px 0 0 var(--nbared); }
+        .app.pro .gamespanel .gcard.spccard { border-color:#2E313A; box-shadow:inset 3px 0 0 var(--nbablue); }
+        .app.pro .glogo { width:18px; height:18px; object-fit:contain; margin-right:6px; vertical-align:-4px; }
+        /* bottom tab bar */
+        .app.pro .dock { left:0; right:0; bottom:0; gap:0; border-radius:0; background:#0B0B0D; border:0; border-top:1px solid #26282F; box-shadow:none; backdrop-filter:none; -webkit-backdrop-filter:none; padding:4px 4px calc(6px + env(safe-area-inset-bottom)); }
+        .app.pro .dockbtn { color:#8A8F9C; border-radius:0; background:none; font-size:11.5px; padding:6px 2px; border-top:3px solid transparent; }
+        .app.pro .dockbtn.on { color:#fff; background:none; border-top-color:var(--nbared); box-shadow:none; }
+        .app.pro .dockbtn.on svg { color:var(--nbablue); }
+
         @media (prefers-reduced-motion:reduce) { *, .app::before, .app::after { animation:none !important; transition:none !important; } }
       `}</style>
+      {top}
       {children}
     </div>
+  );
+}
+
+// ESPN-style top: a slim wordmark bar, then the scores strip, on every tab.
+function ProTop() {
+  return (
+    <>
+      <header className="probar"><span className="prologo">CUT<b>LOG</b></span><span className="prodate">{new Date().toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}</span></header>
+      <div className="proscores"><GamesPanel /></div>
+    </>
   );
 }
