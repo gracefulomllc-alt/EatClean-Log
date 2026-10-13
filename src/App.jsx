@@ -630,6 +630,8 @@ export default function CutLog() {
     pushApi({ op: "fast", deviceId: deviceId(), start: data.fast?.start || null }).catch(() => {});
   }, [data?.fast?.start]);
   const [tab, setTab] = useState("now");
+  const [logView, setLogView] = useState("mine");
+  const openCrew = () => { setLogView("group"); setTab("log"); window.scrollTo?.(0, 0); };
   const [viewDay, setViewDay] = useState(dayKey());
   const [saveErr, setSaveErr] = useState(false);
   const first = useRef(true);
@@ -707,12 +709,12 @@ export default function CutLog() {
       {(tab === "weight" || tab === "log") && <ProgressSwitch tab={tab} setTab={setTab} />}
       <PopHost />
       <div key={tab} className="fadein">
-        {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay, goTab: () => { setTab("setup"); setTimeout(() => document.getElementById("fasting-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 250); } }} />}
+        {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay, openCrew, goTab: () => { setTab("setup"); setTimeout(() => document.getElementById("fasting-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 250); } }} />}
         {tab === "out" && <RoadTab data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} dayId={viewDay} setDayId={setViewDay} />}
         {tab === "plan" && <Plan data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} dayId={viewDay} setDayId={setViewDay} />}
         {tab === "weight" && <Weight data={data} setData={setData} targets={targets} updateDay={updateDay} />}
         {tab === "coach" && <Coach data={data} setData={setData} targets={targets} adaptive={adaptive} />}
-        {tab === "log" && <LogTab data={data} setData={setData} onPick={(k) => { setViewDay(k); setTab("now"); }} />}
+        {tab === "log" && <LogTab view={logView} setView={setLogView} data={data} setData={setData} onPick={(k) => { setViewDay(k); setTab("now"); }} />}
         {tab === "setup" && <Settings data={data} setData={setData} onSave={(p) => setData((d) => ({ ...d, profile: p }))} adaptive={adaptive} useAdaptive={useAdaptive}
           sync={sync} syncNow={syncNow} startSync={startSync} joinSync={joinSync} leaveSync={leaveSync} />}
       </div>
@@ -949,7 +951,7 @@ function PastFasts({ data, setData }) {
 }
 
 /* ---------- now ---------- */
-function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab }) {
+function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew, goTab }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const removeFood = (id) => setData((d) => ({ ...d, deleted: tombstone(d, "food:" + id),
@@ -981,7 +983,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
   return (
     <>
       {isToday && !PRO && <GamesPanel />}
-      {isToday && (data.groups || []).length > 0 && <CrewFastStrip data={data} />}
+      {isToday && <CrewCard data={data} onOpen={openCrew} />}
       {fastOn && fast && (() => {
         const cs = fastConfirmState(fast.start, fast.confirmedAt, now);
         if (cs.state !== "due" && cs.state !== "unconfirmed") return null;
@@ -1492,7 +1494,7 @@ function SharingToggles({ scopes, onChange }) {
           <input type="checkbox" checked={!!scopes[k]} onChange={(e) => onChange({ ...scopes, [k]: e.target.checked })} />
         </div>
       ))}
-      <p className="dim tiny">Starts as everything. Lab results and points are never shared and there's no leaderboard. You can change this any time, and anything you switch off stops being sent.</p>
+      <p className="dim tiny">Starts as everything. Lab results and points are never shared. The standings only use what you share here. You can change this any time, and anything you switch off stops being sent.</p>
     </div>
   );
 }
@@ -1533,6 +1535,42 @@ function CrewFastStrip({ data }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// Home card: your group's standings and who is fasting, one tap to the full view. Always visible.
+function CrewCard({ data, onOpen }) {
+  const g = (data.groups || []).find((x) => !x.lost);
+  const { board } = useBoard(g, 60000);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(t); }, []);
+  if (!g) return (
+    <div className="glass pad stack">
+      <div className="row"><h2>{H("Your crew", "Friends")}</h2></div>
+      <p className="small">Add friends to see their day, cheer them on and compete on the weekly board.</p>
+      <div className="rowbtns"><button className="btn solid" onClick={onOpen}>Start a group</button><button className="btn ghost" onClick={onOpen}>I have a code</button></div>
+    </div>
+  );
+  const members = board?.members || [];
+  const wins = (s) => (s?.week || []).filter((w) => w === true).length;
+  const pct = (s) => (s?.cal && s.cal.proteinTarget > 0 ? Math.min(1.5, s.cal.protein / s.cal.proteinTarget) : -1);
+  const ranked = members.slice().sort((a, b) => wins(b.status) - wins(a.status) || pct(b.status) - pct(a.status));
+  return (
+    <div className="glass pad stack">
+      <div className="row"><h2>{g.name}</h2><button className="chip" onClick={onOpen}>See all</button></div>
+      {!board && <p className="dim tiny">Loading…</p>}
+      {ranked.slice(0, 5).map((m, i) => {
+        const s = m.status, f = s?.fast, w = wins(s), p = pct(s);
+        return (
+          <div key={m.id} className="row small">
+            <span><strong className="mono">{i + 1}</strong> {m.name}{m.isMe ? " (you)" : ""}{f ? ` · fasting ${fmtHM(now - f.start)}` : ""}</span>
+            <span className="mono dim">{s?.week ? `${w}W` : ""}{p >= 0 ? ` · ${Math.round(p * 100)}% protein` : ""}</span>
+          </div>
+        );
+      })}
+      {board && members.length < 2 && <p className="dim tiny">Just you so far. Send your invite code to a friend.</p>}
+      <div className="rowbtns"><button className="chip" onClick={onOpen}>Invite friends</button><button className="chip" onClick={onOpen}>Cheer someone on</button></div>
     </div>
   );
 }
@@ -3592,8 +3630,7 @@ function Weight({ data, setData, targets, updateDay }) {
 
 /* ---------- us ---------- */
 /* ---------- log tab: your history, plus the group view ---------- */
-function LogTab({ data, setData, onPick }) {
-  const [view, setView] = useState("mine");
+function LogTab({ data, setData, onPick, view, setView }) {
   return (
     <>
       <div className="chips">
