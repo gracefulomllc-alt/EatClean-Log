@@ -1,8 +1,9 @@
 import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
+import { roadPicks, ROAD_CHAINS } from "./fastFood.js";
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { SPC_GAMES, SPC_URL } from "./spcSchedule.js";
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, CartesianGrid } from "recharts";
-import { Timer, Scale, Users, CalendarDays, Settings as Cog, Plus, X, Star, ChevronLeft, ChevronRight, ChefHat, MessageCircle, Dribbble } from "lucide-react";
+import { Timer, Scale, Users, CalendarDays, Settings as Cog, Plus, X, Star, ChevronLeft, ChevronRight, ChefHat, MessageCircle, Dribbble, Utensils } from "lucide-react";
 
 /* ---------- storage: this device's log ---------- */
 const ACCESS = () => localStorage.getItem("cutlog:code") || "";
@@ -693,13 +694,14 @@ export default function CutLog() {
       title="Let's build your plan" cta="Start"
       onSave={(profile) => setData((d) => ({ ...d, profile }))} /></Shell>;
 
-  const TABS = [["now", H("Court", "Today"), COURT ? Dribbble : Timer], ["plan", H("Plays", "Meals"), ChefHat], ["coach", "Coach", MessageCircle], ["weight", H("Stats", "Progress"), Scale], ["log", H("Scores", "History"), CalendarDays], ["setup", H("Locker", "Settings"), Cog]];
+  const TABS = [["now", H("Court", "Today"), COURT ? Dribbble : Timer], ["plan", H("Plays", "Meals"), ChefHat], ["out", "Eating Out", Utensils], ["coach", "Coach", MessageCircle], ["weight", H("Stats", "Progress"), Scale], ["log", H("Scores", "History"), CalendarDays], ["setup", H("Locker", "Settings"), Cog]];
 
   return (
     <Shell theme={THEME} top={PRO ? <ProTop /> : null}>
       {saveErr && <div className="glass pad alert">That change didn’t save. Back up from Setup before closing.</div>}
       <div key={tab} className="fadein">
         {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay, goTab: () => { setTab("setup"); setTimeout(() => document.getElementById("fasting-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 250); } }} />}
+        {tab === "out" && <RoadTab data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} />}
         {tab === "plan" && <Plan data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} />}
         {tab === "weight" && <Weight data={data} setData={setData} targets={targets} updateDay={updateDay} />}
         {tab === "coach" && <Coach data={data} setData={setData} targets={targets} adaptive={adaptive} />}
@@ -2609,10 +2611,9 @@ Respond with ONLY JSON:
   return (
     <>
       <div className="chips">
-        {[["today", "Today"], ["out", "Eating out"], ["week", "Week"]].map(([k, l]) => (
+        {[["today", "Today"], ["week", "Week"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
       </div>
-      {mode === "out" && <EatingOut remainCal={remainCal} remainP={remainP} onLog={logToday} data={data} setData={setData} />}
       {mode === "week" && <WeekPlan data={data} setData={setData} onLog={logToday} onOpenList={() => setShowList(true)} />}
       {mode === "today" && (<>
       <div className="glass pad stack">
@@ -2665,12 +2666,99 @@ Respond with ONLY JSON:
     </>
   );
 }
+/* ---------- Eating Out tab: built-in drive-thru picks, ranked for what's left today ---------- */
+function RoadTab({ data, setData, targets, day, updateDay }) {
+  const today = dayKey();
+  const eaten = day.foods.reduce((a, f) => ({ cal: a.cal + f.calories, p: a.p + f.protein }), { cal: 0, p: 0 });
+  const remainCal = targets.calories - eaten.cal, remainP = targets.protein - eaten.p;
+  const [slot, setSlot] = useState(guessMeal());
+  const [chain, setChain] = useState("");
+  const [more, setMore] = useState(false);
+  const [portion, setPortion] = useState({});
+  const [logged, setLogged] = useState({});
+  const [saved, setSaved] = useState({});
+  const [ai, setAi] = useState(false);
+  const orders = data.orders || [];
+  const logToday = (item) => updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: Date.now(), u: Date.now(), ...item }] }));
+  const picks = roadPicks(slot, remainCal, remainP, data.profile, chain, more ? 40 : 8);
+  const hasMore = !more && roadPicks(slot, remainCal, remainP, data.profile, chain, 40).length > 8;
+  return (
+    <>
+      <div className="glass pad stack">
+        <div className="row"><h2>Eating Out</h2><span className="dim tiny">{Math.max(0, Math.round(remainCal)).toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g protein left</span></div>
+        <p className="dim small">Stopping for food on the road? These are the best orders for what you have left today. Tap Eat this to log it.</p>
+        <div className="chips">{MEALS.map((m) => <button key={m} className={slot === m ? "chip on" : "chip"} onClick={() => { setSlot(m); setMore(false); }}>{m}</button>)}</div>
+        <label>Only show one place <span className="dim tiny">(swipe for more)</span></label>
+        <div className="chips" style={{ flexWrap: "nowrap", overflowX: "auto", paddingBottom: 6, WebkitOverflowScrolling: "touch" }}>
+          <button className={!chain ? "chip on" : "chip"} style={{ flex: "none" }} onClick={() => { setChain(""); setMore(false); }}>All</button>
+          {ROAD_CHAINS.map((c) => <button key={c} style={{ flex: "none", whiteSpace: "nowrap" }} className={chain === c ? "chip on" : "chip"} onClick={() => { setChain(chain === c ? "" : c); setMore(false); }}>{c}</button>)}
+        </div>
+      </div>
+
+      {orders.length > 0 && (
+        <div className="glass">
+          <div className="mealhead">Your saved orders</div>
+          {orders.map((o) => (
+            <div key={o.id} className="dish">
+              <div className="row gap"><div><div className="dishname">{o.name}</div>{o.where && <div className="dim tiny">{o.where}</div>}</div>
+                <span className="mono" style={{ color: C.cal }}>{o.calories}</span></div>
+              <span className="dim tiny">{o.protein}p · {o.carbs}c · {o.fat}f</span>
+              <div className="rowbtns">
+                <button className="btn solid wide" onClick={() => logToday({ meal: slot, name: `${o.name}${o.where ? ` (${o.where})` : ""}`, calories: o.calories, protein: o.protein, carbs: o.carbs, fat: o.fat })}>Eat this</button>
+                <button className="btn ghost" aria-label="Remove saved order" onClick={() => setData((d) => ({ ...d, orders: (d.orders || []).filter((x) => x.id !== o.id), deleted: tombstone(d, "order:" + o.id) }))}>Remove</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="glass">
+        <div className="mealhead">Best picks for you</div>
+        {picks.length === 0 && <p className="dim small pad">Nothing matches your food rules here. Try a different meal or place, or ask the coach below.</p>}
+        {picks.map((m0) => {
+          const key = m0.chain + m0.name, f = portion[key] || 1, m = scaleOrder(m0, f);
+          return (
+            <div key={key} className="dish">
+              <div><div className="dishname">{m0.name}</div><div className="dim tiny">{m0.chain}</div></div>
+              <div className="dishmacros">
+                <span className="mono" style={{ color: C.cal }}>{m.calories}</span>
+                <span className="dim tiny">{m.protein}p · {m.carbs}c · {m.fat}f · estimate</span>
+              </div>
+              {m0.tweak && <ul className="tweaks"><li>{m0.tweak}</li></ul>}
+              <div className="chips" aria-label="Portion">{PORTIONS.map(([v, l]) => <button key={v} className={f === v ? "chip on" : "chip"} onClick={() => setPortion((x) => ({ ...x, [key]: v }))}>{l}</button>)}</div>
+              <div className="rowbtns">
+                <button className="btn solid wide" disabled={logged[key]} onClick={() => {
+                  logToday({ meal: slot, name: `${m0.name}${f !== 1 ? ` (${PORTIONS.find((p) => p[0] === f)[1]} portion)` : ""} (${m0.chain})`, calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat });
+                  setLogged((x) => ({ ...x, [key]: true }));
+                }}>{logged[key] ? "Logged ✓" : "Eat this"}</button>
+                <button className="btn ghost" disabled={saved[key]} onClick={() => {
+                  setData((d) => ({ ...d, orders: [...(d.orders || []), { id: crypto.randomUUID(), name: m0.name, where: m0.chain, calories: m0.calories, protein: m0.protein, carbs: m0.carbs, fat: m0.fat, u: Date.now() }] }));
+                  setSaved((x) => ({ ...x, [key]: true }));
+                }}>{saved[key] ? "Saved ✓" : "Save"}</button>
+              </div>
+            </div>);
+        })}
+        {hasMore && <div className="pad"><button className="btn ghost wide" onClick={() => setMore(true)}>Show more</button></div>}
+        <p className="dim tiny pad" style={{ paddingTop: 0 }}>Numbers are estimates from each place's published nutrition. Menus change, so check the app or board if it matters. Allergy info here is a helper, not a guarantee. Always ask the restaurant.</p>
+      </div>
+
+      {ai
+        ? <EatingOut remainCal={remainCal} remainP={remainP} onLog={logToday} data={data} setData={setData} noSaved />
+        : <div className="glass pad stack">
+            <h2>Not on the list?</h2>
+            <p className="dim small">Type any restaurant, or take a photo of the menu, and the coach will pick the best order.</p>
+            <button className="btn accent wide" onClick={() => setAi(true)}>Ask the coach for a custom order</button>
+          </div>}
+    </>
+  );
+}
+
 /* ---------- eating out: best orders from a menu photo or a restaurant name ---------- */
 const CHAINS = ["Chipotle", "Chick-fil-A", "Subway", "McDonald's", "Starbucks", "Taco Bell", "Wendy's", "Panera", "Whataburger", "Raising Cane's", "Panda Express", "Jimmy John's"];
 const PORTIONS = [[0.5, "½"], [0.75, "¾"], [1, "Full"], [1.25, "1¼"]];
 // Eating half and saving the rest is the most useful trim there is, so macros scale with the portion.
 const scaleOrder = (m, f) => ({ ...m, calories: Math.round(m.calories * f), protein: Math.round(m.protein * f), carbs: Math.round(m.carbs * f), fat: Math.round(m.fat * f) });
-function EatingOut({ remainCal, remainP, onLog, data, setData }) {
+function EatingOut({ remainCal, remainP, onLog, data, setData, noSaved }) {
   const orders = data?.orders || [];
   const [portion, setPortion] = useState({});
   const [savedPick, setSavedPick] = useState({});
@@ -2711,7 +2799,7 @@ Respond with ONLY JSON:
   return (
     <>
       <div className="glass pad stack">
-        <div className="row"><h2>Eating out</h2><span className="dim tiny">{Math.max(0, remainCal).toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g left</span></div>
+        <div className="row"><h2>Custom order</h2><span className="dim tiny">{Math.max(0, remainCal).toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g left</span></div>
         <div className="chips">{MEALS.map((m) => <button key={m} className={slot === m ? "chip on" : "chip"} onClick={() => setSlot(m)}>{m}</button>)}</div>
         <div className="chips">{CHAINS.map((c) => <button key={c} className={where === c ? "chip on" : "chip"} onClick={() => setWhere(where === c ? "" : c)}>{c}</button>)}</div>
         <input placeholder="Or type a place: Texas Roadhouse, the diner" value={where} onChange={(e) => setWhere(e.target.value)} />
@@ -2725,7 +2813,7 @@ Respond with ONLY JSON:
         {err && <p className="alert">{err}</p>}
       </div>
 
-      {orders.length > 0 && (
+      {!noSaved && orders.length > 0 && (
         <div className="glass">
           <div className="mealhead">Saved orders</div>
           {orders.map((o) => (
@@ -4352,7 +4440,7 @@ function Shell({ children, theme, top }) {
         .app.pro .glogo { width:18px; height:18px; object-fit:contain; margin-right:6px; vertical-align:-4px; }
         /* bottom tab bar */
         .app.pro .dock { left:0; right:0; bottom:0; gap:0; border-radius:0; background:#0B0B0D; border:0; border-top:1px solid #26282F; box-shadow:none; backdrop-filter:none; -webkit-backdrop-filter:none; padding:4px 4px calc(6px + env(safe-area-inset-bottom)); }
-        .app.pro .dockbtn { color:#8A8F9C; border-radius:0; background:none; font-size:11.5px; padding:6px 2px; border-top:3px solid transparent; }
+        .app.pro .dockbtn { color:#8A8F9C; border-radius:0; background:none; font-size:10.5px; letter-spacing:-.15px; padding:6px 0; border-top:3px solid transparent; }
         .app.pro .dockbtn.on { color:#fff; background:none; border-top-color:var(--nbared); box-shadow:none; }
         .app.pro .dockbtn.on svg { color:var(--nbablue); }
 
