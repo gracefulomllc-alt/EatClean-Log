@@ -253,16 +253,19 @@ function estimateTdee(days, formulaTdee, today = dayKey()) {
 function computeTargets(p, tags = [], tdeeOverride = null, recovering = false) {
   const bmr = 10 * (p.weight * 0.4536) + 6.25 * (p.heightIn * 2.54) - 5 * p.age + (p.sex === "male" ? 5 : -161);
   const tdee = tdeeOverride || bmr * ACTIVITY[p.activity].mult;
+  // Under 18 there is no calorie cut. Growing bodies and sports need the fuel, so the budget is
+  // what the body burns, and weight goals are a talk for a parent, doctor or coach.
+  const minor = Number.isFinite(+p.age) && +p.age > 0 && +p.age < 18;
   const floor = p.sex === "male" ? 1500 : 1200;
-  const raw = tdee - p.pace * 500;
-  const base = Math.max(floor, Math.round(raw / 10) * 10);
+  const raw = tdee - (minor ? 0 : p.pace) * 500;
+  const base = minor ? Math.round(raw / 10) * 10 : Math.max(floor, Math.round(raw / 10) * 10);
   const earned = recovering ? 0 : Math.min(500, tags.reduce((a, t) => a + (TAGS[t]?.cal || 0), 0));
   const calories = base + earned;
-  const protein = Math.round(p.goalWeight * (recovering || tags.some((t) => TAGS[t]?.hard) ? 1.0 : 0.8));
+  const protein = Math.round((minor ? Math.min(p.weight, p.goalWeight || p.weight) * 0.75 : p.goalWeight) * (minor ? 1 : (recovering || tags.some((t) => TAGS[t]?.hard) ? 1.0 : 0.8)));
   const fat = Math.round((calories * 0.27) / 9);
   const carbs = Math.max(0, Math.round((calories - protein * 4 - fat * 9) / 4));
   return { bmr: Math.round(bmr), tdee: Math.round(tdee), base, earned, calories, protein, fat, carbs,
-    clamped: raw < floor, actualPace: (tdee - base) / 500 };
+    clamped: !minor && raw < floor, actualPace: minor ? 0 : (tdee - base) / 500, minor };
 }
 
 /* ---------- food table (per 100 g as eaten) ---------- */
@@ -530,6 +533,7 @@ export default function CutLog() {
     return n && n !== d ? { ...n, u: Date.now() } : n;
   }), []);
   const [locked, setLocked] = useState(null);
+  const [welcomed, setWelcomed] = useState(() => { try { return localStorage.getItem("cutlog:welcomed") === "1"; } catch { return true; } });
   const th = data?.theme === "retro" ? "court" : data?.theme;   // the old Desktop '95 look is gone; those logs land on hardwood
   PRO = !th || th === "pro";                      // the default look: ESPN layout in NBA colors
   COURT = PRO || th === "court";                   // basketball language (Court, Plays, box score)
@@ -677,6 +681,9 @@ export default function CutLog() {
 
   if (locked) return <Shell theme={THEME}><Gate onOk={() => setLocked(false)} /></Shell>;
   if (!data) return <Shell theme={THEME}><div className="glass pad center"><p className="dim">Waking up…</p></div></Shell>;
+  if (!data.profile && !welcomed) return <Shell theme={THEME}>
+    <Welcome onDone={() => { try { localStorage.setItem("cutlog:welcomed", "1"); } catch { /* fine */ } setWelcomed(true); }} />
+  </Shell>;
   if (!data.profile) return <Shell theme={THEME}>
     <JoinSync onJoin={joinSync} />
     <ProfileForm
@@ -716,6 +723,52 @@ function TrayClock() {
   return <span className="tray">{t.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span>;
 }
 
+/* ---------- first screen: what you're signing up for, before any form ---------- */
+function Welcome({ onDone }) {
+  const items = [
+    ["Your food for the day", "Cut Log tells you how many calories and how much protein to eat each day."],
+    ["No bad foods", "Every meal gets a tier, from real food to junk. We never call a food bad."],
+    ["A daily score", "You earn points for eating meals, drinking water, moving and eating veggies. Not for eating less."],
+    ["Fasting is off", "Fasting means not eating for a long time. It is turned off unless an adult-age player turns it on."],
+    ["Your crew", "Invite friends with a code. You pick what they can see."],
+    ["Games on top", "Live NBA scores and South Plains games show at the top."],
+  ];
+  return (
+    <div className="glass pad stack">
+      <h2>Welcome to Cut Log</h2>
+      <p className="small">Cut Log helps ballplayers eat well. Here is what it does:</p>
+      {items.map(([t, b]) => <div key={t}><strong>{t}</strong><p className="dim small">{b}</p></div>)}
+      <p className="dim tiny">This app is not a doctor. Under 18? Ask a parent or coach before you change how you eat.</p>
+      <button className="btn solid wide" onClick={onDone}>Next</button>
+    </div>
+  );
+}
+
+/* ---------- starting a fast: say what it is before the clock starts ---------- */
+function FastStart({ data, onStart, onCancel }) {
+  const crew = (data.groups || []).filter((g) => !g.lost && (g.scopes?.fast ?? DEFAULT_SCOPES.fast));
+  const [ago, setAgo] = useState(0);   // hours since the last meal
+  return (
+    <div className="glass pad stack">
+      <h2>You're about to start a fast</h2>
+      <p className="small">A fast means <strong>no food</strong> until you end it. Water is fine. The clock starts when you tap Start.</p>
+      <div>
+        <label>When did you last eat?</label>
+        <div className="chips">{[[0, "Just now"], [2, "2h ago"], [4, "4h ago"], [8, "8h ago"]].map(([v, l]) => (
+          <button key={v} className={ago === v ? "chip on" : "chip"} onClick={() => setAgo(v)}>{l}</button>))}</div>
+      </div>
+      <p className="small">{crew.length
+        ? <>Your crew ({crew.map((g) => g.name).join(", ")}) will see that you're fasting and for how long. At 24 hours, and every 12 hours after, you'll be asked to confirm you're still going, and friends can check on you. Change this under Crew → sharing.</>
+        : "Nobody else sees your fast. Sharing only happens if you join a crew and leave fasting switched on."}</p>
+      <p className="dim tiny">Skip it if you're pregnant or nursing, have a history of disordered eating, take diabetes or blood-pressure medication, or just don't feel right. If you feel dizzy, faint or unwell, end it and eat. A longer fast never scores higher.</p>
+      <div className="rowbtns">
+        <button className="btn ghost wide" onClick={onCancel}>Not now</button>
+        <button className="btn solid wide" onClick={() => onStart(Date.now() - ago * 36e5)}>Start fast</button>
+      </div>
+    </div>
+  );
+}
+
 /* ---------- now ---------- */
 function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
   const [open, setOpen] = useState(false);
@@ -723,6 +776,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
   const removeFood = (id) => setData((d) => ({ ...d, deleted: tombstone(d, "food:" + id),
     days: { ...d.days, [dayId]: { ...(d.days[dayId] || blankDay()), foods: (d.days[dayId]?.foods || []).filter((x) => x.id !== id), u: Date.now() } } }));
   const [showStages, setShowStages] = useState(false);
+  const [confirmFast, setConfirmFast] = useState(false);
   const [now, setNow] = useState(Date.now());
   const fast = data.fast;
   const fastOn = fastingEnabled(data);
@@ -779,13 +833,17 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
               fasts: [{ end: Date.now(), hours: +((Date.now() - d.fast.start) / 36e5).toFixed(1) }, ...(d.fasts || [])].slice(0, 30) }))}>{H("Final buzzer", "Break it")}</button>
           </div>
         </div>
+      ) : confirmFast ? (
+        <FastStart data={data} onCancel={() => setConfirmFast(false)}
+          onStart={(start) => { setData((d) => ({ ...d, fast: { start } })); setConfirmFast(false); }} />
       ) : (
         <div className="glass hero">
           <Ring pct={0} color={C.idle} glow={false}>
             <div className="mono huge dim">0:00:00</div>
             <div className="dim tiny">{H("shot clock off", "not fasting")}</div>
           </Ring>
-          <button className="btn solid wide big" onClick={() => setData((d) => ({ ...d, fast: { start: Date.now() } }))}>{H("Start the clock", "Start fasting")}</button>
+          <button className="btn solid wide big" onClick={() => setConfirmFast(true)}>{H("Start the clock", "Start fasting")}</button>
+          <p className="dim tiny center">Starting a fast means no food until you end it. You'll see what it involves first.</p>
           {(data.fasts || [])[0] && <p className="dim tiny center">{H("Last game", "Last fast")}: {data.fasts[0].hours}h</p>}
         </div>
       )}
@@ -2462,7 +2520,7 @@ function Plan({ data, setData, targets, day, updateDay }) {
     setBusy(true); setErr("");
     try {
       const likes = (data.favorites || []).map((f) => f.name).slice(0, 12);
-      const p = await askClaude([{ type: "text", text: `Give someone cutting weight exactly three ${slot.toLowerCase()} options to choose between.
+      const p = await askClaude([{ type: "text", text: `Give someone ${data.profile?.age < 18 ? "who is a growing athlete (under 18, so never a calorie cut; fuel for growth and sports)" : "cutting weight"} exactly three ${slot.toLowerCase()} options to choose between.
 
 ${craving.trim() ? `What they're in the mood for: "${craving.trim()}". Take this seriously — all three options should satisfy that craving, worked into their numbers rather than replaced with something virtuous.` : "No particular craving — give three genuinely different options."}
 
@@ -2622,7 +2680,7 @@ function EatingOut({ remainCal, remainP, onLog, data, setData }) {
     try {
       const content = [];
       if (img) content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: img.split(",")[1] } });
-      content.push({ type: "text", text: `Someone cutting weight is eating out${where.trim() ? ` at ${where.trim()}` : ""}. This is ${slot.toLowerCase()}.
+      content.push({ type: "text", text: `Someone ${data?.profile?.age < 18 ? "who is a growing athlete under 18 (no calorie cutting)" : "cutting weight"} is eating out${where.trim() ? ` at ${where.trim()}` : ""}. This is ${slot.toLowerCase()}.
 ${img ? "The photo is the menu. Only recommend items actually on it." : "There's no menu photo. Use what you genuinely know of this restaurant's menu. If you don't know it, set known to false and give picks that would exist at a typical place of that kind."}
 They have ${Math.max(0, remainCal)} calories and ${Math.max(0, Math.round(remainP))}g protein left today.
 
@@ -2730,7 +2788,7 @@ function WeekPlan({ data, setData, onLog, onOpenList }) {
     setBusy(true); setErr("");
     try {
       const likes = (data.favorites || []).map((f) => f.name).slice(0, 12);
-      const p = await askClaude([{ type: "text", text: `Plan 7 days of meal prep for someone cutting weight, around a small set of batch-cooked dishes that repeat through the week — they cook twice and eat all week. Repetition is good here.
+      const p = await askClaude([{ type: "text", text: `Plan 7 days of meal prep for someone ${data.profile?.age < 18 ? "who is a growing athlete under 18 (no calorie cutting, plenty of fuel)" : "cutting weight"}, around a small set of batch-cooked dishes that repeat through the week — they cook twice and eat all week. Repetition is good here.
 
 Every day should land within 100 calories of ${base.calories} and reach at least ${base.protein}g protein.
 ${ifMode ? "They do intermittent fasting: plan 2 meals plus 1 snack a day inside an eating window — no breakfast." : "Plan breakfast, lunch, dinner and one snack each day."}
@@ -3207,7 +3265,9 @@ function coachContext(data, targets, adaptive) {
   const fastH = data.fast ? ((Date.now() - data.fast.start) / 36e5).toFixed(1) : null;
   const p = data.profile;
   return [
-    `Person: ${p.sex}, ${p.age}, ${Math.floor(p.heightIn / 12)}'${p.heightIn % 12}", started ${p.weight} lb, goal ${p.goalWeight} lb, losing ~${p.pace} lb/week.`,
+    p.age < 18
+      ? `Person: ${p.sex}, ${p.age} (UNDER 18), ${Math.floor(p.heightIn / 12)}'${p.heightIn % 12}", ${p.weight} lb. IMPORTANT: this is a young athlete. Never suggest cutting calories, fasting, skipping meals or losing weight. Talk about fueling growth and sports, sleep, water and real food. For any weight question, tell them to talk with a parent, a doctor and their coach. Use short, simple words.`
+      : `Person: ${p.sex}, ${p.age}, ${Math.floor(p.heightIn / 12)}'${p.heightIn % 12}", started ${p.weight} lb, goal ${p.goalWeight} lb, losing ~${p.pace} lb/week.`,
     `Today's budget: ${targets.calories} cal, ${targets.protein}g protein (${targets.carbs}g carbs, ${targets.fat}g fat).${targets.earned ? ` Includes ${targets.earned} earned from activity.` : ""}`,
     adaptive?.ready ? `Measured maintenance from their own data: ${adaptive.tdee} cal (formula said ${adaptive.formula}); trending ${adaptive.lbPerWeek} lb/week.` : `Maintenance is still a formula estimate.`,
     `Eaten today: ${Math.round(t.c)} cal, ${Math.round(t.p)}g protein — ${Math.round(targets.calories - t.c)} cal and ${Math.max(0, Math.round(targets.protein - t.p))}g protein left.`,
@@ -3775,9 +3835,15 @@ function ProfileForm({ initial, title, cta, intro, onSave }) {
       <label>How your days usually go</label>
       <div className="stack">{Object.entries(ACTIVITY).map(([k, v]) => (
         <button key={k} className={p.activity === k ? "listbtn on" : "listbtn"} onClick={() => set("activity", k)}>{v.label}</button>))}</div>
-      <label>How fast</label>
-      <div className="chips">{[0.5, 1, 1.5, 2].map((v) => (
-        <button key={v} className={p.pace === v ? "chip on" : "chip"} onClick={() => set("pace", v)}>{v} lb/wk</button>))}</div>
+      {numsOk && pv.minor ? (
+        <p className="cue">You're under 18, so Cut Log doesn't set a calorie cut. Your numbers are the fuel your body needs to grow and play. If you want to change your weight, talk with a parent, a doctor and your coach first.</p>
+      ) : (
+        <>
+          <label>How fast</label>
+          <div className="chips">{[0.5, 1, 1.5, 2].map((v) => (
+            <button key={v} className={p.pace === v ? "chip on" : "chip"} onClick={() => set("pace", v)}>{v} lb/wk</button>))}</div>
+        </>
+      )}
       {numsOk ? (
         <div className="quad">
           <div><div className="midnum" style={{ color: C.cal }}>{pv.base.toLocaleString()}</div><div className="dim tiny">calories a day</div></div>

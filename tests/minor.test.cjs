@@ -1,0 +1,22 @@
+// Under 18: no calorie cut, no fake "weeks to goal", protein sized to the body.
+const fs = require("fs"), vm = require("vm");
+const src = fs.readFileSync("src/App.jsx", "utf8");
+const grab = (a, b) => { const i = src.indexOf(a); return src.slice(i, src.indexOf(b, i)); };
+const code = "const ACTIVITY={moderate:{mult:1.55},light:{mult:1.375}};" + grab("const TAGS = {", "/* ---------- food table") ;
+const sb = {}; vm.createContext(sb);
+vm.runInContext(code + ";this.T={computeTargets}", sb);
+const { computeTargets } = sb.T;
+let ok = 0, bad = 0; const eq = (a, b, m) => { if (JSON.stringify(a) === JSON.stringify(b)) ok++; else { bad++; console.log("FAIL", m, a, b); } };
+const kid = { sex: "male", age: 13, heightIn: 62, weight: 120, goalWeight: 110, activity: "moderate", pace: 2 };
+const t = computeTargets(kid, []);
+eq(t.minor, true, "flagged as minor");
+eq(t.actualPace, 0, "no pace");
+eq(t.base, Math.round(t.tdee / 10) * 10, "budget equals what the body burns, even asking for 2 lb a week");
+eq(t.clamped, false, "no floor message");
+eq(t.protein <= 120 * 0.75 + 1, true, "protein sized to body weight, not a cutting target");
+const adult = computeTargets({ ...kid, age: 30, weight: 220, goalWeight: 180, heightIn: 72 }, []);
+eq(adult.minor, false, "adult is not minor");
+eq(adult.base < adult.tdee, true, "adult still gets a deficit");
+eq(computeTargets({ ...kid, age: 17 }, []).minor, true, "17 is still under 18");
+eq(computeTargets({ ...kid, age: 18 }, []).minor, false, "18 is an adult");
+console.log(ok, "ok", bad, "bad");
