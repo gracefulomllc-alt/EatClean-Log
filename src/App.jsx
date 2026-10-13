@@ -1062,7 +1062,7 @@ function GamesPanel() {
     return () => clearInterval(t);
   }, [load, (nba || []).some((g) => g.state === "in")]);
   const spc = spcView(SPC_GAMES);
-  const gt = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const gt = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
   const gd = (iso) => new Date(iso).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
   return (
     <div className="glass pad stack gamespanel">
@@ -1091,12 +1091,13 @@ function GamesPanel() {
           {spc.today.length === 0 && <p className="dim tiny">No Texans game today.</p>}
           {[...spc.today, ...spc.upcoming].map((g) => (
             <div key={g.start} className="gamerow">
-              <div className="gameteams"><div>{g.home === false ? "at " : g.home === null ? "vs " : "vs "}{g.opp}</div>
-                {g.where && <div className="dim tiny">{g.where}</div>}</div>
-              <div className="gamewhen"><span>{gd(g.start)}</span><span className="dim tiny">{gt(g.start)}{g.home ? " · Home" : ""}</span></div>
+              <div className="gameteams"><div>{g.home === false ? "at " : "vs "}{g.opp}</div>
+                {(g.where || g.event) && <div className="dim tiny">{[g.event, g.where].filter(Boolean).join(" · ")}{g.conf ? " · Conference" : ""}</div>}</div>
+              <div className="gamewhen"><span>{gd(g.start)}</span><span className="dim tiny">{g.tba ? "Time TBA" : gt(g.start)}{g.home ? " · Home" : ""}</span></div>
             </div>
           ))}
           {spc.today.length === 0 && spc.upcoming.length === 0 && <p className="dim tiny">No more games on the schedule.</p>}
+          <p className="dim tiny"><a href={SPC_URL} target="_blank" rel="noreferrer">Full schedule and live stats</a></p>
         </>
       )}
     </div>
