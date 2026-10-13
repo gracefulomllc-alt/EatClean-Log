@@ -20,6 +20,7 @@ const args = {
   "lift.test.cjs": [extract("lift.js", between("/* ---------- lifting log", "/* ---------- accountability score"))],
   "gates.test.cjs": [extract("groups.js", between("/* ---------- groups: what a phone publishes", "/* ---------- groups UI"))],
   "spcview.test.cjs": [extract("spcview.js", fn("spcView"))],
+  "water.test.cjs": [extract("water.js", fn("waterPlan"))],
 };
 
 let failed = 0;

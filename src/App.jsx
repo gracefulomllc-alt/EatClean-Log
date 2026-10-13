@@ -3917,17 +3917,35 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
 }
 
 const BLANK_PROFILE = { name: "", sex: "male", age: "", heightIn: 69, weight: "", goalWeight: "", activity: "light", pace: 1, goal: "lose",
-  health: [], allergies: [], allergyOther: "", diet: "", dislikes: "", meals: 3, cooking: "", budget: "", workouts: "", sleep: "", waterOz: 100 };
+  health: [], allergies: [], allergyOther: "", diet: "", dislikes: "", meals: 3, cooking: "", budget: "", workouts: "", sleep: "", waterOz: 100, waterCustom: false };
+// A daily water goal that fits the person: about half an ounce per pound of body weight, plus extra
+// for an active job, for workouts, and for pregnancy or nursing. General guidance, not medical advice.
+function waterPlan(p) {
+  const w = +p.weight >= 80 && +p.weight <= 600 ? +p.weight : 170;
+  const parts = [{ label: `Your size (${Math.round(w)} lb)`, oz: w * 0.5 }];
+  const act = { sedentary: 0, light: 6, moderate: 12, high: 20 }[p.activity] || 0;
+  if (act) parts.push({ label: "Active job or days", oz: act });
+  const wk = p.workouts === "" || p.workouts == null ? 0 : Math.min(7, Math.max(0, +p.workouts || 0));
+  if (wk) parts.push({ label: `Workouts (${wk} a week)`, oz: (wk * 16) / 7 });
+  const h = p.health || [];
+  if (h.includes("pregnant")) parts.push({ label: "Pregnant or nursing", oz: 16 });
+  const raw = parts.reduce((a, x) => a + x.oz, 0);
+  const oz = Math.min(160, Math.max(48, Math.round(raw / 4) * 4));
+  const note = h.includes("heart") || h.includes("other")
+    ? "Your doctor may have given you a limit on fluids. If so, follow your doctor's number instead of this one."
+    : h.includes("sugar") ? "Water is a good choice with blood sugar worries. Pick it over sweet drinks." : "";
+  return { oz, cups: Math.round((oz / 8) * 10) / 10, parts: parts.map((x) => ({ label: x.label, oz: Math.round(x.oz) })), note };
+}
 const goalOf = (p) => p.goal || (+p.goalWeight > +p.weight ? "gain" : +p.goalWeight === +p.weight ? "maintain" : "lose");
 const goalPhrase = (p) => (goalOf(p) === "gain" ? `gaining ~${Math.abs(p.pace || 0.5)} lb/week` : goalOf(p) === "maintain" ? "keeping their weight steady" : `losing ~${p.pace} lb/week`);
 const HEALTH = { pregnant: "Pregnant or nursing", sugar: "Diabetes or blood sugar", heart: "Heart or blood pressure", other: "Something else my doctor watches" };
 const COOKING = { none: "I don't cook", basic: "Simple stuff", good: "I cook well" };
 const BUDGET = { tight: "Tight", ok: "Normal", free: "Flexible" };
-const SLEEP = { "5": "Under 6 hours", "6.5": "6 to 7", "7.5": "7 to 8", "9": "8 or more" };
+const SLEEP = { under6: "Under 6 hours", s6: "6 to 7 hours", s7: "7 to 8 hours", s8: "8 or more hours" };
 const lifestyleNote = (p) => {
   const bits = [];
   if (p.workouts !== "" && p.workouts != null) bits.push(`works out ${p.workouts} day${+p.workouts === 1 ? "" : "s"} a week`);
-  if (p.sleep) bits.push(`sleeps about ${p.sleep} hours`);
+  if (p.sleep) bits.push(`sleeps ${SLEEP[p.sleep] || p.sleep + " hours"} a night`);
   if (p.meals) bits.push(`prefers ${p.meals} meals a day`);
   if (p.cooking) bits.push(`cooking: ${COOKING[p.cooking]}`);
   if (p.budget) bits.push(`food budget: ${BUDGET[p.budget]}`);
@@ -3936,11 +3954,13 @@ const lifestyleNote = (p) => {
 };
 
 function ProfileForm({ initial, title, cta, intro, onSave, wizard }) {
-  const [p, setP] = useState({ ...BLANK_PROFILE, ...initial });
+  const [p, setP] = useState(() => ({ ...BLANK_PROFILE, ...initial, waterCustom: initial?.waterCustom ?? (!wizard && initial?.waterOz != null) }));
   const [step, setStep] = useState(0);
   const set = (k, v) => setP((x) => ({ ...x, [k]: v }));
   const toggle = (k, v) => setP((x) => ({ ...x, [k]: (x[k] || []).includes(v) ? x[k].filter((y) => y !== v) : [...(x[k] || []), v] }));
   const goal = goalOf(p);
+  const wp = waterPlan(p);
+  const waterNow = p.waterCustom ? (+p.waterOz || wp.oz) : wp.oz;
   const setGoal = (g) => setP((x) => ({ ...x, goal: g, pace: g === "maintain" ? 0 : g === "gain" ? -0.5 : (x.pace > 0 ? x.pace : 1) }));
   const ageOk = +p.age >= 13 && +p.age <= 100;
   const bodyOk = +p.weight >= 80 && +p.weight <= 600 && +p.heightIn >= 48 && +p.heightIn <= 90;
@@ -3950,7 +3970,7 @@ function ProfileForm({ initial, title, cta, intro, onSave, wizard }) {
   const pv = computeTargets({ ...eff, weight: numsOk ? +eff.weight : 180, goalWeight: numsOk ? +eff.goalWeight : 160, age: numsOk ? +p.age : 30, heightIn: +p.heightIn || 69 }, []);
   const ft = Math.floor(p.heightIn / 12), inch = p.heightIn % 12;
   const save = () => onSave({ ...p, goal, age: +p.age, heightIn: +p.heightIn, weight: +p.weight, goalWeight: goal === "maintain" ? +p.weight : +p.goalWeight,
-    waterOz: +p.waterOz || 100, meals: +p.meals || 3, workouts: p.workouts === "" ? "" : +p.workouts });
+    waterOz: waterNow, waterCustom: !!p.waterCustom, meals: +p.meals || 3, workouts: p.workouts === "" ? "" : +p.workouts });
   const q = (text, hint) => <div><label>{text}</label>{hint && <p className="dim tiny" style={{ margin: "2px 0 6px" }}>{hint}</p>}</div>;
   const pick = (map, k) => <div className="chips">{Object.entries(map).map(([v, l]) => (
     <button key={v} className={String(p[k]) === v ? "chip on" : "chip"} onClick={() => set(k, String(p[k]) === v ? "" : v)}>{l}</button>))}</div>;
@@ -3993,25 +4013,32 @@ function ProfileForm({ initial, title, cta, intro, onSave, wizard }) {
     health: { title: "Your health", skip: true, body: (
       <>
         {q("Does a doctor watch anything for you?", "Pick any that fit. This only makes the advice gentler and reminds you to follow your doctor. Skip it if none.")}
-        <div className="stack">{Object.entries(HEALTH).map(([k, l]) => (
-          <button key={k} className={(p.health || []).includes(k) ? "listbtn on" : "listbtn"} onClick={() => toggle("health", k)}>{(p.health || []).includes(k) ? "✓ " : ""}{l}</button>))}</div>
+        <div className="stack">
+          <button className={p.healthNone && !(p.health || []).length ? "listbtn on" : "listbtn"} onClick={() => setP((x) => ({ ...x, health: [], healthNone: true }))}>{p.healthNone && !(p.health || []).length ? "✓ " : ""}None of these</button>
+          {Object.entries(HEALTH).map(([k, l]) => (
+            <button key={k} className={(p.health || []).includes(k) ? "listbtn on" : "listbtn"} onClick={() => setP((x) => ({ ...x, healthNone: false, health: (x.health || []).includes(k) ? x.health.filter((y) => y !== k) : [...(x.health || []), k] }))}>{(p.health || []).includes(k) ? "✓ " : ""}{l}</button>))}</div>
         {(p.health || []).length > 0 && <p className="cue">Please check this plan with your doctor before you start. We give general guidance, not medical advice.</p>}
       </>) },
     allergy: { title: "Allergies", skip: true, body: (
       <>
         {q("Are you allergic to any foods?", "Tap all that apply. Meal ideas and the coach will stay away from them.")}
-        <div className="chips">{Object.entries(ALLERGENS).map(([k, a]) => (
-          <button key={k} className={(p.allergies || []).includes(k) ? "chip on" : "chip"} onClick={() => toggle("allergies", k)}>{a.label}</button>))}</div>
-        <div><label>Anything else?</label><input placeholder="Like mustard, corn, kiwi" value={p.allergyOther || ""} onChange={(e) => set("allergyOther", e.target.value)} /></div>
-        {(p.allergies || []).length === 0 && !(p.allergyOther || "").trim() && <p className="dim tiny">No allergies? Just tap Next.</p>}
+        <div className="chips">
+          <button className={p.allergyNone && !(p.allergies || []).length && !(p.allergyOther || "").trim() ? "chip on" : "chip"} onClick={() => setP((x) => ({ ...x, allergies: [], allergyOther: "", allergyNone: true }))}>None</button>
+          {Object.entries(ALLERGENS).map(([k, a]) => (
+            <button key={k} className={(p.allergies || []).includes(k) ? "chip on" : "chip"} onClick={() => setP((x) => ({ ...x, allergyNone: false, allergies: (x.allergies || []).includes(k) ? x.allergies.filter((y) => y !== k) : [...(x.allergies || []), k] }))}>{a.label}</button>))}</div>
+        <div><label>Anything else?</label><input placeholder="Like mustard, corn, kiwi" value={p.allergyOther || ""} onChange={(e) => setP((x) => ({ ...x, allergyOther: e.target.value, allergyNone: e.target.value.trim() ? false : x.allergyNone }))} /></div>
         <p className="dim tiny">Always read the label. This is a helper, not a safety guarantee.</p>
       </>) },
     eating: { title: "How you eat", skip: true, body: (
       <>
         {q("Do you follow a special way of eating?")}
-        <div className="chips">{Object.entries(DIETS).map(([k, d]) => (
-          <button key={k} className={p.diet === k ? "chip on" : "chip"} onClick={() => set("diet", p.diet === k ? "" : k)}>{d.label}</button>))}</div>
-        <div><label>Foods you won't eat</label><input placeholder="Like mushrooms, liver, olives" value={p.dislikes || ""} onChange={(e) => set("dislikes", e.target.value)} /></div>
+        <div className="chips">
+          <button className={p.diet === "none" ? "chip on" : "chip"} onClick={() => set("diet", p.diet === "none" ? "" : "none")}>None, I eat everything</button>
+          {Object.entries(DIETS).map(([k, d]) => (
+            <button key={k} className={p.diet === k ? "chip on" : "chip"} onClick={() => set("diet", p.diet === k ? "" : k)}>{d.label}</button>))}</div>
+        <div><label>Foods you won't eat</label>
+          <div className="chips" style={{ marginBottom: 6 }}><button className={p.dislikesNone && !(p.dislikes || "").trim() ? "chip on" : "chip"} onClick={() => setP((x) => ({ ...x, dislikes: "", dislikesNone: true }))}>None</button></div>
+          <input placeholder="Like mushrooms, liver, olives" value={p.dislikes || ""} onChange={(e) => setP((x) => ({ ...x, dislikes: e.target.value, dislikesNone: e.target.value.trim() ? false : x.dislikesNone }))} /></div>
         {q("How many meals do you like to eat a day?")}
         <div className="chips">{[2, 3, 4, 5].map((n) => <button key={n} className={+p.meals === n ? "chip on" : "chip"} onClick={() => set("meals", n)}>{n}</button>)}</div>
         {q("How's your cooking?")}
@@ -4028,7 +4055,23 @@ function ProfileForm({ initial, title, cta, intro, onSave, wizard }) {
         <div className="chips">{[0, 1, 2, 3, 4, 5, 6, 7].map((n) => <button key={n} className={p.workouts !== "" && +p.workouts === n && p.workouts != null ? "chip on" : "chip"} onClick={() => set("workouts", n)}>{n}</button>)}</div>
         {q("How much do you sleep a night?")}
         {pick(SLEEP, "sleep")}
-        <div><label>Water goal each day (oz)</label><input type="number" inputMode="numeric" value={p.waterOz ?? 100} onChange={(e) => set("waterOz", e.target.value)} /></div>
+        <div className="stack water-plan">
+          <label>Your daily water goal</label>
+          <div className="row gap" style={{ justifyContent: "center", alignItems: "center" }}>
+            <button className="btn ghost" aria-label="Less water" onClick={() => setP((x) => ({ ...x, waterCustom: true, waterOz: Math.max(32, waterNow - 4) }))}>−</button>
+            <div className="center"><div className="midnum" style={{ color: C.water }}>{waterNow} oz</div><div className="dim tiny">about {Math.round((waterNow / 8) * 10) / 10} cups</div></div>
+            <button className="btn ghost" aria-label="More water" onClick={() => setP((x) => ({ ...x, waterCustom: true, waterOz: Math.min(200, waterNow + 4) }))}>+</button>
+          </div>
+          {p.waterCustom
+            ? <button className="chip" onClick={() => set("waterCustom", false)}>Use the recommended {wp.oz} oz</button>
+            : <p className="dim tiny center">Recommended for you. Tap − or + to change it.</p>}
+          <div className="cue">
+            <strong>How we figured it out</strong>
+            {wp.parts.map((x, i) => <div key={i} className="row small"><span>{x.label}</span><span className="mono">{i ? "+" : ""}{x.oz} oz</span></div>)}
+            <div className="dim tiny" style={{ marginTop: 4 }}>This is general guidance, about half an ounce per pound plus extra for activity. It's not medical advice. It changes as you answer the questions above.</div>
+          </div>
+          {wp.note && <p className="alert">{wp.note}</p>}
+        </div>
       </>) },
     plan: { title: "Your plan", body: (
       numsOk ? (
@@ -4040,6 +4083,7 @@ function ProfileForm({ initial, title, cta, intro, onSave, wizard }) {
           {pv.clamped && <p className="alert">That pace goes under a safe minimum, so your calories stop here.</p>}
           <p className="small">{goal === "maintain" ? "These numbers keep your weight steady." : goal === "gain" ? "These numbers add a small surplus so you gain slowly." : "These numbers put you in a steady, safe deficit."}</p>
           {((p.allergies || []).length > 0 || (p.allergyOther || "").trim() || p.diet) && <p className="small">Meals will skip: {[...(p.allergies || []).map((k) => ALLERGENS[k]?.label), (p.allergyOther || "").trim(), p.diet && DIETS[p.diet]?.label].filter(Boolean).join(", ")}.</p>}
+          <p className="small">Water goal: {waterNow} oz a day.</p>
           <p className="dim tiny">You can change any answer later in Settings.</p>
         </>
       ) : <p className="dim small">Go back and fill in your age, height and weight to see your numbers.</p>) },
