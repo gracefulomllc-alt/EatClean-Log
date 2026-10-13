@@ -1,5 +1,6 @@
 import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
 import { roadPicks, ROAD_CHAINS } from "./fastFood.js";
+import { scaleIngredient, tagsFor, TAG_FILTERS, swapsFor, applySwaps } from "./mealTools.js";
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { SPC_GAMES, SPC_URL } from "./spcSchedule.js";
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, CartesianGrid } from "recharts";
@@ -735,21 +736,27 @@ function TrayClock() {
 
 /* ---------- first screen: what you're signing up for, before any form ---------- */
 function Welcome({ onDone }) {
-  const items = [
-    ["Your food for the day", "Cut Log tells you how many calories and how much protein to eat each day."],
-    ["No bad foods", "Every meal gets a tier, from real food to junk. We never call a food bad."],
-    ["A daily score", "You earn points for eating meals, drinking water, moving and eating veggies. Not for eating less."],
-    ["Fasting is off", "Fasting means not eating for a long time. It is turned off unless an adult-age player turns it on."],
-    ["Your crew", "Invite friends with a code. You pick what they can see."],
-    ["Games on top", "Live NBA scores and South Plains games show at the top."],
+  const steps = [
+    ["1", "Answer a few questions", "About 2 minutes. Your goal, allergies and how you eat."],
+    ["2", "Get your daily numbers", "Calories, protein and water, built for you. You can change them."],
+    ["3", "Eat and track your day", "Meals that fit your numbers, picks for the drive-thru, and one tap to log."],
+  ];
+  const extras = [
+    ["Meals that fit you", "Skips your allergies. Swap an ingredient or cook for more people."],
+    ["Eating Out", "The best order at McDonald's, Chipotle, gas stations and more."],
+    ["Fasting timer", "Optional. Off until you turn it on."],
+    ["Friends", "Join with a code. You choose what they can see."],
   ];
   return (
     <div className="glass pad stack">
-      <h2>Welcome to Cut Log</h2>
-      <p className="small">Cut Log helps ballplayers eat well. Here is what it does:</p>
-      {items.map(([t, b]) => <div key={t}><strong>{t}</strong><p className="dim small">{b}</p></div>)}
-      <p className="dim tiny">This app is not a doctor. Under 18? Ask a parent or coach before you change how you eat.</p>
-      <button className="btn solid wide" onClick={onDone}>Next</button>
+      <h1 className="welcomehead">Know exactly what to eat today.</h1>
+      <p className="small">Cut Log is a food and fasting tracker. It builds your daily calorie and protein goal, finds meals that fit it, and tracks your day.</p>
+      <button className="btn solid wide big" onClick={onDone}>Build my plan</button>
+      {steps.map(([n, t, b]) => <div key={n} className="row gap" style={{ alignItems: "flex-start" }}><span className="stepnum">{n}</span><div><strong>{t}</strong><p className="dim small" style={{ margin: "2px 0 0" }}>{b}</p></div></div>)}
+      <h3 style={{ margin: "8px 0 0" }}>Also inside</h3>
+      {extras.map(([t, b]) => <div key={t}><strong>{t}</strong><p className="dim small" style={{ margin: "2px 0 0" }}>{b}</p></div>)}
+      <p className="dim tiny">This app is not a doctor. If you're under 18, pregnant, or have a health condition, check with a parent or doctor before changing how you eat.</p>
+      <button className="btn solid wide" onClick={onDone}>Build my plan</button>
     </div>
   );
 }
@@ -2700,6 +2707,10 @@ function Plan({ data, setData, targets, day, updateDay, dayId, setDayId }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [openRecipe, setOpenRecipe] = useState(null);
+  const [cook, setCook] = useState({});            // dish id -> how many people to cook for
+  const [swapApplied, setSwapApplied] = useState({});   // dish id -> applied swap ids
+  const [swapOpen, setSwapOpen] = useState(null);
+  const [tagFilter, setTagFilter] = useState("");
   const [showLabs, setShowLabs] = useState(false);
   const [showList, setShowList] = useState(false);
   const [craving, setCraving] = useState("");
@@ -2743,15 +2754,15 @@ Respond with ONLY JSON:
     setBusy(false);
   };
 
-  const addToList = (m) => {
+  const addToList = (m, people, ings) => {
     if (!m.recipe) return;
     setData((d) => {
       // Replacing a dish of the same name: mark the old one deleted so another device can't bring it back.
       const old = (d.list || []).filter((x) => x.name === m.name);
       const deleted = old.reduce((acc, x) => ({ ...acc, ["list:" + x.id]: Date.now() }), d.deleted || {});
       return { ...d, deleted, list: [...(d.list || []).filter((x) => x.name !== m.name),
-        { id: crypto.randomUUID(), name: m.name, servings: m.recipe.servings || 1, u: Date.now(),
-          items: m.recipe.ingredients.map((t) => ({ text: t, done: false })) }] };
+        { id: crypto.randomUUID(), name: m.name, servings: people || m.recipe.servings || 1, u: Date.now(),
+          items: (ings || m.recipe.ingredients).map((t) => ({ text: t, done: false })) }] };
     });
     setShowList(true);
   };
@@ -2762,32 +2773,56 @@ Respond with ONLY JSON:
   };
 
   const logToday = (item) => updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: stampFor(today), u: Date.now(), ...item }] }));
-  const dishCard = (m) => (
-            <div key={m.id} className="dish">
+  const dishCard = (m0) => {
+    const ids = swapApplied[m0.id] || [];
+    const m = ids.length ? applySwaps(m0, ids) : m0;
+    const opts = swapsFor(m);
+    const base = m0.recipe?.servings || 1;
+    const people = cook[m0.id] || base;
+    const f = people / base;
+    const ings = m.recipe ? m.recipe.ingredients.map((i) => (/^Swap:/.test(i) ? i : scaleIngredient(i, f))) : [];
+    const sizes = [...new Set([1, 2, 3, 4, 6, base])].sort((x, y) => x - y);
+    const lost = Math.round(m0.protein - m.protein);
+    return (
+            <div key={m0.id} className="dish">
               <div className="row gap">
                 <div><div className="dishname">{m.name}</div><div className="dim tiny">{m.blurb}</div></div>
                 <span className={`badge ${m.effort === "cook" ? "" : "good"}`}>{m.effort}</span>
               </div>
               <div className="dishmacros">
                 <span className="mono" style={{ color: C.cal }}>{Math.round(m.calories)}</span>
-                <span className="dim tiny">{Math.round(m.protein)}p · {Math.round(m.carbs)}c · {Math.round(m.fat)}f</span>
+                <span className="dim tiny">{Math.round(m.protein)}p · {Math.round(m.carbs)}c · {Math.round(m.fat)}f · per serving</span>
               </div>
+              <div className="tagrow">{tagsFor(m).slice(0, 5).map((t) => <span key={t} className="tagpill">{t}</span>)}</div>
               <div className="rowbtns">
-                {m.recipe && <button className="btn ghost wide" onClick={() => setOpenRecipe(openRecipe === m.id ? null : m.id)}>
-                  {openRecipe === m.id ? "Hide recipe" : "Recipe"}</button>}
-                {m.recipe && <button className="btn ghost wide" onClick={() => addToList(m)}>+ List</button>}
+                {m.recipe && <button className="btn ghost wide" onClick={() => setOpenRecipe(openRecipe === m0.id ? null : m0.id)}>
+                  {openRecipe === m0.id ? "Hide recipe" : "Recipe"}</button>}
+                {(opts.length > 0 || ids.length > 0) && <button className="btn ghost wide" onClick={() => setSwapOpen(swapOpen === m0.id ? null : m0.id)}>{swapOpen === m0.id ? "Hide swaps" : "Swap"}</button>}
+                {m.recipe && <button className="btn ghost wide" onClick={() => addToList(m, people, ings)}>+ List</button>}
                 <button className="btn solid wide" onClick={() => choose(m)}>Eat this</button>
               </div>
-              {openRecipe === m.id && m.recipe && (
+              {swapOpen === m0.id && (
+                <div className="stack fadein" style={{ marginTop: 8 }}>
+                  {opts.map((o) => (
+                    <button key={o.id} className="listbtn" onClick={() => setSwapApplied((x) => ({ ...x, [m0.id]: [...(x[m0.id] || []), o.id] }))}>
+                      {o.label}<span className="dim tiny" style={{ display: "block" }}>{o.d[0]} cal · {o.d[1] >= 0 ? "+" : ""}{o.d[1]}g protein · {o.d[2]}g carbs</span></button>))}
+                  {ids.length > 0 && <button className="chip" onClick={() => setSwapApplied((x) => ({ ...x, [m0.id]: [] }))}>Undo my swaps</button>}
+                  {lost >= 5 && <p className="cue">That drops protein by {lost}g. Add a Greek yogurt, an egg or a scoop of whey to keep it up.</p>}
+                  <p className="dim tiny">Swap numbers are estimates for a typical portion.</p>
+                </div>)}
+              {openRecipe === m0.id && m.recipe && (
                 <div className="recipe fadein">
-                  <div className="dim tiny">Makes {m.recipe.servings || 1}</div>
-                  <ul>{m.recipe.ingredients.map((i, n) => <li key={n}>{i}</li>)}</ul>
-                  <ol>{m.recipe.steps.map((s, n) => <li key={n}>{s}</li>)}</ol>
+                  <label>Cooking for</label>
+                  <div className="chips">{sizes.map((n) => <button key={n} className={people === n ? "chip on" : "chip"} onClick={() => setCook((x) => ({ ...x, [m0.id]: n }))}>{n} {n === 1 ? "person" : "people"}</button>)}</div>
+                  <div className="dim tiny" style={{ marginTop: 6 }}>Amounts below are for {people}. Calories and protein above are per serving.</div>
+                  <ul>{ings.map((i, n) => <li key={n}>{i}</li>)}</ul>
+                  <ol>{m.recipe.steps.map((st, n) => <li key={n}>{st}</li>)}</ol>
                 </div>
               )}
             </div>
-  );
-  const ideas = suggestMeals(craving, slot, remainCal, remainP, 6, data.profile).map((m) => ({ ...m, slot, id: "lib-" + slot + m.name }));
+    );
+  };
+  const ideas = suggestMeals(craving, slot, remainCal, remainP, 40, data.profile).filter((m) => !tagFilter || tagsFor(m).includes(tagFilter)).slice(0, 6).map((m) => ({ ...m, slot, id: "lib-" + slot + m.name }));
   const otherIdeas = ideas.length || !craving.trim() ? [] : suggestMeals(craving, null, remainCal, remainP, 4, data.profile).map((m) => ({ ...m, slot: m.slots[0], id: "lib-x" + m.name }));
   return (
     <>
@@ -2804,6 +2839,10 @@ Respond with ONLY JSON:
         <div className="chips">{MEALS.map((s) => (
           <button key={s} className={slot === s ? "chip on" : "chip"} onClick={() => setSlot(s)}>{s}</button>))}</div>
         <p className="dim small">1. Pick the meal. 2. Type what sounds good, like chicken. 3. Press Eat this on one you like.</p>
+        <div className="chips" style={{ flexWrap: "nowrap", overflowX: "auto", paddingBottom: 4 }}>
+          <button className={!tagFilter ? "chip on" : "chip"} style={{ flex: "none" }} onClick={() => setTagFilter("")}>All</button>
+          {TAG_FILTERS.map((t) => <button key={t} className={tagFilter === t ? "chip on" : "chip"} style={{ flex: "none", whiteSpace: "nowrap" }} onClick={() => setTagFilter(tagFilter === t ? "" : t)}>{t}</button>)}
+        </div>
         <input placeholder="burgers, something Mexican, steak — or leave it blank" value={craving}
           onChange={(e) => setCraving(e.target.value)} onKeyDown={(e) => e.key === "Enter" && build()} />
         <button className="btn accent wide" onClick={build} disabled={busy}>
@@ -2907,6 +2946,7 @@ function RoadTab({ data, setData, targets, day, updateDay, dayId, setDayId }) {
                 <span className="mono" style={{ color: C.cal }}>{m.calories}</span>
                 <span className="dim tiny">{m.protein}p · {m.carbs}c · {m.fat}f · estimate</span>
               </div>
+              <div className="tagrow">{tagsFor({ ...m0, tags: m0.chain }).slice(0, 4).map((t) => <span key={t} className="tagpill">{t}</span>)}</div>
               {m0.tweak && <ul className="tweaks"><li>{m0.tweak}</li></ul>}
               <div className="chips" aria-label="Portion">{PORTIONS.map(([v, l]) => <button key={v} className={f === v ? "chip on" : "chip"} onClick={() => setPortion((x) => ({ ...x, [key]: v }))}>{l}</button>)}</div>
               <div className="rowbtns">
@@ -4481,6 +4521,10 @@ function Shell({ children, theme, top }) {
         .recipe { border-top:1px solid rgba(255,255,255,.08); padding-top:10px; font-size:13px; }
         .recipe ul, .recipe ol { margin:8px 0 0; padding-left:18px; display:flex; flex-direction:column; gap:5px; }
         .recipe ul { color:rgba(241,245,249,.7); }
+        .welcomehead { font-size:30px; line-height:1.15; font-weight:800; letter-spacing:-.4px; margin:0; }
+        .stepnum { flex:none; width:26px; height:26px; border-radius:50%; background:var(--nbared, var(--pri, #6EE7F9)); color:#fff; font-weight:800; display:inline-flex; align-items:center; justify-content:center; font-size:13px; }
+        .tagrow { display:flex; flex-wrap:wrap; gap:5px; margin:6px 0 2px; }
+        .tagpill { font-size:10.5px; padding:2px 8px; border-radius:999px; border:1px solid rgba(255,255,255,.18); opacity:.85; }
         .daybig { font-size:22px; font-weight:800; }
         .daybar .btn { padding:10px 12px; display:inline-flex; align-items:center; gap:4px; }
         .tabtitle { text-align:center; margin:6px 0 14px; }
