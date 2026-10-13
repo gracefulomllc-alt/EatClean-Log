@@ -1,5 +1,5 @@
 import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
-import { roadPicks, ROAD_CHAINS } from "./fastFood.js";
+import { roadPicks, ROAD_CHAINS, modsFor, applyMods, modLabel } from "./fastFood.js";
 import { scaleIngredient, tagsFor, TAG_FILTERS, swapsFor, applySwaps } from "./mealTools.js";
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { SPC_GAMES, SPC_URL } from "./spcSchedule.js";
@@ -700,12 +700,12 @@ export default function CutLog() {
   const TABS = [["now", H("Court", "Today"), COURT ? Dribbble : Timer], ["plan", H("Plays", "Meals"), ChefHat], ["out", "Eating Out", Utensils], ["coach", "Coach", MessageCircle], ["weight", H("Stats", "Progress"), Scale], ["log", H("Scores", "History"), CalendarDays], ["setup", H("Locker", "Settings"), Cog]];
 
   return (
-    <Shell theme={THEME} top={PRO ? <ProTop /> : null}>
+    <Shell theme={THEME} top={PRO ? <ProTop onSettings={() => setTab("setup")} settingsOn={tab === "setup"} /> : null}>
       {saveErr && <div className="glass pad alert">That change didn’t save. Back up from Setup before closing.</div>}
-      <div className="tabtitle" role="heading" aria-level="1">
-        <span>{(TABS.find((t) => t[0] === tab) || [])[1]}</span>
-        <small>{{ now: "Your day at a glance", plan: "Ideas for what to eat", out: "Best picks when you're on the road", coach: "Ask anything about your food", weight: "Your weight and progress", log: "Everything you've logged", setup: "Your profile and options" }[tab]}</small>
-      </div>
+      <TabHeader tab={tab} title={(TABS.find((t) => t[0] === tab) || [])[1]} dayId={viewDay} setDayId={setViewDay} onSettings={() => setTab("setup")}
+        sub={{ now: "Your day at a glance", plan: "Ideas for what to eat", out: "Best picks when you're on the road", coach: "Ask anything about your food", weight: "Your weight and progress", log: "Everything you've logged, and your friends", setup: "Your profile and options" }[tab]} />
+      {(tab === "weight" || tab === "log") && <ProgressSwitch tab={tab} setTab={setTab} />}
+      <PopHost />
       <div key={tab} className="fadein">
         {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay, goTab: () => { setTab("setup"); setTimeout(() => document.getElementById("fasting-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 250); } }} />}
         {tab === "out" && <RoadTab data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} dayId={viewDay} setDayId={setViewDay} />}
@@ -717,8 +717,8 @@ export default function CutLog() {
           sync={sync} syncNow={syncNow} startSync={startSync} joinSync={joinSync} leaveSync={leaveSync} />}
       </div>
       <nav className="dock">
-        {TABS.map(([id, label, Icon]) => (
-          <button key={id} className={tab === id ? "dockbtn on" : "dockbtn"} onClick={() => setTab(id)}>
+        {TABS.filter((t) => t[0] !== "log" && t[0] !== "setup").map(([id, label, Icon]) => (
+          <button key={id} className={(tab === "log" ? "weight" : tab) === id ? "dockbtn on" : "dockbtn"} onClick={() => setTab(id)}>
             <Icon size={23} strokeWidth={1.7} /><span>{label}</span>
           </button>
         ))}
@@ -759,6 +759,25 @@ function Welcome({ onDone }) {
       <button className="btn solid wide" onClick={onDone}>Build my plan</button>
     </div>
   );
+}
+
+/* ---------- tap confirmation: a small "Logged" pop so you know it worked ---------- */
+const pop = (item) => {
+  try {
+    const p = Math.round(+item?.protein || 0), c = Math.round(+item?.calories || 0);
+    window.dispatchEvent(new CustomEvent("cutlog:pop", { detail: `Logged · +${p}g protein · ${c} cal` }));
+    navigator.vibrate?.(15);
+  } catch { /* fine */ }
+};
+function PopHost() {
+  const [m, setM] = useState(null);
+  useEffect(() => {
+    let t;
+    const on = (e) => { setM({ text: e.detail, id: Date.now() }); clearTimeout(t); t = setTimeout(() => setM(null), 1700); };
+    window.addEventListener("cutlog:pop", on);
+    return () => { window.removeEventListener("cutlog:pop", on); clearTimeout(t); };
+  }, []);
+  return m ? <div key={m.id} className="logpop" role="status"><span className="logcheck">✓</span> {m.text}</div> : null;
 }
 
 /* ---------- fast edits: forgot to start or stop? Fix the times. ---------- */
@@ -929,30 +948,6 @@ function PastFasts({ data, setData }) {
   );
 }
 
-// Pick which day you're looking at and logging to. Used on Today, Meals and Eating Out.
-function DayBar({ dayId, setDayId }) {
-  const isToday = dayId === dayKey();
-  return (
-    <div className="glass pad stack daybar">
-      <div className="row gap" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <button className="btn ghost" aria-label="Previous day" onClick={() => setDayId(shiftDay(dayId, -1))}><ChevronLeft size={16} /> Back</button>
-        <div className="center"><div className="daybig">{prettyDay(dayId)}</div><div className="dim tiny">{isToday ? "Today" : "a past day"}</div></div>
-        <button className="btn ghost" aria-label="Next day" disabled={isToday} onClick={() => setDayId(shiftDay(dayId, 1))}>Next <ChevronRight size={16} /></button>
-      </div>
-      <div className="row gap" style={{ justifyContent: "center", alignItems: "center" }}>
-        <span className="dim small">Jump to a date</span>
-        <input aria-label="Jump to a date" type="date" max={dayKey()} value={dayId} style={{ width: 160 }}
-          onChange={(e) => { const v = e.target.value; if (/^\d{4}-\d{2}-\d{2}$/.test(v) && v <= dayKey()) setDayId(v); }} />
-      </div>
-      {!isToday && (
-        <div className="cue">
-          You're viewing <strong>{prettyDay(dayId)}</strong>. Anything you add or change goes on that day.
-          <div style={{ marginTop: 6 }}><button className="chip" onClick={() => setDayId(dayKey())}>Back to today</button></div>
-        </div>)}
-    </div>
-  );
-}
-
 /* ---------- now ---------- */
 function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab }) {
   const [open, setOpen] = useState(false);
@@ -985,7 +980,6 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
 
   return (
     <>
-      <DayBar dayId={dayId} setDayId={setDayId} />
       {isToday && !PRO && <GamesPanel />}
       {isToday && (data.groups || []).length > 0 && <CrewFastStrip data={data} />}
       {fastOn && fast && (() => {
@@ -1028,10 +1022,11 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
           <p className="dim tiny center">Started {fmtWhen(fast.start)}</p>
           <p className="stagebody">{st.body}</p>
           {(() => { const c = fastCaution(hours, { trained: day.tags.some((x) => x === "lift" || x === "ball"), recovering: !!day.rest || !!data.recovery?.on }); return c ? <p className={c.level === "note" ? "cue" : "alert"}>{c.text}</p> : null; })()}
+          <p className="center" style={{ margin: "4px 0 0" }}><strong>{Math.floor(hours)} hours {Math.floor((hours % 1) * 60)} min</strong> fasted</p>
+          <button className="btn solid wide big" onClick={() => setEndOpen(true)}>End fast</button>
           <div className="rowbtns">
-            <button className="btn ghost" onClick={() => setShowStages(!showStages)}>{showStages ? "Hide" : "All stages"}</button>
-            <button className="btn ghost" onClick={() => setEditStart(true)}>Edit start</button>
-            <button className="btn solid" onClick={() => setEndOpen(true)}>End fast</button>
+            <button className="btn ghost wide" onClick={() => setEditStart(true)}>Edit start time</button>
+            <button className="btn ghost wide" onClick={() => setShowStages(!showStages)}>{showStages ? "Hide stages" : "All stages"}</button>
           </div>
         </div>
       ) : confirmFast ? (
@@ -1051,6 +1046,15 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
         </div>
       )}
       {fastOn && !fast && showPast && <PastFasts data={data} setData={setData} />}
+
+      {fastOn && !endOpen && !editStart && (
+        <div className="glass pad macrostrip">
+          <div className="row small"><span>Calories left</span><strong className="mono">{Math.round(left).toLocaleString()}</strong></div>
+          <div className="track"><div style={{ width: `${Math.min(100, Math.max(0, (t.cal / (targets.calories || 1)) * 100))}%`, background: C.cal }} /></div>
+          <div className="row small" style={{ marginTop: 8 }}><span>Protein left</span><strong className="mono">{Math.max(0, Math.round(targets.protein - t.p))}g</strong></div>
+          <div className="track"><div style={{ width: `${Math.min(100, Math.max(0, (t.p / (targets.protein || 1)) * 100))}%`, background: C.protein }} /></div>
+        </div>
+      )}
 
       {showStages && (
         <div className="glass fadein">
@@ -1390,15 +1394,22 @@ function GamesPanel() {
   }, []);
   const spc = spcView(SPC_GAMES);
   const live = (nba || []).some((g) => g.state === "in");
+  const [gOpen, setGOpen] = useState(() => { try { return localStorage.getItem("cutlog:games") === "open"; } catch { return false; } });
+  const toggleGames = () => setGOpen((o) => { try { localStorage.setItem("cutlog:games", o ? "closed" : "open"); } catch { /* fine */ } return !o; });
+  const liveGame = (nba || []).find((g) => g.state === "in");
+  const gameSummary = liveGame ? `${liveGame.away.abbr} ${liveGame.away.score} - ${liveGame.home.abbr} ${liveGame.home.score} · ${liveGame.status}`
+    : nba === null ? (err ? "NBA scores didn't load" : "Checking…")
+    : `${nba.length ? `${nba.length} NBA game${nba.length === 1 ? "" : "s"} today` : "No NBA games today"}${spc.today.length ? " · Texans today" : ""}`;
   const gt = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
   const gd = (iso) => new Date(iso).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
   return (
     <div className="gamespanel">
-      <div className="row gamehead">
+      <button className="gamebar" aria-expanded={gOpen} onClick={toggleGames}>
         <strong>{live ? <><span className="live">● LIVE</span> Games</> : "Games"}</strong>
-        <span className="dim tiny">swipe →</span>
-      </div>
-      <div className="gamestrip" tabIndex={0} aria-label="Today's games, swipe sideways">
+        <span className="dim tiny gamesum">{gameSummary}</span>
+        <span className="dim tiny">{gOpen ? "Hide ▲" : "Show ▼"}</span>
+      </button>
+      {gOpen && <div className="gamestrip" tabIndex={0} aria-label="Today's games, swipe sideways">
         {nba === null && !err && <div className="gcard"><span className="dim tiny">Checking games…</span></div>}
         {err && nba === null && <div className="gcard"><span className="dim tiny">NBA scores didn't load.</span></div>}
         {nba && nba.length === 0 && <div className="gcard"><span className="gl">NBA today</span><span className="dim tiny">No games today.</span></div>}
@@ -1419,11 +1430,11 @@ function GamesPanel() {
             <span className="gf">{gd(g.start)} · {g.tba ? "Time TBA" : gt(g.start)}</span>
           </div>
         ))}
-      </div>
-      <div className="gamefoot dim tiny">
+      </div>}
+      {gOpen && <div className="gamefoot dim tiny">
         {news[0] ? <span>Texans: {news[0].link ? <a href={news[0].link} target="_blank" rel="noreferrer">{news[0].title}</a> : news[0].title} · </span> : null}
         <a href={SPC_URL} target="_blank" rel="noreferrer">Texans schedule and live stats</a>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -2768,11 +2779,12 @@ Respond with ONLY JSON:
   };
 
   const choose = (m) => {
+    pop(m);
     updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), meal: m.slot, name: m.name, at: stampFor(today),
       calories: Math.round(m.calories), protein: Math.round(m.protein), carbs: Math.round(m.carbs), fat: Math.round(m.fat) }] }));
   };
 
-  const logToday = (item) => updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: stampFor(today), u: Date.now(), ...item }] }));
+  const logToday = (item) => { updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: stampFor(today), u: Date.now(), ...item }] })); pop(item); };
   const dishCard = (m0) => {
     const ids = swapApplied[m0.id] || [];
     const m = ids.length ? applySwaps(m0, ids) : m0;
@@ -2826,7 +2838,6 @@ Respond with ONLY JSON:
   const otherIdeas = ideas.length || !craving.trim() ? [] : suggestMeals(craving, null, remainCal, remainP, 4, data.profile).map((m) => ({ ...m, slot: m.slots[0], id: "lib-x" + m.name }));
   return (
     <>
-      {setDayId && <DayBar dayId={today} setDayId={setDayId} />}
       <div className="chips">
         {[["today", "Today"], ["week", "Week"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
@@ -2895,26 +2906,32 @@ function RoadTab({ data, setData, targets, day, updateDay, dayId, setDayId }) {
   const [slot, setSlot] = useState(guessMeal());
   const [chain, setChain] = useState("");
   const [more, setMore] = useState(false);
+  const [sort, setSort] = useState("");
+  const [modsOn, setModsOn] = useState({});
   const [portion, setPortion] = useState({});
   const [logged, setLogged] = useState({});
   const [saved, setSaved] = useState({});
   const [ai, setAi] = useState(false);
   const orders = data.orders || [];
-  const logToday = (item) => updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: stampFor(today), u: Date.now(), ...item }] }));
-  const picks = roadPicks(slot, remainCal, remainP, data.profile, chain, more ? 40 : 8);
-  const hasMore = !more && roadPicks(slot, remainCal, remainP, data.profile, chain, 40).length > 8;
+  const logToday = (item) => { updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: stampFor(today), u: Date.now(), ...item }] })); pop(item); };
+  const picks = roadPicks(slot, remainCal, remainP, data.profile, chain, more ? 40 : 8, sort);
+  const hasMore = !more && roadPicks(slot, remainCal, remainP, data.profile, chain, 40, sort).length > 8;
+  const mapsUrl = (c) => `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c === "Gas station or store" ? "gas station near me" : `${c} near me`)}`;
   return (
     <>
-      {setDayId && <DayBar dayId={today} setDayId={setDayId} />}
       <div className="glass pad stack">
         <div className="row"><h2>What's left {today === dayKey() ? "today" : "that day"}</h2><span className="dim tiny">{Math.max(0, Math.round(remainCal)).toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g protein left</span></div>
         <p className="dim small">Stopping for food on the road? These are the best orders for what you have left today. Tap Eat this to log it.</p>
         <div className="chips">{MEALS.map((m) => <button key={m} className={slot === m ? "chip on" : "chip"} onClick={() => { setSlot(m); setMore(false); }}>{m}</button>)}</div>
+        <label>Sort by</label>
+        <div className="chips">{[["", "Best match"], ["protein", "Most protein"], ["calories", "Fewest calories"], ["ratio", "Best protein per calorie"]].map(([k, l]) => (
+          <button key={k} className={sort === k ? "chip on" : "chip"} onClick={() => { setSort(k); setMore(false); }}>{l}</button>))}</div>
         <label>Only show one place <span className="dim tiny">(swipe for more)</span></label>
         <div className="chips" style={{ flexWrap: "nowrap", overflowX: "auto", paddingBottom: 6, WebkitOverflowScrolling: "touch" }}>
           <button className={!chain ? "chip on" : "chip"} style={{ flex: "none" }} onClick={() => { setChain(""); setMore(false); }}>All</button>
           {ROAD_CHAINS.map((c) => <button key={c} style={{ flex: "none", whiteSpace: "nowrap" }} className={chain === c ? "chip on" : "chip"} onClick={() => { setChain(chain === c ? "" : c); setMore(false); }}>{c}</button>)}
         </div>
+        {chain && <a className="btn ghost wide" style={{ textAlign: "center", textDecoration: "none" }} href={mapsUrl(chain)} target="_blank" rel="noreferrer">Open the nearest {chain === "Gas station or store" ? "gas station" : chain} in Maps</a>}
       </div>
 
       {orders.length > 0 && (
@@ -2938,7 +2955,9 @@ function RoadTab({ data, setData, targets, day, updateDay, dayId, setDayId }) {
         <div className="mealhead">Best picks for you</div>
         {picks.length === 0 && <p className="dim small pad">Nothing matches your food rules here. Try a different meal or place, or ask the coach below.</p>}
         {picks.map((m0) => {
-          const key = m0.chain + m0.name, f = portion[key] || 1, m = scaleOrder(m0, f);
+          const key = m0.chain + m0.name, f = portion[key] || 1, ids = modsOn[key] || [];
+          const mm = applyMods(m0, ids), m = scaleOrder(mm, f);
+          const label = `${m0.name}${ids.length ? `, ${ids.map((i) => modLabel(i).toLowerCase()).join(", ")}` : ""}`;
           return (
             <div key={key} className="dish">
               <div><div className="dishname">{m0.name}</div><div className="dim tiny">{m0.chain}</div></div>
@@ -2946,19 +2965,26 @@ function RoadTab({ data, setData, targets, day, updateDay, dayId, setDayId }) {
                 <span className="mono" style={{ color: C.cal }}>{m.calories}</span>
                 <span className="dim tiny">{m.protein}p · {m.carbs}c · {m.fat}f · estimate</span>
               </div>
-              <div className="tagrow">{tagsFor({ ...m0, tags: m0.chain }).slice(0, 4).map((t) => <span key={t} className="tagpill">{t}</span>)}</div>
+              <div className="tagrow">{tagsFor({ ...mm, tags: m0.chain }).slice(0, 4).map((t) => <span key={t} className="tagpill">{t}</span>)}</div>
               {m0.tweak && <ul className="tweaks"><li>{m0.tweak}</li></ul>}
+              {modsFor(m0).length > 0 && (
+                <div className="chips" aria-label="Customize this order">{modsFor(m0).map((x) => {
+                  const d = x.d(m0);
+                  return <button key={x.id} className={ids.includes(x.id) ? "chip on" : "chip"}
+                    onClick={() => setModsOn((o) => ({ ...o, [key]: ids.includes(x.id) ? ids.filter((i) => i !== x.id) : [...ids, x.id] }))}>{x.label} ({d[0] > 0 ? "+" : ""}{d[0]} cal)</button>;
+                })}</div>)}
               <div className="chips" aria-label="Portion">{PORTIONS.map(([v, l]) => <button key={v} className={f === v ? "chip on" : "chip"} onClick={() => setPortion((x) => ({ ...x, [key]: v }))}>{l}</button>)}</div>
               <div className="rowbtns">
                 <button className="btn solid wide" disabled={logged[key]} onClick={() => {
-                  logToday({ meal: slot, name: `${m0.name}${f !== 1 ? ` (${PORTIONS.find((p) => p[0] === f)[1]} portion)` : ""} (${m0.chain})`, calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat });
+                  logToday({ meal: slot, name: `${label}${f !== 1 ? ` (${PORTIONS.find((p) => p[0] === f)[1]} portion)` : ""} (${m0.chain})`, calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat });
                   setLogged((x) => ({ ...x, [key]: true }));
                 }}>{logged[key] ? "Logged ✓" : "Eat this"}</button>
                 <button className="btn ghost" disabled={saved[key]} onClick={() => {
-                  setData((d) => ({ ...d, orders: [...(d.orders || []), { id: crypto.randomUUID(), name: m0.name, where: m0.chain, calories: m0.calories, protein: m0.protein, carbs: m0.carbs, fat: m0.fat, u: Date.now() }] }));
+                  setData((d) => ({ ...d, orders: [...(d.orders || []), { id: crypto.randomUUID(), name: label, where: m0.chain, calories: mm.calories, protein: mm.protein, carbs: mm.carbs, fat: mm.fat, u: Date.now() }] }));
                   setSaved((x) => ({ ...x, [key]: true }));
                 }}>{saved[key] ? "Saved ✓" : "Save"}</button>
               </div>
+              <a className="dim tiny" href={mapsUrl(m0.chain)} target="_blank" rel="noreferrer">Find the nearest {m0.chain === "Gas station or store" ? "gas station" : m0.chain}</a>
             </div>);
         })}
         {hasMore && <div className="pad"><button className="btn ghost wide" onClick={() => setMore(true)}>Show more</button></div>}
@@ -4523,6 +4549,22 @@ function Shell({ children, theme, top }) {
         .recipe ul { color:rgba(241,245,249,.7); }
         .welcomehead { font-size:30px; line-height:1.15; font-weight:800; letter-spacing:-.4px; margin:0; }
         .stepnum { flex:none; width:26px; height:26px; border-radius:50%; background:var(--nbared, var(--pri, #6EE7F9)); color:#fff; font-weight:800; display:inline-flex; align-items:center; justify-content:center; font-size:13px; }
+        .tophead { position:sticky; top:0; z-index:45; margin:0 -14px 12px; padding:8px 14px; background:rgba(11,11,13,.92); -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); }
+        .dayrow { display:grid; grid-template-columns:auto 1fr auto; gap:8px; align-items:center; }
+        .daycenter { position:relative; text-align:center; cursor:pointer; min-width:0; }
+        .tabtitle2 span { display:inline-block; font-size:28px; font-weight:800; letter-spacing:-.4px; line-height:1.1; padding-bottom:4px; border-bottom:4px solid var(--nbared, var(--pri, #6EE7F9)); }
+        .datehit { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; border:0; padding:0; }
+        .gearfloat { position:absolute; right:14px; top:8px; background:none; border:0; color:inherit; opacity:.7; cursor:pointer; padding:6px; }
+        .progear { background:none; border:0; color:#8A8F9C; cursor:pointer; padding:6px; display:inline-flex; }
+        .progear.on { color:#fff; }
+        .pastcue { margin:0 0 12px; }
+        .macrostrip .track { margin:4px 0 0; }
+        .gamebar { width:100%; display:flex; align-items:center; gap:8px; background:none; border:0; color:inherit; font:inherit; cursor:pointer; padding:8px 4px; text-align:left; }
+        .gamebar .gamesum { flex:1; text-align:right; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .logpop { position:fixed; left:50%; bottom:104px; transform:translateX(-50%); z-index:90; background:#16A34A; color:#fff; font-weight:700; font-size:14px; padding:10px 16px; border-radius:999px; box-shadow:0 8px 28px rgba(0,0,0,.45); animation:popfloat 1.7s ease forwards; white-space:nowrap; pointer-events:none; }
+        .logcheck { display:inline-block; margin-right:4px; }
+        @keyframes popfloat { 0%{opacity:0;transform:translate(-50%,12px) scale(.9)} 14%{opacity:1;transform:translate(-50%,0) scale(1)} 80%{opacity:1;transform:translate(-50%,0)} 100%{opacity:0;transform:translate(-50%,-22px)} }
+        @media (prefers-reduced-motion: reduce) { .logpop { animation:none; } }
         .tagrow { display:flex; flex-wrap:wrap; gap:5px; margin:6px 0 2px; }
         .tagpill { font-size:10.5px; padding:2px 8px; border-radius:999px; border:1px solid rgba(255,255,255,.18); opacity:.85; }
         .daybig { font-size:22px; font-weight:800; }
@@ -4731,6 +4773,7 @@ function Shell({ children, theme, top }) {
         /* top bar and scores strip */
         .app.pro .probar { position:sticky; top:0; z-index:40; display:flex; justify-content:space-between; align-items:center; height:46px; padding:0 14px; background:#0B0B0D; border-bottom:2px solid var(--nbared); }
         .app.pro .prologo { font-weight:900; font-size:19px; letter-spacing:.02em; color:#fff; } .app.pro .prologo b { color:var(--nbablue); font-weight:900; }
+        .app.pro .tophead { top:46px; background:rgba(11,11,13,.94); }
         .app.pro .prodate { font-size:13px; color:#A3A7B3; font-weight:600; }
         .app.pro .proscores { padding:10px 10px 2px; background:#0B0B0D; }
         .app.pro .gamespanel { margin:0; }
@@ -4741,7 +4784,7 @@ function Shell({ children, theme, top }) {
         .app.pro .glogo { width:18px; height:18px; object-fit:contain; margin-right:6px; vertical-align:-4px; }
         /* bottom tab bar */
         .app.pro .dock { left:0; right:0; bottom:0; gap:0; border-radius:0; background:#0B0B0D; border:0; border-top:1px solid #26282F; box-shadow:none; backdrop-filter:none; -webkit-backdrop-filter:none; padding:4px 4px calc(6px + env(safe-area-inset-bottom)); }
-        .app.pro .dockbtn { color:#8A8F9C; border-radius:0; background:none; font-size:10.5px; letter-spacing:-.15px; padding:6px 0; border-top:3px solid transparent; }
+        .app.pro .dockbtn { color:#8A8F9C; border-radius:0; background:none; font-size:12px; letter-spacing:-.1px; padding:8px 0; border-top:3px solid transparent; }
         .app.pro .dockbtn.on { color:#fff; background:none; border-top-color:var(--nbared); box-shadow:none; }
         .app.pro .dockbtn.on svg { color:var(--nbablue); }
 
@@ -4754,10 +4797,48 @@ function Shell({ children, theme, top }) {
 }
 
 // ESPN-style top: a slim wordmark bar, then the scores strip, on every tab.
-function ProTop() {
+function TabHeader({ tab, title, sub, dayId, setDayId, onSettings }) {
+  const dayTab = tab === "now" || tab === "plan" || tab === "out";
+  const isToday = dayId === dayKey();
   return (
     <>
-      <header className="probar"><span className="prologo">CUT<b>LOG</b></span><span className="prodate">{new Date().toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}</span></header>
+      <div className="tophead">
+        {dayTab ? (
+          <div className="dayrow">
+            <button className="btn ghost" aria-label="Previous day" onClick={() => setDayId(shiftDay(dayId, -1))}><ChevronLeft size={18} /></button>
+            <div className="daycenter">
+              <div className="tabtitle2" role="heading" aria-level="1"><span>{tab === "now" && !isToday ? prettyDay(dayId) : title}</span></div>
+              <div className="dim tiny">{tab === "now" ? (isToday ? `${prettyDay(dayId)} · ` : "Past day · ") : (isToday ? "Today · " : `${prettyDay(dayId)} · `)}tap to pick a date</div>
+              <input className="datehit" type="date" aria-label="Jump to a date" max={dayKey()} value={dayId}
+                onChange={(e) => { const v = e.target.value; if (/^\d{4}-\d{2}-\d{2}$/.test(v) && v <= dayKey()) setDayId(v); }} />
+            </div>
+            <button className="btn ghost" aria-label="Next day" disabled={isToday} onClick={() => setDayId(shiftDay(dayId, 1))}><ChevronRight size={18} /></button>
+          </div>
+        ) : (
+          <div className="tabtitle" role="heading" aria-level="1"><span>{title}</span><small>{sub}</small></div>
+        )}
+        {!PRO && <button className="gearfloat" aria-label="Settings" onClick={onSettings}><Cog size={20} /></button>}
+      </div>
+      {dayTab && !isToday && (
+        <div className="cue pastcue">
+          You're viewing <strong>{prettyDay(dayId)}</strong>. Anything you add or change goes on that day.
+          <button className="chip" style={{ marginLeft: 8 }} onClick={() => setDayId(dayKey())}>Back to today</button>
+        </div>)}
+    </>
+  );
+}
+function ProgressSwitch({ tab, setTab }) {
+  return (
+    <div className="chips" style={{ marginBottom: 10 }}>
+      <button className={tab === "weight" ? "chip on" : "chip"} onClick={() => setTab("weight")}>Progress</button>
+      <button className={tab === "log" ? "chip on" : "chip"} onClick={() => setTab("log")}>History and friends</button>
+    </div>
+  );
+}
+function ProTop({ onSettings, settingsOn }) {
+  return (
+    <>
+      <header className="probar"><span className="prologo">CUT<b>LOG</b></span><button className={settingsOn ? "progear on" : "progear"} aria-label="Settings" onClick={onSettings}><Cog size={20} /></button></header>
       <div className="proscores"><GamesPanel /></div>
     </>
   );

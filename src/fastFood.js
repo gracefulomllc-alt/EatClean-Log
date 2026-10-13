@@ -162,7 +162,7 @@ export const FAST_FOOD = [
 export const ROAD_CHAINS = FAST_FOOD.map((c) => c.chain);
 
 // Best orders across every chain for what's left today. Returns items with .chain filled in.
-export function roadPicks(slot, remainCal = Infinity, remainP = 0, avoid = null, chain = "", limit = 12) {
+export function roadPicks(slot, remainCal = Infinity, remainP = 0, avoid = null, chain = "", limit = 12, sort = "") {
   const all = FAST_FOOD.filter((c) => !chain || c.chain === chain)
     .flatMap((c) => c.items.map((m) => ({ ...m, chain: c.chain })))
     .filter((m) => mealOk({ name: m.name, tags: `${m.chain} ${m.t}`, blurb: "", carbs: m.carbs }, avoid));
@@ -176,5 +176,34 @@ export function roadPicks(slot, remainCal = Infinity, remainP = 0, avoid = null,
     const fit = scored.filter((x) => x.m.calories <= remainCal * 1.1);
     if (fit.length >= 3) list = fit;
   }
-  return list.sort((a, b) => b.score - a.score).slice(0, limit).map((x) => x.m);
+  const by = {
+    protein: (a, b) => b.m.protein - a.m.protein || a.m.calories - b.m.calories,
+    calories: (a, b) => a.m.calories - b.m.calories || b.m.protein - a.m.protein,
+    ratio: (a, b) => b.m.protein / b.m.calories - a.m.protein / a.m.calories,
+  }[sort] || ((a, b) => b.score - a.score);
+  return list.sort(by).slice(0, limit).map((x) => x.m);
 }
+
+// Quick order tweaks. d = [calories, protein, carbs, fat] change. Estimates for a typical portion.
+const meatKind = (m) => (/chicken/i.test(`${m.name} ${m.t}`) ? "chicken" : /steak/i.test(`${m.name} ${m.t}`) ? "steak" : /turkey/i.test(`${m.name} ${m.t}`) ? "turkey" : /beef/i.test(`${m.name} ${m.t}`) ? "beef" : "");
+const DOUBLE = { chicken: [170, 30, 0, 6], steak: [150, 21, 0, 6], beef: [180, 22, 0, 10], turkey: [110, 22, 0, 2] };
+export const MODS = [
+  { id: "nocheese", label: "No cheese", test: (m) => /cheese|cheddar|provolone/i.test(`${m.name} ${m.t}`) && !/no cheese|cottage|string cheese|egg bites/i.test(m.name), d: () => [-90, -5, -1, -7] },
+  { id: "nomayo", label: "No mayo or sauce", test: (m) => /mayo|tartar|ranch|sour cream/i.test(m.t) && !/unwich|lettuce wrap/i.test(m.name) || /mayo|tartar/i.test(m.t), d: () => [-90, 0, 0, -10] },
+  { id: "nobun", label: "No bun or bread", test: (m) => /\bbun\b|bread|english muffin|croissant|texas toast/i.test(`${m.t} ${m.name}`) && !/tortilla|no bun|unwich|bowl|lettuce wrap|in a tub/i.test(m.name), d: () => [-140, -5, -27, -2] },
+  { id: "notortilla", label: "Skip the tortilla (bowl)", test: (m) => /tortilla/i.test(m.t) && !/bowl|salad|tub/i.test(m.name) && !/taco/i.test(m.name), d: () => [-180, -6, -30, -5] },
+  { id: "double", label: "Double the meat", test: (m) => !!meatKind(m) && /bowl|salad|taco|burrito|wrap|quesadilla|sub\b|sandwich|power menu/i.test(m.name) && !/nugget|tender|finger|wing/i.test(m.name), d: (m) => DOUBLE[meatKind(m)] },
+  { id: "patty", label: "Extra patty", test: (m) => /beef/i.test(m.t) && /burger|whopper|quarter pounder|dave's|whataburger|hamburger/i.test(m.name), d: () => [170, 13, 0, 13] },
+];
+export const modsFor = (m) => MODS.filter((x) => x.test(m));
+export function applyMods(m, ids) {
+  let out = { ...m, mods: [] };
+  for (const id of ids || []) {
+    const x = MODS.find((y) => y.id === id);
+    if (!x || out.mods.includes(id) || !x.test(m)) continue;
+    const [c, p, cb, f] = x.d(m);
+    out = { ...out, mods: [...out.mods, id], calories: Math.max(0, out.calories + c), protein: Math.max(0, out.protein + p), carbs: Math.max(0, out.carbs + cb), fat: Math.max(0, out.fat + f) };
+  }
+  return out;
+}
+export const modLabel = (id) => (MODS.find((x) => x.id === id) || {}).label || id;
