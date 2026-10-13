@@ -1,5 +1,6 @@
 import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
 import { roadPicks, ROAD_CHAINS, modsFor, applyMods, modLabel } from "./fastFood.js";
+import { gradeFood, gradeTone } from "./grade.js";
 import { scaleIngredient, tagsFor, TAG_FILTERS, swapsFor, applySwaps } from "./mealTools.js";
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { SPC_GAMES, SPC_URL } from "./spcSchedule.js";
@@ -423,6 +424,7 @@ const PALETTES = {
 let TEAM = "Lakers";
 let THEME = "glass";
 let PRO = true;
+let GRADE_CTX = { goal: "lose", targetCal: 2000 };   // set each render so badges can grade against your plan
 let FOOD_RULES = "";   // allergies and diet, told to the AI on every request
 let COURT = true;   // the hardwood basketball look + hoops language (default for everyone)
 const H = (court, plain) => plain;   // plain words everywhere; the basketball is in the look, not the wording
@@ -674,6 +676,7 @@ export default function CutLog() {
   const todayTags = data?.days?.[todayKey]?.tags;
   const todayTargets = useMemo(() => (data?.profile ? computeTargets(data.profile, todayTags || [], useAdaptive ? adaptive.tdee : null, !!data?.recovery?.on) : null),
     [data?.profile, todayTags, useAdaptive, adaptive, data?.recovery?.on]);
+  GRADE_CTX = { goal: data?.profile ? goalOf(data.profile) : "lose", targetCal: todayTargets?.calories || 2000 };
   useEffect(() => {
     if (!data?.groups?.length || !todayTargets) return;
     const pub = () => (dataRef.current?.groups || []).forEach((g) => {
@@ -1124,7 +1127,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
           MEALS.filter((m) => day.foods.some((f) => f.meal === m)).map((m) => (
             <div key={m}>
               <div className="mealhead"><span className="dot" style={{ background: MEAL_COLOR[m], boxShadow: `0 0 8px ${MEAL_COLOR[m]}` }} />{m}
-                <span className="right dim">{day.foods.filter((f) => f.meal === m).reduce((a, f) => a + f.calories, 0)}</span></div>
+                <span className="right dim"><GradeBadge items={day.foods.filter((f) => f.meal === m)} share={m === "Snack" ? 0.15 : 0.4} /> {day.foods.filter((f) => f.meal === m).reduce((a, f) => a + f.calories, 0)}</span></div>
               {(() => { const rows = day.foods.slice().sort((a, b) => (a.at || 0) - (b.at || 0)).filter((f) => f.meal === m);
                 return rows.map((f, i) => {
                   const grade = f.mealId && day.grades?.[f.mealId] && rows[i + 1]?.mealId !== f.mealId ? day.grades[f.mealId] : null;
@@ -1140,7 +1143,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
                     </div>
                   </div>
                   <div className="fright">
-                    <span className="mono">{f.calories}</span>
+                    <GradeBadge food={f} /><span className="mono">{f.calories}</span>
                     <button className="icon" title="Save as favorite" onClick={() => setData((d) => ({ ...d, favorites: [{ name: f.name, calories: f.calories, protein: f.protein, carbs: f.carbs, fat: f.fat, per: f.per, qty: f.qty, unit: f.unit, baseName: f.baseName, raw: f.raw, u: Date.now() }, ...d.favorites.filter((x) => x.name !== f.name)].slice(0, 40) }))}><Star size={15} /></button>
                     <button className="icon" title="Remove" onClick={() => removeFood(f.id)}><X size={15} /></button>
                   </div>
@@ -2094,6 +2097,18 @@ function TierBox({ grade }) {
     </div>
   );
 }
+/* ---------- school grades: every food and meal gets an A+ to F automatically ---------- */
+function GradeBadge({ food, items, share }) {
+  const list = items || [food];
+  const sum = list.reduce((a, f) => ({ calories: a.calories + (+f.calories || 0), protein: a.protein + (+f.protein || 0), carbs: a.carbs + (+f.carbs || 0), fat: a.fat + (+f.fat || 0) }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
+  if (sum.calories <= 0) return null;
+  // The processing class comes from the food names; weighted by calories when several foods are graded together.
+  const cls = list.reduce((a, f) => a + guessClass(f.name) * (+f.calories || 0), 0) / sum.calories;
+  const g = gradeFood(sum, cls < 1.5 ? 1 : cls > 2.4 ? 3 : 2, { ...GRADE_CTX, share });
+  return <button className="grade" style={{ "--g": gradeTone(g.letter) }} title={g.why} aria-label={`Grade ${g.letter}. ${g.why}`}
+    onClick={(e) => { e.stopPropagation(); try { window.dispatchEvent(new CustomEvent("cutlog:pop", { detail: `${g.letter} · ${g.why}` })); } catch { /* fine */ } }}>{g.letter}</button>;
+}
+
 function MealBuilder({ meal, setMeal, onAdd, onCancel, calib, onCalib, budget, budgetLeft }) {
   const [items, setItems] = useState([]);
   const [adding, setAdding] = useState(null);   // null | "weigh" | "label" | "photo" | "desc"
@@ -2840,7 +2855,7 @@ Respond with ONLY JSON:
                 <span className={`badge ${m.effort === "cook" ? "" : "good"}`}>{m.effort}</span>
               </div>
               <div className="dishmacros">
-                <span className="mono" style={{ color: C.cal }}>{Math.round(m.calories)}</span>
+                <span className="mono" style={{ color: C.cal }}>{Math.round(m.calories)}</span><GradeBadge food={m} />
                 <span className="dim tiny">{Math.round(m.protein)}p · {Math.round(m.carbs)}c · {Math.round(m.fat)}f · per serving</span>
               </div>
               <div className="tagrow">{tagsFor(m).slice(0, 5).map((t) => <span key={t} className="tagpill">{t}</span>)}</div>
@@ -3000,7 +3015,7 @@ function RoadTab({ data, setData, targets, day, updateDay, dayId, setDayId }) {
             <div key={key} className="dish">
               <div><div className="dishname">{m0.name}</div><div className="dim tiny">{m0.chain}</div></div>
               <div className="dishmacros">
-                <span className="mono" style={{ color: C.cal }}>{m.calories}</span>
+                <span className="mono" style={{ color: C.cal }}>{m.calories}</span><GradeBadge food={{ ...m, name: m0.name }} />
                 <span className="dim tiny">{m.protein}p · {m.carbs}c · {m.fat}f · estimate</span>
               </div>
               <div className="tagrow">{tagsFor({ ...mm, tags: m0.chain }).slice(0, 4).map((t) => <span key={t} className="tagpill">{t}</span>)}</div>
@@ -3127,7 +3142,7 @@ Respond with ONLY JSON:
             <div key={i} className="dish">
               <div><div className="dishname">{m0.name}</div><div className="dim tiny">{m0.why}</div></div>
               <div className="dishmacros">
-                <span className="mono" style={{ color: C.cal }}>{m.calories}</span>
+                <span className="mono" style={{ color: C.cal }}>{m.calories}</span><GradeBadge food={{ ...m, name: m0.name }} />
                 <span className="dim tiny">{m.protein}p · {m.carbs}c · {m.fat}f · estimate</span>
               </div>
               <div className="chips" aria-label="Portion">{PORTIONS.map(([v, l]) => <button key={v} className={f === v ? "chip on" : "chip"} onClick={() => setPortion((x) => ({ ...x, [i]: v }))}>{l}</button>)}</div>
@@ -4530,6 +4545,8 @@ function Shell({ children, theme, top }) {
           color:#F1F5F9; font-size:14px; cursor:pointer; background:rgba(255,255,255,.03); margin:0; }
         .shot { width:100%; max-height:230px; object-fit:cover; border-radius:16px; display:block; }
         .qbox { border:1px solid rgba(110,231,249,.3); background:rgba(110,231,249,.07); border-radius:16px; padding:14px; display:flex; flex-direction:column; gap:10px; }
+        .grade { font:700 12px/1 'Inter',ui-sans-serif,system-ui,sans-serif; min-width:30px; padding:5px 6px; margin-right:8px; border-radius:7px; color:var(--g); background:color-mix(in srgb, var(--g) 14%, transparent); border:1px solid color-mix(in srgb, var(--g) 55%, transparent); cursor:pointer; text-align:center; }
+        .mealhead .grade { margin-right:4px; }
         .gradebox { margin:8px 16px 12px; padding:11px 14px; border-radius:12px; background:rgba(163,230,53,.08); border:1px solid rgba(163,230,53,.3); }
         .gradebox strong { font-size:13.5px; }
         .tierbox { border-color:var(--tier); background:color-mix(in srgb, var(--tier) 10%, transparent); }

@@ -1,0 +1,11 @@
+import { gradeFood, letterFor } from "../src/grade.js";
+let ok = 0, bad = 0; const t = (c, m) => { c ? ok++ : (bad++, console.log("FAIL", m)); };
+const c = { targetCal: 2000 };
+t(gradeFood({ calories: 520, protein: 52, carbs: 48, fat: 10 }, 1, c).letter === "A+", "chicken rice broccoli is A+");
+t(gradeFood({ calories: 1100, protein: 35, carbs: 110, fat: 55 }, 3, c).letter === "F", "burger and fries is F");
+t(["B+", "A-", "A", "A+"].includes(gradeFood({ calories: 95, protein: 0, carbs: 25, fat: 0 }, 1, c).letter), "an apple is not punished for low protein");
+t(gradeFood({ calories: 300, protein: 4, carbs: 35, fat: 16 }, 3, c).score < 60, "donut fails");
+const rank = ["F", "D-", "D", "D+", "C-", "C", "C+", "B-", "B", "B+", "A-", "A", "A+"];
+t(rank.indexOf(gradeFood({ calories: 900, protein: 50, carbs: 60, fat: 30 }, 1, c).letter) < rank.indexOf(gradeFood({ calories: 500, protein: 50, carbs: 40, fat: 12 }, 1, c).letter), "oversized portion grades lower");
+t(["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-", "F"].includes(letterFor(0)) && letterFor(97) === "A+" && letterFor(59) === "F" && letterFor(60) === "D-", "letter cutoffs");
+console.log(`${ok} ok ${bad} bad`); process.exit(bad ? 1 : 0);
