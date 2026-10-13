@@ -536,7 +536,7 @@ export default function CutLog() {
   const [welcomed, setWelcomed] = useState(() => { try { return localStorage.getItem("cutlog:welcomed") === "1"; } catch { return true; } });
   const th = data?.theme === "retro" ? "court" : data?.theme;   // the old Desktop '95 look is gone; those logs land on hardwood
   PRO = !th || th === "pro";                      // the default look: ESPN layout in NBA colors
-  COURT = PRO || th === "court";                   // basketball language (Court, Plays, box score)
+  COURT = th === "court";                          // basketball language (Court, Plays, box score) only on Hardwood
   THEME = PRO ? "pro" : COURT ? "arena" : ["modern", "arena"].includes(th) ? th : "glass";
   TEAM = data?.team || "Lakers";
   const [sync, setSync] = useState({ state: localStorage.getItem("cutlog:sync") ? "idle" : "off" });
@@ -691,13 +691,13 @@ export default function CutLog() {
       title="Set your numbers" cta="Start" intro="Sets your daily budget. Change any of it later."
       onSave={(profile) => setData((d) => ({ ...d, profile }))} /></Shell>;
 
-  const TABS = [["now", H("Court", "Now"), COURT ? Dribbble : Timer], ["plan", H("Plays", "Plan"), ChefHat], ["coach", "Coach", MessageCircle], ["weight", H("Stats", "Weight"), Scale], ["log", H("Scores", "Log"), CalendarDays], ["setup", H("Locker", "Setup"), Cog]];
+  const TABS = [["now", H("Court", "Today"), COURT ? Dribbble : Timer], ["plan", H("Plays", "Meals"), ChefHat], ["coach", "Coach", MessageCircle], ["weight", H("Stats", "Progress"), Scale], ["log", H("Scores", "History"), CalendarDays], ["setup", H("Locker", "Settings"), Cog]];
 
   return (
     <Shell theme={THEME} top={PRO ? <ProTop /> : null}>
       {saveErr && <div className="glass pad alert">That change didn’t save. Back up from Setup before closing.</div>}
       <div key={tab} className="fadein">
-        {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay }} />}
+        {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay, goTab: () => { setTab("setup"); setTimeout(() => document.getElementById("fasting-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 250); } }} />}
         {tab === "plan" && <Plan data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} />}
         {tab === "weight" && <Weight data={data} setData={setData} targets={targets} updateDay={updateDay} />}
         {tab === "coach" && <Coach data={data} setData={setData} targets={targets} adaptive={adaptive} />}
@@ -770,7 +770,7 @@ function FastStart({ data, onStart, onCancel }) {
 }
 
 /* ---------- now ---------- */
-function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
+function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const removeFood = (id) => setData((d) => ({ ...d, deleted: tombstone(d, "food:" + id),
@@ -810,12 +810,19 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
             <div className="rowbtns">
               <button className="btn solid" onClick={() => setData((d) => ({ ...d, fast: { ...d.fast, confirmedAt: Date.now() } }))}>Still fasting</button>
               <button className="btn ghost" onClick={() => setData((d) => ({ ...d, fast: null,
-                fasts: [{ end: Date.now(), hours: +((Date.now() - d.fast.start) / 36e5).toFixed(1) }, ...(d.fasts || [])].slice(0, 30) }))}>{H("Final buzzer", "Break it")}</button>
+                fasts: [{ end: Date.now(), hours: +((Date.now() - d.fast.start) / 36e5).toFixed(1) }, ...(d.fasts || [])].slice(0, 30) }))}>{H("Final buzzer", "End fast")}</button>
             </div>
             <p className="dim tiny">If you feel dizzy, faint or unwell, break it and eat.</p>
           </div>
         );
       })()}
+      {!fastOn && !fast && fastGate(data.profile).ok && (
+        <div className="glass pad stack">
+          <strong>Planning to fast?</strong>
+          <p className="dim small">Fasting is off. Press here to turn on the fasting tracker. You'll see what it is first, then you can start the clock any time.</p>
+          <button className="btn ghost wide" onClick={goTab}>Set up fasting</button>
+        </div>
+      )}
       {!fastOn ? null : fast ? (
         <div className="glass hero">
           <Ring pct={Math.min(1, hours / 24)} color={st.hue}
@@ -830,7 +837,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
             <button className="btn ghost" onClick={() => setShowStages(!showStages)}>{showStages ? "Hide" : "All stages"}</button>
             <button className="btn ghost" onClick={() => setData((d) => ({ ...d, fast: { ...d.fast, start: d.fast.start - 18e5 } }))}>−30m</button>
             <button className="btn solid" onClick={() => setData((d) => ({ ...d, fast: null,
-              fasts: [{ end: Date.now(), hours: +((Date.now() - d.fast.start) / 36e5).toFixed(1) }, ...(d.fasts || [])].slice(0, 30) }))}>{H("Final buzzer", "Break it")}</button>
+              fasts: [{ end: Date.now(), hours: +((Date.now() - d.fast.start) / 36e5).toFixed(1) }, ...(d.fasts || [])].slice(0, 30) }))}>{H("Final buzzer", "End fast")}</button>
           </div>
         </div>
       ) : confirmFast ? (
@@ -916,7 +923,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
       })()}
 
       <div className="glass">
-        {day.foods.length === 0 ? <p className="dim center pad">{H("Empty box score. Get on the board.", "Nothing logged yet.")}</p> :
+        {day.foods.length === 0 ? <p className="dim center pad">{H("Empty box score. Get on the board.", "Nothing logged yet. Press Add a meal below to start.")}</p> :
           MEALS.filter((m) => day.foods.some((f) => f.meal === m)).map((m) => (
             <div key={m}>
               <div className="mealhead"><span className="dot" style={{ background: MEAL_COLOR[m], boxShadow: `0 0 8px ${MEAL_COLOR[m]}` }} />{COURT ? `${QTR[m]} · ` : ""}{m}
@@ -974,7 +981,8 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
             grades: grade ? { ...(d.grades || {}), [mealId]: { ...grade, at: Date.now() } } : d.grades }));
           setOpen(false);
         }} />
-        : <button className="btn solid wide big" onClick={() => setOpen(true)}><Plus size={18} /> {H("Log a play", "Add food")}</button>}
+        : <button className="btn solid wide big" onClick={() => setOpen(true)}><Plus size={18} /> {H("Log a play", "Add a meal")}</button>}
+      {!open && <p className="dim small center" style={{ marginTop: -4, marginBottom: 10 }}>Press the button after you eat. Type the food, snap a photo, or scan a barcode.</p>}
 
       {(() => {
         const goal = data.profile.waterOz || 100, have = +day.water || 0;
@@ -982,6 +990,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
           <div className="glass pad">
             <div className="row"><label style={{ margin: 0 }}>Water</label>
               <span className="mono" style={{ color: have >= goal ? C.water : undefined }}>{have} / {goal} oz</span></div>
+            <p className="dim tiny">Press a button each time you drink.</p>
             <div className="track"><div style={{ width: `${Math.min(100, (have / goal) * 100)}%`, background: C.water, boxShadow: `0 0 10px ${C.water}88` }} /></div>
             <div className="chips" style={{ marginTop: 10, marginBottom: 0 }}>
               {[8, 16, 24].map((n) => (
@@ -1311,7 +1320,7 @@ function CrewFastStrip({ data }) {
   if (!g || !fasting.length) return null;
   return (
     <div className="glass pad stack">
-      <h2>{H("Crew on the clock", "Fasting now")}</h2>
+      <h2>{H("Crew on the clock", "Friends fasting now")}</h2>
       {fasting.map((m) => {
         const f = m.status.fast, cs = fastConfirmState(f.start, f.confirmedAt, now);
         return (
@@ -1517,8 +1526,9 @@ function GroupsView({ data, setData }) {
   );
   if (mode === "choose") return (
     <div className="glass pad stack">
-      <h2>{H("Your crew", "Groups")}</h2>
+      <h2>{H("Your crew", "Friends")}</h2>
       <p className="dim small">Invite-only groups of up to 20. Friends only see what you allow, and nothing is public.</p>
+      <p className="small">Starting it yourself? Press <strong>Start a group</strong>, then send the code to your friends. Got a code from a friend? Press <strong>I have an invite code</strong>.</p>
       <button className="btn solid wide" onClick={() => setMode("create")}>Start a group</button>
       <button className="btn ghost wide" onClick={() => setMode("join")}>I have an invite code</button>
       {groups.length > 0 && <button className="btn ghost wide" onClick={() => setMode(null)}>Back</button>}
@@ -2608,6 +2618,7 @@ Respond with ONLY JSON:
           <span className="dim tiny">{remainCal.toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g left</span></div>
         <div className="chips">{MEALS.map((s) => (
           <button key={s} className={slot === s ? "chip on" : "chip"} onClick={() => setSlot(s)}>{s}</button>))}</div>
+        <p className="dim small">1. Pick the meal. 2. Type what sounds good, like chicken. 3. Press Eat this on one you like.</p>
         <input placeholder="burgers, something Mexican, steak — or leave it blank" value={craving}
           onChange={(e) => setCraving(e.target.value)} onKeyDown={(e) => e.key === "Enter" && build()} />
         <button className="btn accent wide" onClick={build} disabled={busy}>
@@ -3245,7 +3256,7 @@ function LogTab({ data, setData, onPick }) {
     <>
       <div className="chips">
         <button className={view === "mine" ? "chip on" : "chip"} onClick={() => setView("mine")}>My history</button>
-        <button className={view === "group" ? "chip on" : "chip"} onClick={() => setView("group")}>{H("Crew", "Group")}</button>
+        <button className={view === "group" ? "chip on" : "chip"} onClick={() => setView("group")}>{H("Crew", "Friends")}</button>
       </div>
       {view === "mine" ? <History data={data} onPick={onPick} /> : <GroupsView data={data} setData={setData} />}
     </>
@@ -3501,7 +3512,7 @@ function AdaptivePanel({ adaptive, on, onToggle }) {
   const a = adaptive;
   return (
     <div className="glass pad stack">
-      <div className="row"><h2>Your real maintenance</h2>
+      <div className="row"><h2>How many calories you really burn</h2>
         {a.ready && <button className={on ? "chip on" : "chip"} onClick={() => onToggle(!on)}>{on ? "In use" : "Off"}</button>}</div>
       {!a.ready ? (
         <>
@@ -3733,7 +3744,7 @@ function FastingPanel({ data, setData }) {
   const [ack, setAck] = useState(false);
   const [open, setOpen] = useState(false);
   return (
-    <div className="glass pad stack">
+    <div className="glass pad stack" id="fasting-panel">
       <div className="row">
         <h2 style={{ margin: 0 }}>Fasting tracker</h2>
         <button className={on ? "chip on" : "chip"} onClick={() => {
@@ -3741,6 +3752,7 @@ function FastingPanel({ data, setData }) {
           else setOpen(!open);
         }}>{on ? "On" : "Off"}</button>
       </div>
+      <p className="small">Planning to fast? Press <strong>Off</strong> to turn it on. Then go back to Today and press Start fasting.</p>
       <p className="dim tiny">Optional. It only tracks the clock and what your body is doing. It never earns points, and a longer fast scores the same as a shorter one.</p>
       {!on && open && (gate.ok ? (
         <>
