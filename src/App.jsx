@@ -1,33 +1,19 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { SPC_GAMES, SPC_URL } from "./spcSchedule.js";
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, CartesianGrid } from "recharts";
-import { Timer, Scale, Users, CalendarDays, Settings as Cog, Plus, X, Star, ChevronLeft, ChevronRight, ChefHat, MessageCircle } from "lucide-react";
+import { Timer, Scale, Users, CalendarDays, Settings as Cog, Plus, X, Star, ChevronLeft, ChevronRight, ChefHat, MessageCircle, Dribbble } from "lucide-react";
 
-/* ---------- storage: local for personal, server for the shared group ---------- */
+/* ---------- storage: this device's log ---------- */
 const ACCESS = () => localStorage.getItem("cutlog:code") || "";
-async function group(method, body) {
-  const r = await fetch("/api/group", {
-    method,
-    headers: { "Content-Type": "application/json", "x-access-code": ACCESS() },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
-}
 const store = {
-  async get(key, shared) {
-    if (shared) return group("POST", { op: "get", key });
+  async get(key) {
     const v = localStorage.getItem(key);
     if (v === null) throw new Error("missing");
     return { key, value: v };
   },
-  async set(key, value, shared) {
-    if (shared) return group("POST", { op: "set", key, value });
+  async set(key, value) {
     localStorage.setItem(key, value);
     return { key, value };
-  },
-  async list(prefix, shared) {
-    if (shared) return group("POST", { op: "list", prefix });
-    return { keys: Object.keys(localStorage).filter((k) => k.startsWith(prefix)) };
   },
 };
 
@@ -59,7 +45,12 @@ function mergeData(a, b) {
   for (const k of new Set([...Object.keys(a.days || {}), ...Object.keys(b.days || {})])) {
     const da = a.days?.[k], db = b.days?.[k];
     const base = !da ? db : !db ? da : newer(da, db);
-    days[k] = { ...base, foods: byKey(da?.foods, db?.foods, (f) => f.id, "food:") };
+    const grades = { ...(da?.grades || {}) };
+    for (const [gk, gv] of Object.entries(db?.grades || {})) {
+      if (!grades[gk] || (gv.at || 0) >= (grades[gk].at || 0)) grades[gk] = gv;
+    }
+    days[k] = { ...base, foods: byKey(da?.foods, db?.foods, (f) => f.id, "food:"), grades };
+    if ((da?.lifts || []).length || (db?.lifts || []).length) days[k].lifts = byKey(da?.lifts, db?.lifts, (l) => l.id, "lift:");
   }
   const top = newer(a, b);
   return {
@@ -70,6 +61,7 @@ function mergeData(a, b) {
     list: byKey(a.list, b.list, (l) => l.id, "list:"),
     recipes: byKey(a.recipes, b.recipes, (r) => r.id, "recipe:"),
     photos: byKey(a.photos, b.photos, (p) => p.id, "photo:"),
+    groups: byKey(a.groups, b.groups, (g) => g.id, "group:"),
     deleted: tomb,
     u: Math.max(a.u || 0, b.u || 0),
   };
@@ -87,6 +79,7 @@ async function api(path, payload) {
 }
 const syncApi = (p) => api("/api/sync", p);
 const pushApi = (p) => api("/api/push", p);
+const groupsApi = (p) => api("/api/groups", p);
 
 // 16 characters from an alphabet with no look-alikes (no 0/O, 1/I/L) - about 79 bits.
 const genCode = () => {
@@ -160,8 +153,6 @@ async function loadPhoto(id) {
 }
 
 const KEY = "cutlog:v2";
-const SHARE_PREFIX = "cutlog:shared:v1:";
-const slug = (s) => s.trim().toLowerCase().replace(/[^a-z0-9]/g, "") || "anon";
 
 /* ---------- dates ---------- */
 const dayKey = (d = new Date()) => {
@@ -203,7 +194,10 @@ const ACTIVITY = {
   moderate: { label: "Active most days", mult: 1.55 },
   high: { label: "Hard physical work or training", mult: 1.725 },
 };
-const TAGS = { lift: { label: "Lifted", cal: 180 }, ball: { label: "Played ball", cal: 400 }, site: { label: "Job site", cal: 300 } };
+const TAGS = {
+  lift: { label: "Lifted", cal: 180, hard: true }, ball: { label: "Played ball", cal: 400, hard: true }, site: { label: "Job site", cal: 300, hard: true },
+  walk: { label: "Walked", cal: 60 }, stretch: { label: "Stretched", cal: 0 },
+};
 
 /* ---------- adaptive maintenance: what your own results say ---------- */
 // Energy balance: what you ate, minus what the scale says you lost, is what you burned.
@@ -249,15 +243,16 @@ function estimateTdee(days, formulaTdee, today = dayKey()) {
     lbPerWeek: +(slope * 7).toFixed(2), clamped: raw !== est, trust: Math.round(trust * 100) };
 }
 
-function computeTargets(p, tags = [], tdeeOverride = null) {
+// recovering: injury or recovery mode. No activity calories get "earned" and protein stays high to support healing.
+function computeTargets(p, tags = [], tdeeOverride = null, recovering = false) {
   const bmr = 10 * (p.weight * 0.4536) + 6.25 * (p.heightIn * 2.54) - 5 * p.age + (p.sex === "male" ? 5 : -161);
   const tdee = tdeeOverride || bmr * ACTIVITY[p.activity].mult;
   const floor = p.sex === "male" ? 1500 : 1200;
   const raw = tdee - p.pace * 500;
   const base = Math.max(floor, Math.round(raw / 10) * 10);
-  const earned = Math.min(500, tags.reduce((a, t) => a + (TAGS[t]?.cal || 0), 0));
+  const earned = recovering ? 0 : Math.min(500, tags.reduce((a, t) => a + (TAGS[t]?.cal || 0), 0));
   const calories = base + earned;
-  const protein = Math.round(p.goalWeight * (tags.length ? 1.0 : 0.8));
+  const protein = Math.round(p.goalWeight * (recovering || tags.some((t) => TAGS[t]?.hard) ? 1.0 : 0.8));
   const fat = Math.round((calories * 0.27) / 9);
   const carbs = Math.max(0, Math.round((calories - protein * 4 - fat * 9) / 4));
   return { bmr: Math.round(bmr), tdee: Math.round(tdee), base, earned, calories, protein, fat, carbs,
@@ -317,6 +312,58 @@ const prettyTime = (ts) => (ts ? new Date(ts).toLocaleTimeString([], { hour: "nu
    Every color the components set themselves lives here, in both looks. C and MEAL_COLOR
    read from whichever theme is active, so no screen can end up half-switched.
    Glow effects append an alpha byte ("#6EE7F988"), so every entry used that way stays 6-digit hex. */
+/* ---------- NBA team colors, for the Arena theme's scoreboard accent ---------- */
+const NBA_TEAMS = [
+  ["Hawks", "#E03A3E", "#FDB927"], ["Celtics", "#007A33", "#BA9653"], ["Nets", "#000000", "#FFFFFF"],
+  ["Hornets", "#1D1160", "#00788C"], ["Bulls", "#CE1141", "#000000"], ["Cavaliers", "#860038", "#FDBB30"],
+  ["Mavericks", "#00538C", "#B8C4CA"], ["Nuggets", "#0E2240", "#FEC524"], ["Pistons", "#C8102E", "#1D42BA"],
+  ["Warriors", "#1D428A", "#FFC72C"], ["Rockets", "#CE1141", "#000000"], ["Pacers", "#002D62", "#FDBB30"],
+  ["Clippers", "#C8102E", "#1D428A"], ["Lakers", "#552583", "#FDB927"], ["Grizzlies", "#5D76A9", "#12173F"],
+  ["Heat", "#98002E", "#F9A01B"], ["Bucks", "#00471B", "#EEE1C6"], ["Timberwolves", "#0C2340", "#78BE20"],
+  ["Pelicans", "#0C2340", "#C8102E"], ["Knicks", "#006BB6", "#F58426"], ["Thunder", "#007AC1", "#EF3B24"],
+  ["Magic", "#0077C0", "#C4CED4"], ["76ers", "#006BB6", "#ED174C"], ["Suns", "#1D1160", "#E56020"],
+  ["Trail Blazers", "#E03A3E", "#000000"], ["Kings", "#5A2D81", "#63727A"], ["Spurs", "#000000", "#C4CED4"],
+  ["Raptors", "#CE1141", "#000000"], ["Jazz", "#002B5C", "#00471B"], ["Wizards", "#002B5C", "#E31837"],
+];
+
+function hexLum(hex) {
+  const [r, g, b] = [hex.slice(1, 3), hex.slice(3, 5), hex.slice(5, 7)].map((h) => parseInt(h, 16) / 255);
+  const f = (c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+function hexContrast(a, b) {
+  const l1 = hexLum(a), l2 = hexLum(b), hi = Math.max(l1, l2), lo = Math.min(l1, l2);
+  return (hi + 0.05) / (lo + 0.05);
+}
+function mixHex(hex, toward, frac) {
+  const a = [hex.slice(1, 3), hex.slice(3, 5), hex.slice(5, 7)].map((h) => parseInt(h, 16));
+  const b = [toward.slice(1, 3), toward.slice(3, 5), toward.slice(5, 7)].map((h) => parseInt(h, 16));
+  return "#" + a.map((v, i) => Math.round(v + (b[i] - v) * frac).toString(16).padStart(2, "0")).join("");
+}
+function teamCue(name) {
+  const t = NBA_TEAMS.find((x) => x[0] === name) || NBA_TEAMS[13];
+  // A near-black primary disappears against this theme's near-black cards, so lead with the
+  // secondary color instead for those teams (Nets, Spurs) - the black stays as an accent border.
+  const dark = hexLum(t[1]) < 0.02;
+  const primary = dark ? t[2] : t[1], secondary = dark ? t[1] : t[2];
+  // The button itself needs to (a) stand out from a near-black card and (b) hold readable text.
+  // Some team colors (deep purple, dark red) satisfy neither as-is, so nudge toward white in small
+  // steps - only for the button fill, never for borders, glows or the raw team identity elsewhere.
+  // Same treatment for whichever color a background is painted with: nudge toward white just
+  // enough to read against a near-black card and hold readable text, then hand back both.
+  const readable = (hex) => {
+    let bg = hex, ink = "#FFFFFF";
+    for (let f = 0; f <= 1; f += 0.04) {
+      bg = mixHex(hex, "#FFFFFF", f);
+      ink = hexLum(bg) > 0.32 ? "#0A0C11" : "#FFFFFF";
+      if (hexContrast(bg, "#14161C") >= 2.6 && hexContrast(bg, ink) >= 4.5) break;
+    }
+    return { bg, ink };
+  };
+  const btn = readable(primary), chip = readable(secondary);
+  return { name: t[0], primary, secondary, button: btn.bg, ink: btn.ink, chipBg: chip.bg, chipInk: chip.ink };
+}
+
 const PALETTES = {
   glass: {
     cal: "#6EE7F9", protein: "#A3E635", carbs: "#A78BFA", fat: "#FBBF24", bad: "#FB7185",
@@ -328,18 +375,33 @@ const PALETTES = {
     meal: { Breakfast: "#6EE7F9", Lunch: "#A3E635", Dinner: "#A78BFA", Snack: "#FBBF24" },
     stages: ["#94A3B8", "#7DD3FC", "#6EE7F9", "#5EEAD4", "#A3E635", "#FBBF24", "#FB923C", "#FB7185"],
   },
-  retro: {
-    cal: "#000080", protein: "#006B00", carbs: "#7A007A", fat: "#8A5A00", bad: "#C00000",
-    water: "#00688A", warn: "#A04000", idle: "#808080",
-    track: "#FFFFFF", tickOff: "#808080", dimText: "#404040", faint: "#909090",
-    grid: "#A8A8A8", axis: "#000000",
-    tip: { fontSize: 12, borderRadius: 0, border: "1px solid #000", background: "#FFFFE1", color: "#000" },
-    cap: "butt", glow: false, ringFade: 1,
-    meal: { Breakfast: "#000080", Lunch: "#006B00", Dinner: "#7A007A", Snack: "#8A5A00" },
-    stages: ["#606060", "#00608A", "#000080", "#006B6B", "#006B00", "#8A5A00", "#A04000", "#C00000"],
+  arena: {
+    cal: "#F58426", protein: "#22C55E", carbs: "#38BDF8", fat: "#FACC15", bad: "#EF4444",
+    water: "#38BDF8", warn: "#FACC15", idle: "#374151",
+    track: "#111318", tickOff: "#374151", dimText: "#8B93A1", faint: "#4B5563",
+    grid: "#1F2430", axis: "#8B93A1",
+    tip: { fontSize: 12, borderRadius: 4, border: "1px solid #F58426", background: "#0B0D12", color: "#fff" },
+    cap: "butt", glow: true, ringFade: 0.4,
+    meal: { Breakfast: "#38BDF8", Lunch: "#22C55E", Dinner: "#A78BFA", Snack: "#FACC15" },
+    stages: ["#4B5563", "#38BDF8", "#22D3EE", "#22C55E", "#FACC15", "#FB923C", "#F58426", "#EF4444"],
+    get primary() { return teamCue(TEAM).primary; }, get secondary() { return teamCue(TEAM).secondary; },
+  },
+  modern: {
+    cal: "#818CF8", protein: "#34D399", carbs: "#22D3EE", fat: "#FBBF24", bad: "#FB7185",
+    water: "#38BDF8", warn: "#FBBF24", idle: "#475569",
+    track: "rgba(255,255,255,0.07)", tickOff: "rgba(255,255,255,0.22)", dimText: "#8D93A5", faint: "rgba(255,255,255,0.25)",
+    grid: "rgba(255,255,255,0.06)", axis: "#8D93A5",
+    tip: { fontSize: 12, borderRadius: 14, border: "1px solid #232739", background: "#11131A", color: "#ECEDF2" },
+    cap: "round", glow: false, ringFade: 0.6,
+    meal: { Breakfast: "#818CF8", Lunch: "#34D399", Dinner: "#22D3EE", Snack: "#FBBF24" },
+    stages: ["#64748B", "#38BDF8", "#22D3EE", "#34D399", "#A3E635", "#FBBF24", "#FB923C", "#FB7185"],
   },
 };
+let TEAM = "Lakers";
 let THEME = "glass";
+let COURT = true;   // the hardwood basketball look + hoops language (default for everyone)
+const H = (court, plain) => (COURT ? court : plain);
+const QTR = { Breakfast: "Q1", Lunch: "Q2", Dinner: "Q3", Snack: "OT" };
 const C = new Proxy({}, { get: (_, k) => PALETTES[THEME][k] });
 const MEAL_COLOR = new Proxy({}, { get: (_, k) => PALETTES[THEME].meal[k] });
 const blankDay = () => ({ foods: [], steps: "", weight: "", tags: [], sleep: "", workouts: [] });
@@ -410,6 +472,14 @@ function Ring({ pct, color, size = 240, stroke = 16, ticks = [], children, glow 
             fill={t.hit ? t.color : C.tickOff} />;
         })}
       </svg>
+      {COURT && (
+        <svg className="ballseams" width={size * 0.6} height={size * 0.6} viewBox="0 0 100 100" aria-hidden="true">
+          <g fill="none" stroke="currentColor" strokeWidth="1.6">
+            <circle cx="50" cy="50" r="46" /><line x1="50" y1="4" x2="50" y2="96" /><line x1="4" y1="50" x2="96" y2="50" />
+            <path d="M14 17 C34 34 34 66 14 83" /><path d="M86 17 C66 34 66 66 86 83" />
+          </g>
+        </svg>
+      )}
       <div className="ringinner">{children}</div>
     </div>
   );
@@ -436,7 +506,10 @@ export default function CutLog() {
     return n && n !== d ? { ...n, u: Date.now() } : n;
   }), []);
   const [locked, setLocked] = useState(null);
-  THEME = data?.theme === "retro" ? "retro" : "glass";
+  const th = data?.theme === "retro" ? "court" : data?.theme;   // the old Desktop '95 look is gone; those logs land on hardwood
+  COURT = !th || th === "court";
+  THEME = COURT ? "arena" : ["modern", "arena"].includes(th) ? th : "glass";
+  TEAM = data?.team || "Lakers";
   const [sync, setSync] = useState({ state: localStorage.getItem("cutlog:sync") ? "idle" : "off" });
   const dataRef = useRef(null);
   const syncBusy = useRef(false);
@@ -487,10 +560,10 @@ export default function CutLog() {
 
   // The strip above the app (phone status bar, page edges) matches the theme too
   useEffect(() => {
-    const retro = data?.theme === "retro";
-    document.body.style.background = retro ? "#008080" : "#0A0E1F";
-    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", retro ? "#000080" : "#0A0E1F");
-  }, [data?.theme]);
+    const bg = data?.theme === "arena" ? "#05060A" : data?.theme === "modern" ? "#08090D" : (!data?.theme || data.theme === "court" || data.theme === "retro") ? "#2A190C" : "#0A0E1F";
+    document.body.style.background = bg;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", bg);
+  }, [data?.theme, data?.team]);
 
   // First sync once the local copy has loaded
   useEffect(() => {
@@ -528,14 +601,14 @@ export default function CutLog() {
 
   useEffect(() => {
     (async () => {
-      try { await group("POST", { op: "list", prefix: SHARE_PREFIX }); setLocked(false); }
+      try { await groupsApi({ op: "ping" }); setLocked(false); }
       catch (e) { setLocked(/access code/i.test(String(e.message))); }
     })();
   }, []);
 
   useEffect(() => {
     (async () => {
-      const empty = { profile: null, days: {}, favorites: [], fast: null, fasts: [], share: false, calib: [], list: [], labs: [], menus: {}, recipes: [], deleted: {} };
+      const empty = { profile: null, days: {}, favorites: [], fast: null, fasts: [], calib: [], list: [], labs: [], menus: {}, recipes: [], deleted: {} };
       try { setRawData({ ...empty, ...JSON.parse((await store.get(KEY)).value) }); }
       catch { setRawData(empty); }
     })();
@@ -550,16 +623,6 @@ export default function CutLog() {
         clearTimeout(syncTimer.current);
         syncTimer.current = setTimeout(syncNow, 1500);
       }
-      if (data.share && data.profile?.name) {
-        const recent = {};
-        Object.keys(data.days).sort().slice(-21).forEach((k) => { recent[k] = data.days[k]; });
-        const t = computeTargets(data.profile, []);
-        try {
-          await store.set(SHARE_PREFIX + slug(data.profile.name), JSON.stringify({
-            name: data.profile.name.trim(), updated: Date.now(), start: data.profile.weight,
-            goal: data.profile.goalWeight, target: t.base, proteinTarget: t.protein, days: recent }), true);
-        } catch { /* best effort */ }
-      }
     })();
   }, [data]);
 
@@ -567,8 +630,24 @@ export default function CutLog() {
   // Once there are ~3 weeks of weigh-ins and logged days, your real results replace the formula.
   const adaptive = useMemo(() => (data?.profile ? estimateTdee(data.days, computeTargets(data.profile, []).tdee) : null), [data?.days, data?.profile]);
   const useAdaptive = data?.useAdaptive !== false && !!adaptive?.ready;
-  const targets = useMemo(() => (data?.profile ? computeTargets(data.profile, day.tags, useAdaptive ? adaptive.tdee : null) : null),
-    [data?.profile, day.tags, useAdaptive, adaptive]);
+  const targets = useMemo(() => (data?.profile ? computeTargets(data.profile, day.tags, useAdaptive ? adaptive.tdee : null, !!data?.recovery?.on) : null),
+    [data?.profile, day.tags, useAdaptive, adaptive, data?.recovery?.on]);
+  // Publish what this person chose to share with each group: after a change, and every 5 minutes as a heartbeat.
+  const todayKey = dayKey();
+  const todayTags = data?.days?.[todayKey]?.tags;
+  const todayTargets = useMemo(() => (data?.profile ? computeTargets(data.profile, todayTags || [], useAdaptive ? adaptive.tdee : null, !!data?.recovery?.on) : null),
+    [data?.profile, todayTags, useAdaptive, adaptive, data?.recovery?.on]);
+  useEffect(() => {
+    if (!data?.groups?.length || !todayTargets) return;
+    const pub = () => (dataRef.current?.groups || []).forEach((g) => {
+      if (g.lost) return;
+      groupsApi({ op: "publish", groupId: g.id, memberId: g.memberId, token: g.token, status: buildStatus(dataRef.current, g.scopes, todayTargets) })
+        .catch((e) => { if (/not in this group/i.test(String(e.message))) setRawData((d) => ({ ...d, groups: (d.groups || []).map((x) => (x.id === g.id ? { ...x, lost: true } : x)) })); });
+    });
+    const t = setTimeout(pub, 4000), hb = setInterval(pub, 300000);
+    return () => { clearTimeout(t); clearInterval(hb); };
+  }, [data?.groups, data?.fast, data?.fastingOn, data?.days?.[todayKey], data?.profile, data?.recovery, todayTargets]);
+
   const updateDay = useCallback((k, fn) => setData((d) => ({ ...d, days: { ...d.days, [k]: { ...fn(d.days[k] || blankDay()), u: Date.now() } } })), [setData]);
 
   if (locked) return <Shell theme={THEME}><Gate onOk={() => setLocked(false)} /></Shell>;
@@ -580,7 +659,7 @@ export default function CutLog() {
       title="Set your numbers" cta="Start" intro="Sets your daily budget. Change any of it later."
       onSave={(profile) => setData((d) => ({ ...d, profile }))} /></Shell>;
 
-  const TABS = [["now", "Now", Timer], ["plan", "Plan", ChefHat], ["coach", "Coach", MessageCircle], ["weight", "Weight", Scale], ["log", "Log", CalendarDays], ["setup", "Setup", Cog]];
+  const TABS = [["now", H("Court", "Now"), COURT ? Dribbble : Timer], ["plan", H("Plays", "Plan"), ChefHat], ["coach", "Coach", MessageCircle], ["weight", H("Stats", "Weight"), Scale], ["log", H("Scores", "Log"), CalendarDays], ["setup", H("Locker", "Setup"), Cog]];
 
   return (
     <Shell theme={THEME}>
@@ -597,7 +676,7 @@ export default function CutLog() {
       <nav className="dock">
         {TABS.map(([id, label, Icon]) => (
           <button key={id} className={tab === id ? "dockbtn on" : "dockbtn"} onClick={() => setTab(id)}>
-            <Icon size={19} strokeWidth={1.7} /><span>{label}</span>
+            <Icon size={23} strokeWidth={1.7} /><span>{label}</span>
           </button>
         ))}
         <TrayClock />
@@ -621,6 +700,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
   const [showStages, setShowStages] = useState(false);
   const [now, setNow] = useState(Date.now());
   const fast = data.fast;
+  const fastOn = fastingEnabled(data);
   const isToday = dayId === dayKey();
 
   useEffect(() => {
@@ -638,7 +718,26 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
 
   return (
     <>
-      {fast ? (
+      {isToday && <GamesPanel />}
+      {isToday && (data.groups || []).length > 0 && <CrewFastStrip data={data} />}
+      {fastOn && fast && (() => {
+        const cs = fastConfirmState(fast.start, fast.confirmedAt, now);
+        if (cs.state !== "due" && cs.state !== "unconfirmed") return null;
+        const inGroup = (data.groups || []).some((g) => !g.lost);
+        return (
+          <div className="glass pad stack">
+            <h2>Check-in</h2>
+            <p className="small">{Math.floor(hours)} hours in. Still fasting, and feeling okay? {cs.state === "unconfirmed" && inGroup ? "Your group can see you haven't confirmed." : ""}</p>
+            <div className="rowbtns">
+              <button className="btn solid" onClick={() => setData((d) => ({ ...d, fast: { ...d.fast, confirmedAt: Date.now() } }))}>Still fasting</button>
+              <button className="btn ghost" onClick={() => setData((d) => ({ ...d, fast: null,
+                fasts: [{ end: Date.now(), hours: +((Date.now() - d.fast.start) / 36e5).toFixed(1) }, ...(d.fasts || [])].slice(0, 30) }))}>{H("Final buzzer", "Break it")}</button>
+            </div>
+            <p className="dim tiny">If you feel dizzy, faint or unwell, break it and eat.</p>
+          </div>
+        );
+      })()}
+      {!fastOn ? null : fast ? (
         <div className="glass hero">
           <Ring pct={Math.min(1, hours / 24)} color={st.hue}
             ticks={STAGES.map((sg) => ({ at: sg.at / 24, hit: hours >= sg.at, color: sg.hue }))}>
@@ -647,21 +746,22 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
             <div className="dim tiny">{nx ? `${nx.name} in ${(nx.at - hours).toFixed(1)}h` : "deep fast"}</div>
           </Ring>
           <p className="stagebody">{st.body}</p>
+          {(() => { const c = fastCaution(hours, { trained: day.tags.some((x) => x === "lift" || x === "ball"), recovering: !!day.rest || !!data.recovery?.on }); return c ? <p className={c.level === "note" ? "cue" : "alert"}>{c.text}</p> : null; })()}
           <div className="rowbtns">
             <button className="btn ghost" onClick={() => setShowStages(!showStages)}>{showStages ? "Hide" : "All stages"}</button>
             <button className="btn ghost" onClick={() => setData((d) => ({ ...d, fast: { ...d.fast, start: d.fast.start - 18e5 } }))}>−30m</button>
             <button className="btn solid" onClick={() => setData((d) => ({ ...d, fast: null,
-              fasts: [{ end: Date.now(), hours: +((Date.now() - d.fast.start) / 36e5).toFixed(1) }, ...(d.fasts || [])].slice(0, 30) }))}>Break it</button>
+              fasts: [{ end: Date.now(), hours: +((Date.now() - d.fast.start) / 36e5).toFixed(1) }, ...(d.fasts || [])].slice(0, 30) }))}>{H("Final buzzer", "Break it")}</button>
           </div>
         </div>
       ) : (
         <div className="glass hero">
           <Ring pct={0} color={C.idle} glow={false}>
             <div className="mono huge dim">0:00:00</div>
-            <div className="dim tiny">not fasting</div>
+            <div className="dim tiny">{H("shot clock off", "not fasting")}</div>
           </Ring>
-          <button className="btn solid wide big" onClick={() => setData((d) => ({ ...d, fast: { start: Date.now() } }))}>Start fasting</button>
-          {(data.fasts || [])[0] && <p className="dim tiny center">Last fast: {data.fasts[0].hours}h</p>}
+          <button className="btn solid wide big" onClick={() => setData((d) => ({ ...d, fast: { start: Date.now() } }))}>{H("Start the clock", "Start fasting")}</button>
+          {(data.fasts || [])[0] && <p className="dim tiny center">{H("Last game", "Last fast")}: {data.fasts[0].hours}h</p>}
         </div>
       )}
 
@@ -687,7 +787,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
         <div className="fuelhead">
           <div>
             <div className="bignum" style={{ color: left < 0 ? C.bad : "#fff" }}>{Math.round(shownLeft).toLocaleString()}</div>
-            <div className="dim tiny">{left < 0 ? "over budget" : "calories left"}</div>
+            <div className="dim tiny">{left < 0 ? H("over the limit, foul trouble", "over budget") : H("calories left in the game", "calories left")}</div>
           </div>
           <div className="right dim tiny">
             <div>{t.cal.toLocaleString()} in</div>
@@ -712,6 +812,11 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
               onClick={() => updateDay(dayId, (d) => ({ ...d, tags: d.tags.includes(k) ? d.tags.filter((x) => x !== k) : [...d.tags, k] }))}>{v.label}</button>
           ))}
         </div>
+        <div className="chips">
+          <button className={day.rest === "rest" ? "chip on" : "chip"} onClick={() => updateDay(dayId, (d) => ({ ...d, rest: d.rest === "rest" ? "" : "rest" }))}>{H("Timeout", "Rest day")}</button>
+          <button className={data.recovery?.on ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, recovery: d.recovery?.on ? { on: false, u: Date.now() } : { on: true, since: dayId, u: Date.now() } }))}>{H("Injury report", "Hurt / recovering")}</button>
+        </div>
+        {data.recovery?.on && <p className="cue">{H("Injury report: you're on the bench, not out of the season.", "")} Recovery mode is on. No activity calories get earned, protein stays high to help healing, and your step goal is halved. A rest day, stretching, or an easy walk still counts toward your score. Nothing is penalized. See a professional if it doesn't improve.</p>}
         <p className="dim tiny">{day.tags.length ? `Protein up to ${targets.protein}g, ${targets.earned} calories back. Use sparingly — earned calories are the easiest place to overshoot.` : "Tag a workout or a job-site day to move your protein target and budget."}</p>
         {fast && day.tags.some((x) => x === "lift" || x === "ball") && (
           <p className="cue">Trained fasted. Get protein in within two hours of breaking this — that decides whether what comes off is fat or muscle.</p>
@@ -728,12 +833,15 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
       })()}
 
       <div className="glass">
-        {day.foods.length === 0 ? <p className="dim center pad">Nothing logged yet.</p> :
+        {day.foods.length === 0 ? <p className="dim center pad">{H("Empty box score. Get on the board.", "Nothing logged yet.")}</p> :
           MEALS.filter((m) => day.foods.some((f) => f.meal === m)).map((m) => (
             <div key={m}>
-              <div className="mealhead"><span className="dot" style={{ background: MEAL_COLOR[m], boxShadow: `0 0 8px ${MEAL_COLOR[m]}` }} />{m}
+              <div className="mealhead"><span className="dot" style={{ background: MEAL_COLOR[m], boxShadow: `0 0 8px ${MEAL_COLOR[m]}` }} />{COURT ? `${QTR[m]} · ` : ""}{m}
                 <span className="right dim">{day.foods.filter((f) => f.meal === m).reduce((a, f) => a + f.calories, 0)}</span></div>
-              {day.foods.slice().sort((a, b) => (a.at || 0) - (b.at || 0)).filter((f) => f.meal === m).map((f) => (
+              {(() => { const rows = day.foods.slice().sort((a, b) => (a.at || 0) - (b.at || 0)).filter((f) => f.meal === m);
+                return rows.map((f, i) => {
+                  const grade = f.mealId && day.grades?.[f.mealId] && rows[i + 1]?.mealId !== f.mealId ? day.grades[f.mealId] : null;
+                  return (
                 <React.Fragment key={f.id}>
                 <div className="fooditem">
                   <div className="tapable" onClick={() => setEditing(editing === f.id ? null : f.id)}>
@@ -753,8 +861,10 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
                 {editing === f.id && <EditFood food={f} onClose={() => setEditing(null)}
                   onDelete={() => { removeFood(f.id); setEditing(null); }}
                   onSave={(nf) => { updateDay(dayId, (d) => ({ ...d, foods: d.foods.map((x) => x.id === f.id ? { ...nf, u: Date.now() } : x) })); setEditing(null); }} />}
+                <TierBox grade={grade} />
                 </React.Fragment>
-              ))}
+                  );
+                }); })()}
             </div>
           ))}
       </div>
@@ -771,10 +881,17 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
         </div>
       )}
 
-      {open ? <AddFood onCancel={() => setOpen(false)} calib={data.calib || []} recipes={data.recipes || []} setData={setData}
+      {open ? <AddFood budget={targets.calories} budgetLeft={left} onCancel={() => setOpen(false)} calib={data.calib || []} recipes={data.recipes || []} setData={setData}
         onCalib={(n) => setData((d) => ({ ...d, calib: [n, ...(d.calib || [])].slice(0, 12) }))}
-        onAdd={(items) => { updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, ...items.map((i) => ({ at: stampFor(dayId), ...i, u: Date.now() }))] })); setOpen(false); }} />
-        : <button className="btn solid wide big" onClick={() => setOpen(true)}><Plus size={18} /> Add food</button>}
+        onAdd={(items, grade) => {
+          // A shared mealId groups these items so a grade (if any) can attach to the right ones,
+          // even for a one-item "meal" — grading a single food should still show its verdict.
+          const mealId = crypto.randomUUID();
+          updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, ...items.map((i) => ({ at: stampFor(dayId), ...i, mealId, u: Date.now() }))],
+            grades: grade ? { ...(d.grades || {}), [mealId]: { ...grade, at: Date.now() } } : d.grades }));
+          setOpen(false);
+        }} />
+        : <button className="btn solid wide big" onClick={() => setOpen(true)}><Plus size={18} /> {H("Log a play", "Add food")}</button>}
 
       {(() => {
         const goal = data.profile.waterOz || 100, have = +day.water || 0;
@@ -792,6 +909,10 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
         );
       })()}
 
+      <LiftLog {...{ data, setData, dayId, day, updateDay }} />
+
+      <ScoreCard {...{ data, dayId, day, targets, updateDay }} />
+
       <div className="glass pad">
         <div className="row"><label>Steps</label>
           <input className="mini" type="number" inputMode="numeric" placeholder="—" value={day.steps}
@@ -806,6 +927,452 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay }) {
   );
 }
 
+
+function ScoreCard({ data, dayId, day, targets, updateDay }) {
+  const prof = { ...data.profile, recovering: !!data.recovery?.on };
+  const sc = dayScore(day, targets, prof);
+  const hasGroup = !!(data.groups && data.groups.length);
+  const week = weekOnTrack(data.days, dayId, () => targets, prof);
+  const pct = sc.total;
+  return (
+    <div className="glass pad stack">
+      <div className="row">
+        <label style={{ margin: 0 }}>{H("Box score", "Today's score")}</label>
+        <span className="mono"><strong style={{ fontSize: 20 }}>{pct}</strong><span className="dim">{H(" PTS", " / 100")}</span></span>
+      </div>
+      <div className="track"><div style={{ width: `${pct}%`, background: pct >= ON_TRACK ? C.water : C.accent || C.water }} /></div>
+      {COURT ? (
+        <div className="wlstrip">
+          {weekRecord(data.days, dayId, () => targets, prof).map((w, i) => <span key={i} className={w === true ? "wl w" : w === false ? "wl l" : "wl n"}>{w === true ? "W" : w === false ? "L" : "–"}</span>)}
+          <span className="dim tiny" style={{ marginLeft: 8 }}>Last 7: {week}-{weekRecord(data.days, dayId, () => targets, prof).filter((x) => x === false).length}. A win is 70+ points. Points reward habits, never eating less.</span>
+        </div>
+      ) : <p className="dim tiny">{week} of the last 7 days on track (70+). Points reward habits, never eating less.</p>}
+      {sc.parts.map((p) => (
+        <div key={p.key} className="row small scorerow" style={{ opacity: p.done ? 1 : 0.85 }}>
+          <span style={{ flex: 1 }}>{p.done ? "✓ " : ""}{p.label}</span>
+          {p.key === "veg" && !p.done
+            ? <button className="chip" onClick={() => updateDay(dayId, (d) => ({ ...d, veg: true }))}>I had them +15</button>
+            : p.key === "checkin" && !p.done
+              ? (hasGroup
+                ? <button className="chip" onClick={() => updateDay(dayId, (d) => ({ ...d, checkin: Date.now() }))}>Check in +10</button>
+                : <span className="dim tiny">join a group to unlock</span>)
+              : <span className="mono dim">{p.pts}/{p.max}</span>}
+          {p.key === "veg" && p.done && <button className="icon" title="Undo" onClick={() => updateDay(dayId, (d) => ({ ...d, veg: false }))}><X size={13} /></button>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LiftRow({ lift, last, onSets, onRemove }) {
+  const [reps, setReps] = useState("");
+  const [wt, setWt] = useState("");
+  const sets = lift.sets || [];
+  const add = () => {
+    if (!(+reps > 0)) return;
+    onSets([...sets, { reps: +reps, wt: +wt || 0 }]);
+    setReps("");
+  };
+  return (
+    <div className="liftrow stack">
+      <div className="row"><strong>{lift.name}</strong>
+        <button className="icon" title="Remove exercise" onClick={onRemove}><X size={14} /></button></div>
+      {last && <p className="dim tiny">Last time: {last.sets.map((s) => `${s.reps}×${s.wt}`).join(", ")}</p>}
+      {sets.map((s, i) => (
+        <div key={i} className="row small">
+          <span className="mono">Set {i + 1}</span>
+          <span className="mono">{s.reps} × {s.wt} lb</span>
+          <button className="icon" onClick={() => onSets(sets.filter((_, n) => n !== i))}><X size={12} /></button>
+        </div>
+      ))}
+      <div className="row gap">
+        <input className="mini" type="number" inputMode="numeric" placeholder="reps" value={reps} onChange={(e) => setReps(e.target.value)} />
+        <span className="dim">×</span>
+        <input className="mini" type="number" inputMode="decimal" placeholder="lb" value={wt} onChange={(e) => setWt(e.target.value)} />
+        <button className="chip" onClick={add}>Add set</button>
+      </div>
+    </div>
+  );
+}
+
+function LiftLog({ data, setData, dayId, day, updateDay }) {
+  const [name, setName] = useState("");
+  const [open, setOpen] = useState(false);
+  const lifts = day.lifts || [];
+  const names = useMemo(() => exerciseNames(data.days), [data.days]);
+  const addEx = () => {
+    const n = name.trim(); if (!n) return;
+    updateDay(dayId, (d) => ({ ...d, lifts: [...(d.lifts || []), { id: crypto.randomUUID(), name: n, sets: [], u: Date.now() }] }));
+    setName("");
+  };
+  const patch = (id, fn) => updateDay(dayId, (d) => ({ ...d, lifts: (d.lifts || []).map((l) => (l.id === id ? { ...fn(l), u: Date.now() } : l)) }));
+  if (!open && !lifts.length) return <button className="btn ghost wide" onClick={() => setOpen(true)}>+ Log lifting</button>;
+  return (
+    <div className="glass pad stack">
+      <label style={{ margin: 0 }}>Lifting</label>
+      {lifts.map((l) => (
+        <LiftRow key={l.id} lift={l} last={lastSets(data.days, l.name, dayId)}
+          onSets={(sets) => patch(l.id, (x) => ({ ...x, sets }))}
+          onRemove={() => { setData((d) => ({ ...d, deleted: tombstone(d, "lift:" + l.id) })); updateDay(dayId, (d) => ({ ...d, lifts: (d.lifts || []).filter((x) => x.id !== l.id) })); }} />
+      ))}
+      <div className="row gap">
+        <input list="exnames" placeholder="Exercise (bench press, squat…)" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addEx()} />
+        <datalist id="exnames">{names.map((n) => <option key={n} value={n} />)}</datalist>
+        <button className="chip" onClick={addEx} disabled={!name.trim()}>Add</button>
+      </div>
+    </div>
+  );
+}
+
+function StrengthPanel({ data }) {
+  const rows = useMemo(() => strengthSummary(data.days), [data.days]);
+  if (!rows.length) return null;
+  return (
+    <div className="glass pad stack">
+      <h2>Strength</h2>
+      <p className="dim tiny">Estimated one-rep max from your best set each session. Holding or growing strength while the scale drops means the loss is fat.</p>
+      {rows.map((r) => (
+        <div key={r.name} className="row small">
+          <span style={{ flex: 1 }}>{r.name}<span className="dim tiny"> · {r.sessions} session{r.sessions > 1 ? "s" : ""}</span></span>
+          <span className="mono">{r.last} lb{r.change != null && <span style={{ color: r.change >= 0 ? C.water : C.bad }}> {r.change >= 0 ? "+" : ""}{r.change}%</span>}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function GamesPanel() {
+  const [nba, setNba] = useState(null);
+  const [err, setErr] = useState(false);
+  const load = useCallback(async () => {
+    try {
+      const d = new Date();
+      const ds = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+      const r = await fetch(`/api/scores?dates=${ds}`, { headers: { "x-access-code": ACCESS() } });
+      if (!r.ok) throw new Error("bad");
+      const j = await r.json();
+      if (j.error) throw new Error(j.error);
+      setNba(j.games || []); setErr(false);
+    } catch { setErr(true); }
+  }, []);
+  useEffect(() => {
+    load();
+    // 15s while a game is live, otherwise once a minute.
+    const t = setInterval(() => { if (!document.hidden) load(); }, (nba || []).some((g) => g.state === "in") ? 15000 : 60000);
+    return () => clearInterval(t);
+  }, [load, (nba || []).some((g) => g.state === "in")]);
+  const spc = spcView(SPC_GAMES);
+  const gt = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const gd = (iso) => new Date(iso).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  return (
+    <div className="glass pad stack gamespanel">
+      <h2>NBA today{(nba || []).some((g) => g.state === "in") ? <span className="live" style={{ marginLeft: 8 }}>● LIVE</span> : null}</h2>
+      {nba === null && !err && <p className="dim tiny">Checking the schedule…</p>}
+      {err && nba === null && <p className="dim tiny">Couldn't load today's NBA games right now.</p>}
+      {nba && nba.length === 0 && <p className="dim tiny">No NBA games today.</p>}
+      {(nba || []).map((g) => (
+        <div key={g.id} className="gamerow">
+          <div className="gameteams">
+            <div>{g.away.abbr || g.away.name}<span className="mono gscore">{g.state !== "pre" ? g.away.score : ""}</span></div>
+            <div>{g.home.abbr || g.home.name}<span className="mono gscore">{g.state !== "pre" ? g.home.score : ""}</span></div>
+          </div>
+          <div className="gamewhen">
+            <span className={g.state === "in" ? "live" : "dim tiny"}>{g.state === "pre" ? gt(g.start) : g.state === "in" ? `LIVE · ${g.status}` : "Final"}</span>
+            {(g.phase && g.phase !== "Regular") || g.note ? <span className="dim tiny">{[g.phase, g.note].filter(Boolean).join(" · ")}</span> : null}
+            {g.tv && <span className="dim tiny">{g.tv}</span>}
+          </div>
+        </div>
+      ))}
+      <h2 style={{ marginTop: 6 }}>South Plains Texans</h2>
+      {spc.total === 0 ? (
+        <p className="dim tiny">Schedule isn't loaded yet. <a href={SPC_URL} target="_blank" rel="noreferrer">Official schedule</a></p>
+      ) : (
+        <>
+          {spc.today.length === 0 && <p className="dim tiny">No Texans game today.</p>}
+          {[...spc.today, ...spc.upcoming].map((g) => (
+            <div key={g.start} className="gamerow">
+              <div className="gameteams"><div>{g.home === false ? "at " : g.home === null ? "vs " : "vs "}{g.opp}</div>
+                {g.where && <div className="dim tiny">{g.where}</div>}</div>
+              <div className="gamewhen"><span>{gd(g.start)}</span><span className="dim tiny">{gt(g.start)}{g.home ? " · Home" : ""}</span></div>
+            </div>
+          ))}
+          {spc.today.length === 0 && spc.upcoming.length === 0 && <p className="dim tiny">No more games on the schedule.</p>}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------- groups: what a phone publishes, and how a friend's fast reads ---------- */
+// Fasts get a check-in every 12 hours from the 24th. No answer within 2 hours of a mark shows friends "not confirmed".
+const CONFIRM_FIRST_H = 24, CONFIRM_EVERY_H = 12, CONFIRM_GRACE_H = 2;
+function fastConfirmState(start, confirmedAt, now = Date.now()) {
+  const h = (now - start) / 36e5;
+  if (!(h >= CONFIRM_FIRST_H)) return { state: "ok", mark: null };
+  const k = Math.floor((h - CONFIRM_FIRST_H) / CONFIRM_EVERY_H);
+  const mark = start + (CONFIRM_FIRST_H + CONFIRM_EVERY_H * k) * 36e5;
+  if ((confirmedAt || 0) >= mark) return { state: "confirmed", mark };
+  return { state: now - mark < CONFIRM_GRACE_H * 36e5 ? "due" : "unconfirmed", mark };
+}
+const fmtHM = (ms) => { const m = Math.max(0, Math.floor(ms / 60000)); return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`; };
+const DEFAULT_SCOPES = { fast: true, weight: true, cal: true, habits: true };
+const HABIT_LABELS = { meals: "Logged meals", cal: "Calorie range", protein: "Protein", veg: "Veggies", move: "Moved or rested", water: "Water", checkin: "Check-in" };
+// Privacy is enforced here, at the source: anything a person switched off is never put in the payload.
+function buildStatus(data, scopes, targets, today = dayKey()) {
+  const p = data?.profile || {};
+  const day = { ...blankDay(), ...(data?.days?.[today] || {}) };
+  const sc = { ...DEFAULT_SCOPES, ...(scopes || {}) };
+  const out = { scopes: sc };
+  if (sc.fast && fastingEnabled(data) && data?.fast?.start) {
+    out.fast = { start: data.fast.start };
+    if (data.fast.confirmedAt) out.fast.confirmedAt = data.fast.confirmedAt;
+  }
+  if (sc.weight) {
+    const ws = Object.entries(data?.days || {}).filter(([, d]) => +d?.weight > 0).sort();
+    out.weight = { start: +p.weight || null, current: ws.length ? +ws[ws.length - 1][1].weight : +p.weight || null, goal: +p.goalWeight || null };
+  }
+  if (sc.cal) {
+    out.cal = { eaten: Math.round(day.foods.reduce((a, f) => a + (+f.calories || 0), 0)), target: targets?.calories || 0,
+      protein: Math.round(day.foods.reduce((a, f) => a + (+f.protein || 0), 0)), proteinTarget: targets?.protein || 0 };
+  }
+  if (sc.habits) {
+    const prof = { ...p, recovering: !!data?.recovery?.on };
+    out.habits = Object.fromEntries(dayScore(day, targets, prof).parts.map((x) => [x.key, x.done]));
+    out.week = weekRecord(data?.days, today, () => targets, prof);
+  }
+  return out;
+}
+const groupErr = (e) => { try { return JSON.parse(e.message).error || e.message; } catch { return e.message || "Something went wrong."; } };
+
+/* ---------- groups UI ---------- */
+function SharingToggles({ scopes, onChange }) {
+  const rows = [["fast", "Fasting clock"], ["weight", "Weight"], ["cal", "Calories and protein"], ["habits", "Daily habits (yes or no)"]];
+  return (
+    <div className="stack">
+      <label style={{ margin: 0 }}>What friends can see</label>
+      {rows.map(([k, l]) => (
+        <div key={k} className="row small">
+          <span>{l}</span>
+          <input type="checkbox" checked={!!scopes[k]} onChange={(e) => onChange({ ...scopes, [k]: e.target.checked })} />
+        </div>
+      ))}
+      <p className="dim tiny">Starts as everything. Lab results and points are never shared and there's no leaderboard. You can change this any time, and anything you switch off stops being sent.</p>
+    </div>
+  );
+}
+
+function useBoard(g, everyMs = 30000) {
+  const [board, setBoard] = useState(null);
+  const [err, setErr] = useState("");
+  const load = useCallback(async () => {
+    if (!g || g.lost) return;
+    try { setBoard(await groupsApi({ op: "board", groupId: g.id, memberId: g.memberId, token: g.token })); setErr(""); }
+    catch (e) { setErr(groupErr(e)); }
+  }, [g?.id, g?.memberId, g?.token, g?.lost]);
+  useEffect(() => {
+    load();
+    const t = setInterval(() => { if (!document.hidden) load(); }, everyMs);
+    return () => clearInterval(t);
+  }, [load, everyMs]);
+  return { board, err, load };
+}
+
+// Who in your group is fasting right now. Hidden when nobody is.
+function CrewFastStrip({ data }) {
+  const g = (data.groups || []).find((x) => !x.lost);
+  const { board } = useBoard(g, 60000);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(t); }, []);
+  const fasting = (board?.members || []).filter((m) => !m.isMe && m.status?.fast);
+  if (!g || !fasting.length) return null;
+  return (
+    <div className="glass pad stack">
+      <h2>{H("Crew on the clock", "Fasting now")}</h2>
+      {fasting.map((m) => {
+        const f = m.status.fast, cs = fastConfirmState(f.start, f.confirmedAt, now);
+        return (
+          <div key={m.id} className="row small">
+            <span>{m.name}</span>
+            <span className="mono">{fmtHM(now - f.start)}{cs.state === "unconfirmed" ? " · not confirmed" : cs.state === "due" ? " · check-in due" : ""}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function GroupBoard({ g, data, setData }) {
+  const { board, err, load } = useBoard(g);
+  const [now, setNow] = useState(Date.now());
+  const [sent, setSent] = useState({});
+  const [msg, setMsg] = useState("");
+  const [showCode, setShowCode] = useState(false);
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 20000); return () => clearInterval(t); }, []);
+  const call = (p) => groupsApi({ groupId: g.id, memberId: g.memberId, token: g.token, ...p });
+  const patchGroup = (fn) => setData((d) => ({ ...d, groups: (d.groups || []).map((x) => (x.id === g.id ? { ...fn(x), u: Date.now() } : x)) }));
+  const dropLocal = () => setData((d) => ({ ...d, deleted: tombstone(d, "group:" + g.id), groups: (d.groups || []).filter((x) => x.id !== g.id) }));
+
+  if (g.lost) return (
+    <div className="glass pad stack">
+      <h2>{g.name}</h2>
+      <p className="alert">You're not in this group anymore.</p>
+      <button className="btn ghost wide" onClick={dropLocal}>Remove it from this app</button>
+    </div>
+  );
+  const nudge = async (to, kind) => {
+    setMsg("");
+    try { await call({ op: "nudge", to, kind }); setSent((s) => ({ ...s, [to + kind]: true })); }
+    catch (e) { setMsg(groupErr(e)); }
+  };
+  const ack = async () => { try { await call({ op: "ack", upTo: Math.max(...board.nudges.map((n) => n.at)) }); load(); } catch { /* try again next refresh */ } };
+  const run = async (p, after) => { setMsg(""); try { const r = await call(p); after && after(r); load(); } catch (e) { setMsg(groupErr(e)); } };
+  const grp = board?.group;
+
+  return (
+    <>
+      <div className="glass pad stack">
+        <div className="row"><h2>{g.name}</h2><button className="chip" onClick={load}>Refresh</button></div>
+        {grp && <p className="dim tiny">{grp.count} {grp.count === 1 ? "person" : "people"}{grp.ready ? "" : ` · works best with 3 or more, send them the invite code`}{grp.locked ? " · closed to new members" : ""}</p>}
+        {err && <p className="alert">{err}</p>}
+        {msg && <p className="alert">{msg}</p>}
+      </div>
+
+      {(board?.nudges || []).length > 0 && (
+        <div className="glass pad stack">
+          {board.nudges.slice().reverse().map((n, i) => (
+            <p key={i} className="small">{n.kind === "check" ? `${n.from} is checking in on you. How are you feeling?` : `${n.from} is cheering you on.`}</p>))}
+          <button className="chip" onClick={ack}>Got it</button>
+        </div>
+      )}
+
+      {!board && !err && <div className="glass pad center"><p className="dim">Loading…</p></div>}
+      {(board?.members || []).map((m) => {
+        const s = m.status, f = s?.fast, cs = f ? fastConfirmState(f.start, f.confirmedAt, now) : null;
+        const hrs = f ? (now - f.start) / 36e5 : 0;
+        const stale = s && now - s.at > 3 * 36e5;
+        return (
+          <div key={m.id} className="glass pad stack">
+            <div className="row"><strong>{m.name}{m.isMe ? " (you)" : ""}{m.creator ? " · host" : ""}</strong>
+              {s && <span className="dim tiny">{stale ? `last seen ${fmtHM(now - s.at)} ago` : "up to date"}</span>}</div>
+            {!s && <p className="dim tiny">Hasn't opened the app since joining.</p>}
+            {s && s.scopes?.fast === false && <p className="dim tiny">Keeping fasting private.</p>}
+            {s && s.scopes?.fast && !f && <p className="dim tiny">Not fasting.</p>}
+            {f && (
+              <div>
+                <div className="row"><span className="mono">Fasting {fmtHM(now - f.start)}</span><span className="dim tiny">{stageAt(hrs).name}</span></div>
+                <p className={cs.state === "unconfirmed" ? "alert tiny" : "dim tiny"}>
+                  {cs.state === "confirmed" ? "Checked in and still fasting." : cs.state === "due" ? "Check-in due." : cs.state === "unconfirmed" ? "Hasn't confirmed since the last check-in." : "Under 24 hours, no check-in needed yet."}
+                  {stale ? " Their phone hasn't reported in for a while." : ""}
+                </p>
+                {hrs >= 36 && !m.isMe && <p className="cue">That's a long one. A message from you goes a long way.</p>}
+              </div>
+            )}
+            {s?.weight?.current != null && s.weight.start != null && <div className="row small"><span className="dim">Weight</span><span className="mono">{s.weight.current} lb · {(s.weight.start - s.weight.current).toFixed(1)} down</span></div>}
+            {s?.cal && s.cal.target > 0 && (
+              <div>
+                <div className="row small"><span className="dim">Today</span><span className="mono">{s.cal.eaten.toLocaleString()} / {s.cal.target.toLocaleString()} cal · {s.cal.protein}/{s.cal.proteinTarget}g protein</span></div>
+                <div className="track"><div style={{ width: `${Math.min(100, (s.cal.eaten / s.cal.target) * 100)}%`, background: C.cal }} /></div>
+              </div>
+            )}
+            {s?.habits && (
+              <div className="chips" style={{ marginBottom: 0 }}>
+                {Object.entries(HABIT_LABELS).map(([k, l]) => <span key={k} className={s.habits[k] ? "chip on" : "chip"} style={{ cursor: "default", opacity: s.habits[k] ? 1 : 0.55 }}>{s.habits[k] ? "✓ " : ""}{l}</span>)}
+              </div>
+            )}
+            {s?.week && <div className="wlstrip">{s.week.map((w, i) => <span key={i} className={w === true ? "wl w" : w === false ? "wl l" : "wl n"}>{w === true ? "W" : w === false ? "L" : "–"}</span>)}</div>}
+            {!m.isMe && (
+              <div className="rowbtns">
+                <button className="chip" disabled={sent[m.id + "check"]} onClick={() => nudge(m.id, "check")}>{sent[m.id + "check"] ? "Sent" : "Check on them"}</button>
+                <button className="chip" disabled={sent[m.id + "cheer"]} onClick={() => nudge(m.id, "cheer")}>{sent[m.id + "cheer"] ? "Sent" : "Cheer"}</button>
+                {grp?.isCreator && <button className="chip" onClick={() => { if (window.confirm(`Remove ${m.name} from the group?`)) run({ op: "remove", target: m.id }); }}>Remove</button>}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      <div className="glass pad stack">
+        <SharingToggles scopes={{ ...DEFAULT_SCOPES, ...(g.scopes || {}) }} onChange={(sc) => patchGroup((x) => ({ ...x, scopes: sc }))} />
+      </div>
+
+      <div className="glass pad stack">
+        <h2>Group</h2>
+        {grp?.isCreator && (
+          <>
+            {g.code ? (
+              <>
+                <button className="chip" onClick={() => setShowCode(!showCode)}>{showCode ? "Hide invite code" : "Show invite code"}</button>
+                {showCode && <div className="codebox mono">{g.code.match(/.{4}/g).join("-")}</div>}
+              </>
+            ) : <p className="dim tiny">Reset the code to get a new invite code to share.</p>}
+            <div className="rowbtns">
+              <button className="chip" onClick={() => run({ op: "lock", locked: !grp.locked })}>{grp.locked ? "Open to new members" : "Close to new members"}</button>
+              <button className="chip" onClick={() => { if (window.confirm("Reset the invite code? The old one stops working. People already in stay in.")) run({ op: "reset" }, (r) => { patchGroup((x) => ({ ...x, code: r.code })); setShowCode(true); }); }}>Reset code</button>
+            </div>
+          </>
+        )}
+        <button className="btn ghost wide" onClick={() => { if (window.confirm("Leave this group?")) call({ op: "leave" }).catch(() => {}).finally(dropLocal); }}>Leave group</button>
+      </div>
+    </>
+  );
+}
+
+function GroupsView({ data, setData }) {
+  const groups = data.groups || [];
+  const [modeRaw, setMode] = useState(null);
+  const mode = modeRaw ?? (groups.length ? null : "choose");   // no groups (first visit, or just left one) -> start screen
+  const [gname, setGname] = useState("");
+  const [me, setMe] = useState(data.profile?.name || "");
+  const [code, setCode] = useState("");
+  const [scopes, setScopes] = useState(DEFAULT_SCOPES);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const add = (r, extra) => {
+    setData((d) => ({ ...d, groups: [...(d.groups || []), { id: r.groupId, name: r.groupName, memberId: r.memberId, token: r.token, scopes, u: Date.now(), ...extra }] }));
+    setMode(null);
+  };
+  const create = async () => {
+    setBusy(true); setErr("");
+    try { const r = await groupsApi({ op: "create", name: gname, member: me }); add(r, { code: r.code }); }
+    catch (e) { setErr(groupErr(e)); }
+    setBusy(false);
+  };
+  const join = async () => {
+    setBusy(true); setErr("");
+    try { const r = await groupsApi({ op: "join", code, member: me }); add(r); }
+    catch (e) { setErr(groupErr(e)); }
+    setBusy(false);
+  };
+
+  if (!mode) return (
+    <>
+      {groups.map((g) => <GroupBoard key={g.id} g={g} data={data} setData={setData} />)}
+      <button className="btn ghost wide" onClick={() => setMode("choose")}>Create or join another group</button>
+    </>
+  );
+  if (mode === "choose") return (
+    <div className="glass pad stack">
+      <h2>{H("Your crew", "Groups")}</h2>
+      <p className="dim small">Invite-only groups of up to 20. Friends only see what you allow, and nothing is public.</p>
+      <button className="btn solid wide" onClick={() => setMode("create")}>Start a group</button>
+      <button className="btn ghost wide" onClick={() => setMode("join")}>I have an invite code</button>
+      {groups.length > 0 && <button className="btn ghost wide" onClick={() => setMode(null)}>Back</button>}
+    </div>
+  );
+  return (
+    <div className="glass pad stack">
+      <h2>{mode === "create" ? "Start a group" : "Join a group"}</h2>
+      {mode === "create" && <input placeholder="Group name" maxLength={32} value={gname} onChange={(e) => setGname(e.target.value)} />}
+      {mode === "join" && <input placeholder="Invite code" autoCapitalize="characters" value={code} onChange={(e) => setCode(e.target.value)} />}
+      <input placeholder="Your name in the group" maxLength={24} value={me} onChange={(e) => setMe(e.target.value)} />
+      <SharingToggles scopes={scopes} onChange={setScopes} />
+      {err && <p className="alert">{err}</p>}
+      <button className="btn solid wide" disabled={busy || !me.trim() || (mode === "create" ? !gname.trim() : !code.trim())} onClick={mode === "create" ? create : join}>{busy ? "One sec…" : mode === "create" ? "Create group" : "Join group"}</button>
+      <button className="btn ghost wide" onClick={() => setMode(groups.length ? null : "choose")}>Back</button>
+    </div>
+  );
+}
 
 /* ---------- edit a logged entry ---------- */
 // Anything logged by weight, label or recipe knows its per-unit values, so changing
@@ -890,21 +1457,267 @@ function JoinSync({ onJoin }) {
 }
 
 /* ---------- add food ---------- */
-function AddFood({ onAdd, onCancel, calib, onCalib, recipes, setData }) {
-  const [mode, setMode] = useState("weigh");
+function AddFood({ onAdd, onCancel, calib, onCalib, recipes, setData, budget, budgetLeft }) {
+  const [mode, setMode] = useState("meal");
   const [meal, setMeal] = useState(guessMeal());
   return (
     <div className="glass pad stack fadein">
       <div className="chips">
-        {[["weigh", "Weigh"], ["label", "Label"], ["recipe", "Recipe"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
+        {[["meal", "Meal"], ["weigh", "Weigh"], ["label", "Label"], ["recipe", "Recipe"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
       </div>
+      {mode === "meal" && <MealBuilder meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} calib={calib} onCalib={onCalib} budget={budget} budgetLeft={budgetLeft} />}
       {mode === "recipe" && <Recipes recipes={recipes} setData={setData} meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "weigh" && <WeighIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "label" && <LabelIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "photo" && <SnapIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} calib={calib} onCalib={onCalib} />}
       {mode === "desc" && <DescribeIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
     </div>
+  );
+}
+
+/* ---------- optional fasting: off by default for new logs, gated, never rewarded ---------- */
+const fastingEnabled = (data) => data?.fastingOn ?? (((data?.fasts || []).length > 0) || !!data?.fast);
+function fastGate(p) {
+  const age = +p?.age, w = +p?.weight, h = +p?.heightIn;
+  if (Number.isFinite(age) && age > 0 && age < 18) return { ok: false, reason: "Fasting isn't offered under 18. Growing bodies need regular meals." };
+  if (w > 0 && h > 0) {
+    const bmi = (w * 703) / (h * h);
+    if (bmi < 18.5) return { ok: false, reason: "Fasting isn't offered when BMI is under 18.5. Regular meals come first." };
+  }
+  return { ok: true, reason: "" };
+}
+function fastCaution(hours, { trained = false, recovering = false } = {}) {
+  if (hours >= 36) return { level: "stop", text: "That's 36+ hours. Break this fast now. If you feel dizzy, faint, or unwell, eat and get medical help." };
+  if (hours >= 24) return { level: "warn", text: "Past 24 hours there is no extra credit for going longer, and the risks climb. Breaking it on plan is the win." };
+  if (hours >= 20 && (trained || recovering)) return { level: "warn", text: recovering ? "You're in recovery mode. Eat, don't push the fast." : "You trained today. Don't push a long fast on top of it. Eat protein soon." };
+  if (hours >= 20) return { level: "note", text: "Longer isn't better here. Same points whether you stop at 14 hours or 20." };
+  return null;
+}
+
+/* ---------- lifting log: exercises -> sets of reps x weight ---------- */
+const liftKey = (n) => String(n || "").trim().toLowerCase().replace(/\s+/g, " ");
+const e1rm = (wt, reps) => (+wt > 0 && +reps > 0 ? +wt * (1 + Math.min(+reps, 30) / 30) : 0);   // Epley
+const cleanSets = (sets) => (sets || []).filter((s) => +s.reps > 0 && +s.wt >= 0);
+function exerciseNames(days) {
+  const seen = new Map();
+  for (const d of Object.values(days || {})) for (const l of d?.lifts || []) if (liftKey(l.name)) seen.set(liftKey(l.name), l.name.trim());
+  return [...seen.values()].sort();
+}
+function lastSets(days, name, beforeKey) {
+  const k = liftKey(name);
+  const keys = Object.keys(days || {}).filter((d) => d < beforeKey).sort().reverse();
+  for (const dk of keys) {
+    const hit = (days[dk]?.lifts || []).find((l) => liftKey(l.name) === k && cleanSets(l.sets).length);
+    if (hit) return { day: dk, sets: cleanSets(hit.sets) };
+  }
+  return null;
+}
+// Per exercise across days: best estimated 1RM per session, so the trend isn't thrown by one easy day.
+function strengthSummary(days, sinceKey = "0000-00-00") {
+  const by = new Map();
+  for (const dk of Object.keys(days || {}).filter((d) => d >= sinceKey).sort()) {
+    for (const l of days[dk]?.lifts || []) {
+      const sets = cleanSets(l.sets); if (!sets.length) continue;
+      const k = liftKey(l.name);
+      const e = by.get(k) || { name: l.name.trim(), sessions: [] };
+      e.sessions.push({ day: dk, best: Math.max(...sets.map((s) => e1rm(s.wt, s.reps))), volume: sets.reduce((a, s) => a + s.reps * s.wt, 0), top: Math.max(...sets.map((s) => +s.wt)) });
+      by.set(k, e);
+    }
+  }
+  return [...by.values()].map((e) => {
+    const f = e.sessions[0], l = e.sessions[e.sessions.length - 1];
+    return { name: e.name, sessions: e.sessions.length, first: Math.round(f.best), last: Math.round(l.best), best: Math.round(Math.max(...e.sessions.map((s) => s.best))),
+      change: f.best > 0 && e.sessions.length > 1 ? Math.round(((l.best - f.best) / f.best) * 100) : null, volume: Math.round(e.sessions.reduce((a, s) => a + s.volume, 0)) };
+  }).sort((a, b) => b.sessions - a.sessions);
+}
+
+// South Plains games for the panel: what's on today, then the next few. Past games drop off.
+function spcView(games, nowMs = Date.now(), nUpcoming = 3) {
+  const sameDay = (a, b) => new Date(a).toDateString() === new Date(b).toDateString();
+  const all = (games || []).filter((g) => g && g.start && !Number.isNaN(new Date(g.start).getTime())).sort((a, b) => new Date(a.start) - new Date(b.start));
+  const today = all.filter((g) => sameDay(g.start, nowMs));
+  const upcoming = all.filter((g) => new Date(g.start).getTime() > nowMs && !sameDay(g.start, nowMs)).slice(0, nUpcoming);
+  return { today, upcoming, total: all.length };
+}
+
+/* ---------- accountability score: 100 points a day, built from habits ---------- */
+// No points for eating less or fasting longer. Calorie points only land inside +/-10% of your budget.
+const SCORE_MAX = { meals: 20, cal: 20, protein: 20, veg: 15, move: 10, water: 5, checkin: 10 };
+const ON_TRACK = 70;
+function dayScore(day, targets, profile = {}) {
+  const d = day || {};
+  const foods = d.foods || [];
+  const cal = foods.reduce((a, f) => a + (+f.calories || 0), 0);
+  const prot = foods.reduce((a, f) => a + (+f.protein || 0), 0);
+  const meals = new Set(foods.map((f) => f.meal || "x")).size;
+  const tCal = +targets?.calories || 0, tProt = +targets?.protein || 0;
+  const stepGoal = (+profile.stepGoal || 6000) / (profile.recovering ? 2 : 1);
+  const water = +d.water || 0, waterGoal = +profile.waterOz || 100;
+  const moved = !!d.rest || (d.tags || []).length > 0 || (d.workouts || []).length > 0 || (d.lifts || []).length > 0 || (+d.steps || 0) >= stepGoal;
+  const parts = [
+    { key: "meals", label: "Logged your meals", pts: meals >= 2 ? 20 : meals === 1 ? 10 : 0, hint: "Log at least two meals" },
+    { key: "cal", label: "Inside your calorie range", pts: meals >= 2 && tCal > 0 && cal >= tCal * 0.9 && cal <= tCal * 1.1 ? 20 : 0, hint: "Land within 10% of your budget" },
+    { key: "protein", label: "Hit your protein", pts: tProt > 0 ? Math.round(20 * Math.min(1, prot / (tProt * 0.9))) : 0, hint: "Reach 90% of your protein target" },
+    { key: "veg", label: "Fiber and veggies", pts: d.veg ? 15 : 0, hint: "Tap when you've had your veggies, fruit or fiber" },
+    { key: "move", label: d.rest ? "Recovery day" : "Right-sized activity", pts: moved ? 10 : 0, hint: "Train, walk, or log a rest day" },
+    { key: "water", label: "Hydration", pts: water >= waterGoal ? 5 : 0, hint: "Reach your water goal" },
+    { key: "checkin", label: "Group check-in", pts: d.checkin ? 10 : 0, hint: "Check in with your group" },
+  ].map((p) => ({ ...p, max: SCORE_MAX[p.key], done: p.pts >= SCORE_MAX[p.key] }));
+  return { total: parts.reduce((a, p) => a + p.pts, 0), parts, cal, prot };
+}
+// The 7 days ending at endKey, oldest first: true = on track (70+), false = logged but short, null = nothing logged.
+function weekRecord(days, endKey, targetsFor, profile) {
+  const [y, m, dd] = endKey.split("-").map(Number);
+  const out = [];
+  for (let i = 6; i >= 0; i--) {
+    const dt = new Date(y, m - 1, dd - i);
+    const k = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+    out.push(days?.[k] ? dayScore(days[k], targetsFor(days[k]), profile).total >= ON_TRACK : null);
+  }
+  return out;
+}
+const weekOnTrack = (days, endKey, targetsFor, profile) => weekRecord(days, endKey, targetsFor, profile).filter((x) => x === true).length;
+
+/* ---------- meal tiers: rated on the whole plate, never on a single food ---------- */
+// cls per item: 1 = whole / minimally processed, 2 = mixed or lightly processed, 3 = heavily processed.
+// The AI only sorts each item into a class; the tier itself is plain rules, so it's consistent and explainable.
+const TIER_INFO = {
+  1: { label: "Tier 1", name: "Whole foods", hue: "#22C55E" },
+  2: { label: "Tier 2", name: "Mixed", hue: "#EAB308" },
+  3: { label: "Tier 3", name: "Processed", hue: "#F97316" },
+  off: { label: "Off-plan", name: "Outside budget", hue: "#EF4444" },
+};
+const WHOLE_RE = /\b(chicken breast|chicken|turkey|salmon|fish|shrimp|steak|sirloin|egg|eggs|broccoli|spinach|greens|salad|lettuce|vegetable|veggies|carrot|pepper|onion|tomato|cucumber|rice|oats|oatmeal|potato|sweet potato|beans|lentil|apple|banana|berries|orange|fruit|avocado|almonds|nuts|yogurt|cottage cheese|water)\b/i;
+const PROC_RE = /\b(fries|chips|soda|candy|cookie|cake|donut|doughnut|pizza|nugget|hot dog|bacon|sausage|cereal|pop-?tart|ice cream|milkshake|fast food|burger|bun|frosted|fried|breaded|syrup|energy drink)\b/i;
+function guessClass(name) {
+  const n = String(name || "");
+  if (PROC_RE.test(n)) return 3;
+  if (WHOLE_RE.test(n)) return 1;
+  return 2;
+}
+function tierMeal(items, cls, ctx = {}) {
+  const its = (items || []).map((i) => ({ cal: Math.max(0, +i.calories || 0), p: Math.max(0, +i.protein || 0) }));
+  const total = its.reduce((a, i) => a + i.cal, 0);
+  const prot = its.reduce((a, i) => a + i.p, 0);
+  const share = (k) => (total > 0 ? its.reduce((a, i, n) => a + ((cls?.[n] ?? 2) === k ? i.cal : 0), 0) / total : 0);
+  const whole = share(1), proc = share(3);
+  const proteinShare = total > 0 ? (prot * 4) / total : 0;
+  const { budget, budgetLeft } = ctx;
+  const haveBudget = Number.isFinite(budget) && budget > 0 && Number.isFinite(budgetLeft);
+  const reasons = [];
+  let tier;
+  if (haveBudget && total > Math.max(0, budgetLeft) * 1.1 && total > 0.2 * budget) {
+    tier = "off";
+    reasons.push(`About ${Math.round(total - Math.max(0, budgetLeft))} cal more than you have left today.`);
+  } else if (haveBudget && proc >= 0.6 && total > 0.35 * budget) {
+    tier = "off";
+    reasons.push("A large portion that's mostly processed food.");
+  } else if (proc >= 0.5) {
+    tier = 3; reasons.push(`${Math.round(proc * 100)}% of the calories are heavily processed.`);
+  } else if (whole >= 0.7 && proc <= 0.1 && proteinShare >= 0.15) {
+    tier = 1; reasons.push("Mostly whole foods with solid protein.");
+  } else {
+    tier = 2;
+    reasons.push(whole >= 0.7 ? "Mostly whole foods, but protein is on the light side." : "A mix of whole and processed foods.");
+  }
+  // Portion note: the same food reads differently at different sizes.
+  if (tier !== "off" && haveBudget && total > 0 && total > Math.max(0, budgetLeft)) reasons.push("Slightly over what's left today. A smaller portion would keep it on plan.");
+  return { tier, reasons, whole: Math.round(whole * 100), processed: Math.round(proc * 100), cal: Math.round(total) };
+}
+
+/* ---------- build a whole meal from several items, then optionally rate its tier ---------- */
+function TierBox({ grade }) {
+  if (!grade) return null;
+  const ti = TIER_INFO[grade.tier];
+  if (!ti) return <div className="gradebox"><strong>{grade.verdict}</strong><p className="dim tiny">{grade.why}</p></div>;
+  return (
+    <div className="gradebox tierbox fadein" style={{ "--tier": ti.hue }}>
+      <strong><span className="tierpill">{ti.label}</span> {ti.name}</strong>
+      <p className="dim tiny">{grade.why}</p>
+      {grade.tip && <p className="tiny"><b>To move up:</b> {grade.tip}</p>}
+    </div>
+  );
+}
+function MealBuilder({ meal, setMeal, onAdd, onCancel, calib, onCalib, budget, budgetLeft }) {
+  const [items, setItems] = useState([]);
+  const [adding, setAdding] = useState(null);   // null | "weigh" | "label" | "photo" | "desc"
+  const [grading, setGrading] = useState(false);
+  const [grade, setGrade] = useState(null);
+  const [err, setErr] = useState("");
+  const noop = () => {};
+
+  const addItems = (its) => { setItems((x) => [...x, ...its]); setAdding(null); setGrade(null); };
+  const removeItem = (i) => { setItems((x) => x.filter((_, n) => n !== i)); setGrade(null); };
+  const tot = sumMacros(items);
+
+  const gradeIt = async () => {
+    setGrading(true); setErr("");
+    let cls = null, tip = "";
+    try {
+      const p = await askClaude([{ type: "text", text: `Sort each food in this meal by how processed it is. 1 = whole or minimally processed (meat, fish, eggs, vegetables, fruit, plain rice/oats/potatoes, beans, plain dairy, nuts). 2 = mixed or lightly processed (bread, pasta, sauces, cheese, restaurant dishes made from real ingredients). 3 = heavily processed (fried fast food, chips, candy, soda, pastries, packaged snacks, processed meats).
+Never call any food "bad". Then give one friendly tip for making this same meal more whole-food (a swap or portion tweak, not eating less overall).
+
+Items:
+${items.map((i, n) => `${n}. ${i.name} (${Math.round(i.calories)} cal, ${Math.round(i.protein)}g protein)`).join("\n")}
+
+Respond with ONLY JSON: {"classes":[one number 1-3 per item, in order],"tip":"one short sentence"}` }], 600);
+      if (Array.isArray(p.classes) && p.classes.length === items.length) cls = p.classes.map((x) => (x === 1 || x === 3 ? x : 2));
+      tip = typeof p.tip === "string" ? p.tip.slice(0, 200) : "";
+    } catch { /* fall back to the offline guess below */ }
+    if (!cls) { cls = items.map((i) => guessClass(i.name)); setErr("Couldn't reach the AI, so this tier is a quick estimate from the food names."); }
+    const r = tierMeal(items, cls, { budget, budgetLeft });
+    setGrade({ tier: r.tier, why: r.reasons.join(" "), tip, cls });
+    setGrading(false);
+  };
+
+  return (
+    <>
+      {items.length > 0 && (
+        <div className="ingredients">
+          {items.map((i, n) => (
+            <div key={n} className="row small ingrow">
+              <span style={{ flex: 1 }}>{i.name}</span>
+              <span className="mono dim">{Math.round(i.calories)}</span>
+              <button className="icon" onClick={() => removeItem(n)}><X size={13} /></button>
+            </div>
+          ))}
+          <div className="row small" style={{ paddingTop: 8 }}>
+            <strong>Total</strong>
+            <span className="mono">{Math.round(tot[0]).toLocaleString()} cal · {Math.round(tot[1])}p · {Math.round(tot[2])}c · {Math.round(tot[3])}f</span>
+          </div>
+        </div>
+      )}
+
+      {adding ? (
+        <div className="subpanel stack">
+          <div className="chips">
+            {[["weigh", "Weigh"], ["label", "Label"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
+              <button key={k} className={adding === k ? "chip on" : "chip"} onClick={() => setAdding(k)}>{l}</button>))}
+          </div>
+          {adding === "weigh" && <WeighIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
+          {adding === "label" && <LabelIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
+          {adding === "photo" && <SnapIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} calib={calib} onCalib={onCalib} />}
+          {adding === "desc" && <DescribeIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
+        </div>
+      ) : (
+        <button className="btn ghost wide" onClick={() => setAdding("weigh")}>+ Add item</button>
+      )}
+
+      {items.length > 0 && (
+        <button className="btn accent wide" onClick={gradeIt} disabled={grading}>{grading ? "Rating…" : grade ? "Re-rate this meal" : "Rate this meal"}</button>
+      )}
+      <TierBox grade={grade} />
+      {err && <p className="alert">{err}</p>}
+
+      <MealPick meal={meal} setMeal={setMeal} />
+      <div className="rowbtns">
+        <button className="btn ghost wide" onClick={onCancel}>Cancel</button>
+        <button className="btn solid wide" disabled={!items.length} onClick={() => onAdd(items, grade)}>
+          Log {items.length ? `${items.length} item${items.length > 1 ? "s" : ""}` : "meal"}
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -1886,7 +2699,7 @@ function Gate({ onOk }) {
     if (!code.trim()) return;
     setBusy(true); setErr("");
     localStorage.setItem("cutlog:code", code.trim());
-    try { await group("POST", { op: "list", prefix: SHARE_PREFIX }); onOk(); }
+    try { await groupsApi({ op: "ping" }); onOk(); }
     catch {
       localStorage.removeItem("cutlog:code");
       setErr("That code didn't work. Check it with whoever sent you here.");
@@ -2142,76 +2955,14 @@ function Weight({ data, setData, targets, updateDay }) {
         </div>
       ) : <div className="glass pad center"><p className="dim">Log a few days and the trend appears here.</p></div>}
 
+      <StrengthPanel data={data} />
+
       {eta && <div className="glass pad"><p className="small">At {targets.actualPace.toFixed(1)} lb a week you reach {goal} around <strong>{eta}</strong>. After three weeks of real data, check that against what the scale actually did — the formula runs about 10% off either way.</p></div>}
     </>
   );
 }
 
 /* ---------- us ---------- */
-function Us({ data, setData }) {
-  const [people, setPeople] = useState(null);
-  const [err, setErr] = useState("");
-  const [open, setOpen] = useState(null);
-
-  const load = useCallback(async () => {
-    setErr("");
-    try {
-      const list = await store.list(SHARE_PREFIX, true);
-      const out = [];
-      for (const k of list.keys) { try { out.push(JSON.parse((await store.get(k, true)).value)); } catch { /* skip */ } }
-      setPeople(out.sort((a, b) => a.name.localeCompare(b.name)));
-    } catch { setErr("Couldn't reach the shared log."); setPeople([]); }
-  }, []);
-  useEffect(() => { load(); }, [load]);
-
-  if (!data.share) return (
-    <div className="glass pad stack">
-      <h2>Share your log</h2>
-      <p className="dim small">Your name, food, calories and weight go into a log your partner can see — and you'll see theirs.</p>
-      <p className="alert">Anyone who opens this app can see shared logs.</p>
-      <button className="btn solid wide" disabled={!data.profile.name?.trim()} onClick={() => setData((d) => ({ ...d, share: true }))}>Start sharing</button>
-      {!data.profile.name?.trim() && <p className="dim tiny">Add your name in Setup first.</p>}
-    </div>
-  );
-
-  const today = dayKey();
-  return (
-    <>
-      <div className="row"><span className="dim tiny">Sharing as {data.profile.name}</span>
-        <button className="btn ghost" onClick={load}>Refresh</button></div>
-      {err && <p className="alert">{err}</p>}
-      {people === null && <div className="glass pad center"><p className="dim">Loading…</p></div>}
-      {people?.length === 0 && <div className="glass pad center"><p className="dim">Nobody's sharing yet. Send your partner this app.</p></div>}
-      {people?.map((p) => {
-        const d = { ...blankDay(), ...(p.days?.[today] || {}) };
-        const cal = d.foods.reduce((a, f) => a + f.calories, 0);
-        const prot = d.foods.reduce((a, f) => a + f.protein, 0);
-        const ws = Object.entries(p.days || {}).filter(([, x]) => x.weight).sort();
-        const latest = ws.length ? +ws[ws.length - 1][1].weight : p.start;
-        return (
-          <div key={p.name} className="glass">
-            <div className="pad">
-              <div className="row"><strong>{p.name}</strong>
-                <span className="mono" style={{ color: cal > p.target ? C.bad : cal ? C.protein : C.dimText }}>
-                  {cal ? `${cal.toLocaleString()} / ${p.target.toLocaleString()}` : "—"}</span></div>
-              <div className="track"><div style={{ width: `${Math.min(100, (cal / p.target) * 100)}%`, background: cal > p.target ? C.bad : C.cal, boxShadow: `0 0 10px ${cal > p.target ? C.bad : C.cal}88` }} /></div>
-              <div className="row tiny dim"><span>{Math.round(prot)} / {p.proteinTarget}g protein</span><span>{latest} lb · {(p.start - latest).toFixed(1)} down</span></div>
-            </div>
-            {d.foods.length > 0 && (
-              <>
-                <button className="linkbtn full" onClick={() => setOpen(open === p.name ? null : p.name)}>{open === p.name ? "Hide" : "See what they ate"}</button>
-                {open === p.name && d.foods.map((f) => (
-                  <div key={f.id} className="fooditem"><div><div>{f.name}</div><div className="dim tiny">{f.meal}</div></div><span className="mono">{f.calories}</span></div>))}
-              </>
-            )}
-          </div>
-        );
-      })}
-      <button className="btn ghost wide" onClick={() => setData((d) => ({ ...d, share: false }))}>Stop sharing</button>
-    </>
-  );
-}
-
 /* ---------- log tab: your history, plus the group view ---------- */
 function LogTab({ data, setData, onPick }) {
   const [view, setView] = useState("mine");
@@ -2219,9 +2970,9 @@ function LogTab({ data, setData, onPick }) {
     <>
       <div className="chips">
         <button className={view === "mine" ? "chip on" : "chip"} onClick={() => setView("mine")}>My history</button>
-        <button className={view === "group" ? "chip on" : "chip"} onClick={() => setView("group")}>Group</button>
+        <button className={view === "group" ? "chip on" : "chip"} onClick={() => setView("group")}>{H("Crew", "Group")}</button>
       </div>
-      {view === "mine" ? <History data={data} onPick={onPick} /> : <Us data={data} setData={setData} />}
+      {view === "mine" ? <History data={data} onPick={onPick} /> : <GroupsView data={data} setData={setData} />}
     </>
   );
 }
@@ -2244,7 +2995,15 @@ function coachContext(data, targets, adaptive) {
     adaptive?.ready ? `Measured maintenance from their own data: ${adaptive.tdee} cal (formula said ${adaptive.formula}); trending ${adaptive.lbPerWeek} lb/week.` : `Maintenance is still a formula estimate.`,
     `Eaten today: ${Math.round(t.c)} cal, ${Math.round(t.p)}g protein — ${Math.round(targets.calories - t.c)} cal and ${Math.max(0, Math.round(targets.protein - t.p))}g protein left.`,
     d.foods.length ? `Today's food: ${d.foods.map((f) => `${f.name} (${f.calories} cal, ${Math.round(f.protein)}p${f.at ? ", " + prettyTime(f.at) : ""})`).join("; ")}.` : "Nothing logged yet today.",
-    fastH ? `Currently fasting: ${fastH} hours in.` : "Not fasting right now.",
+    fastH ? `Currently fasting: ${fastH} hours in.` : fastingEnabled(data) ? "Not fasting right now." : "They don't use fasting. Don't suggest it.",
+    (() => {
+      const tiers = Object.values(d.grades || {}).map((g) => TIER_INFO[g.tier]?.label).filter(Boolean);
+      const sc = dayScore(d, targets, { ...p, recovering: !!data.recovery?.on });
+      const missing = sc.parts.filter((x) => !x.done && x.key !== "checkin").map((x) => x.label.toLowerCase());
+      return `Meal tiers rated today: ${tiers.length ? tiers.join(", ") : "none yet"}. Habit score so far ${sc.total}/100${missing.length ? `; still open: ${missing.join(", ")}` : ""}.`;
+    })(),
+    data.recovery?.on ? "RECOVERY MODE is on (injury or recovery). Keep advice gentle, protein high, no pushing training or fasting." : d.rest ? "Today is logged as a rest day." : "",
+    (() => { const st = strengthSummary(data.days, shiftDay(today, -42)).slice(0, 4); return st.length ? `Strength (est. 1RM, last 6 weeks): ${st.map((x) => `${x.name} ${x.last} lb${x.change != null ? ` (${x.change >= 0 ? "+" : ""}${x.change}%)` : ""}`).join("; ")}.` : ""; })(),
     `Water today: ${+d.water || 0} of ${p.waterOz || 100} oz. ${d.tags?.length ? `Activity today: ${d.tags.map((x) => TAGS[x]?.label).join(", ")}.` : ""}`,
     `Previous 7 days:\n${week.join("\n")}`,
     (data.recipes || []).length ? `Their saved recipes: ${data.recipes.map((r) => r.name).join(", ")}.` : "",
@@ -2253,13 +3012,16 @@ function coachContext(data, targets, adaptive) {
   ].filter(Boolean).join("\n");
 }
 
-const COACH_RULES = `You are the diet coach inside this person's food-logging app. You can see their numbers below — use them. Answer like a sharp, practical coach texting back: short, specific, grounded in their actual remaining calories and protein. Name real foods and portions. No lectures, no generic advice they could get anywhere.
+const COACH_RULES = `You are the diet coach inside this person's food-logging app. Everyone using this app played or coached basketball, so talk like a good coach: game plans, halftime adjustments, huddles, reps. Keep it natural, never corny, and never shame anyone. A bad day is a missed shot, and the next play is what matters. You can see their numbers below — use them. Answer like a sharp, practical coach texting back: short, specific, grounded in their actual remaining calories and protein. Name real foods and portions. No lectures, no generic advice they could get anywhere.
 
 Hard lines:
 - You are not a doctor. Don't diagnose, interpret symptoms, or advise on medications or medical conditions — tell them to ask their doctor.
 - Never suggest eating below their budget floor, skipping meals to "make up" for a big day, or anything extreme. If they overshot, the answer is to get back on plan at the next meal.
 - If they describe feeling faint, dizzy, or unwell while fasting, tell them to break the fast and eat. If anything suggests an unhealthy relationship with food, encourage them kindly to talk to a professional.
-- If you don't know something about their data, say so rather than inventing it.`;
+- If you don't know something about their data, say so rather than inventing it.
+- Meal tiers: Tier 1 whole foods, Tier 2 mixed, Tier 3 processed, Off-plan outside budget. Tiers describe a whole meal and its portion, never a single food, so never call any food bad or forbidden. When asked how to make a meal Tier 1, suggest swaps and portion tweaks that keep it satisfying, not eating less overall.
+- The score rewards habits only (logging, calorie range, protein, veggies, movement or recovery, water). Never suggest eating less or fasting longer to raise it.
+- In recovery mode, or on a rest day, support rest and protein. Don't push training.`;
 
 function Coach({ data, setData, targets, adaptive }) {
   const msgs = data.coach || [];
@@ -2289,7 +3051,7 @@ function Coach({ data, setData, targets, adaptive }) {
     setBusy(false);
   };
 
-  const quick = ["What should I eat next?", "I'm at a gas station — what do I grab?", "How's my week going?", "I'm starving and have 400 cal left", "I blew my budget today. Now what?"];
+  const quick = ["Halftime check: how's my day?", "What should I eat tonight?", "How do I make this Tier 1?", "What should I eat next?", "I'm at a gas station — what do I grab?", "How's my week going?", "I'm starving and have 400 cal left", "I blew my budget today. Now what?"];
 
   return (
     <>
@@ -2650,6 +3412,34 @@ function AlertsPanel({ data }) {
   );
 }
 
+function FastingPanel({ data, setData }) {
+  const on = fastingEnabled(data);
+  const gate = fastGate(data.profile);
+  const [ack, setAck] = useState(false);
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="glass pad stack">
+      <div className="row">
+        <h2 style={{ margin: 0 }}>Fasting tracker</h2>
+        <button className={on ? "chip on" : "chip"} onClick={() => {
+          if (on) setData((d) => ({ ...d, fastingOn: false, fast: null }));
+          else setOpen(!open);
+        }}>{on ? "On" : "Off"}</button>
+      </div>
+      <p className="dim tiny">Optional. It only tracks the clock and what your body is doing. It never earns points, and a longer fast scores the same as a shorter one.</p>
+      {!on && open && (gate.ok ? (
+        <>
+          <p className="tiny">Before you start: skip fasting if you are pregnant or nursing, have a history of disordered eating, take diabetes or blood-pressure medication, or have any condition where skipping meals is risky, unless your doctor says it's fine. Stop if you feel dizzy, faint, or unwell. Eating on a regular schedule is always a valid choice.</p>
+          <label className="row small" style={{ gap: 8, justifyContent: "flex-start" }}>
+            <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} /> I've read this and fasting is okay for me
+          </label>
+          <button className="btn solid wide" disabled={!ack} onClick={() => { setData((d) => ({ ...d, fastingOn: true, fastAck: Date.now() })); setOpen(false); setAck(false); }}>Turn on fasting tracker</button>
+        </>
+      ) : <p className="alert">{gate.reason}</p>)}
+    </div>
+  );
+}
+
 function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, leaveSync, adaptive, useAdaptive }) {
   const [copied, setCopied] = useState(false);
   const [paste, setPaste] = useState("");
@@ -2660,14 +3450,23 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
       <div className="glass pad stack">
         <h2>Look</h2>
         <div className="chips">
-          <button className={data.theme !== "retro" ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: "glass" }))}>Glass</button>
-          <button className={data.theme === "retro" ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: "retro" }))}>Desktop '95</button>
+          {[["court", "Hardwood"], ["modern", "Modern"], ["arena", "Scoreboard"], ["glass", "Glass"]].map(([k, l]) => (
+            <button key={k} className={(data.theme === "retro" ? "court" : data.theme || "court") === k ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: k }))}>{l}</button>))}
         </div>
         <p className="dim tiny">Switches the whole app. Nothing about your data changes.</p>
+        {THEME === "arena" && (
+          <>
+            <label style={{ marginTop: 4 }}>Team colors</label>
+            <select value={data.team || "Lakers"} onChange={(e) => setData((d) => ({ ...d, team: e.target.value }))} className="teampick">
+              {NBA_TEAMS.map(([name]) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </>
+        )}
       </div>
       <AdaptivePanel adaptive={adaptive} on={data.useAdaptive !== false} onToggle={(v) => setData((d) => ({ ...d, useAdaptive: v }))} />
       <SyncPanel {...{ sync, syncNow, startSync, joinSync, leaveSync }} />
       <InstallPanel />
+      <FastingPanel data={data} setData={setData} />
       <AlertsPanel data={data} />
       <div className="glass pad">
         <div className="row"><span className="dim">Maintenance {useAdaptive ? "(measured)" : "(formula)"}</span><strong className="mono">{t.tdee.toLocaleString()}</strong></div>
@@ -2683,7 +3482,7 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
         <input placeholder="Paste a backup to restore" value={paste} onChange={(e) => setPaste(e.target.value)} />
         <button className="btn ghost wide" disabled={!paste.trim()} onClick={() => {
           try { const d = JSON.parse(paste); if (!d.profile || !d.days) throw new Error();
-            setData({ favorites: [], fasts: [], calib: [], list: [], labs: [], menus: {}, share: false, fast: null, ...d });
+            setData({ favorites: [], fasts: [], calib: [], list: [], labs: [], menus: {}, fast: null, ...d });
             setMsg("Restored."); setPaste(""); }
           catch { setMsg("That isn't a valid backup."); }
         }}>Restore</button>
@@ -2733,13 +3532,17 @@ function ProfileForm({ initial, title, cta, intro, onSave }) {
 
 /* ---------- shell ---------- */
 function Shell({ children, theme }) {
+  const cls = theme === "modern" ? "app modern" : theme === "arena" ? (COURT ? "app arena court" : "app arena") : "app";
+  const cue = theme === "arena" ? teamCue(TEAM) : null;
+  const style = cue ? { "--pri": cue.primary, "--sec": cue.secondary, "--pri-btn": cue.button, "--pri-ink": cue.ink,
+    "--sec-btn": cue.chipBg, "--sec-ink": cue.chipInk } : undefined;
   return (
-    <div className={theme === "retro" ? "app retro" : "app"}>
+    <div className={cls} style={style}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600&family=JetBrains+Mono:wght@400;600&family=VT323&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600&family=JetBrains+Mono:wght@400;600&family=VT323&family=Oswald:wght@400;600;700&family=Orbitron:wght@500;700;900&display=swap');
         .app { position:relative; min-height:100vh; font-family:'Sora',ui-sans-serif,system-ui,sans-serif;
           color:#F1F5F9; font-size:15px; line-height:1.5; overflow-x:hidden;
-          background:#0A0E1F; padding:16px 14px 96px; max-width:560px; margin:0 auto;
+          background:#0A0E1F; padding:16px 14px 106px; max-width:560px; margin:0 auto;
           font-variant-numeric:tabular-nums; }
         .app::before, .app::after, .orb { content:''; position:fixed; border-radius:50%; filter:blur(70px); z-index:0; pointer-events:none; }
         .app::before { width:340px; height:340px; background:radial-gradient(circle,#6D28D9,transparent 70%); top:-90px; left:-90px; opacity:.75; animation:drift1 26s ease-in-out infinite; }
@@ -2821,6 +3624,10 @@ function Shell({ children, theme }) {
           color:#F1F5F9; font-size:14px; cursor:pointer; background:rgba(255,255,255,.03); margin:0; }
         .shot { width:100%; max-height:230px; object-fit:cover; border-radius:16px; display:block; }
         .qbox { border:1px solid rgba(110,231,249,.3); background:rgba(110,231,249,.07); border-radius:16px; padding:14px; display:flex; flex-direction:column; gap:10px; }
+        .gradebox { margin:8px 16px 12px; padding:11px 14px; border-radius:12px; background:rgba(163,230,53,.08); border:1px solid rgba(163,230,53,.3); }
+        .gradebox strong { font-size:13.5px; }
+        .tierbox { border-color:var(--tier); background:color-mix(in srgb, var(--tier) 10%, transparent); }
+        .tierpill { display:inline-block; padding:1px 8px; border-radius:99px; background:var(--tier); color:#000; font-size:11.5px; font-weight:800; margin-right:4px; }
         .itemcard { border:1px solid rgba(255,255,255,.1); border-radius:16px; padding:12px; display:flex; flex-direction:column; gap:8px; background:rgba(255,255,255,.03); }
         .badge { font-size:10px; padding:3px 8px; border-radius:99px; text-transform:uppercase; letter-spacing:.05em; white-space:nowrap;
           background:rgba(255,255,255,.1); color:rgba(241,245,249,.7); }
@@ -2829,8 +3636,8 @@ function Shell({ children, theme }) {
         .stagerow { display:flex; gap:12px; padding:12px 16px; border-top:1px solid rgba(255,255,255,.06); align-items:flex-start; }
         .stagerow.on { background:rgba(255,255,255,.06); }
         .sname { font-size:13.5px; }
-        .dock { position:fixed; bottom:14px; left:50%; transform:translateX(-50%); display:flex; gap:2px; z-index:50;
-          background:rgba(18,22,42,.72); border:1px solid rgba(255,255,255,.14); border-radius:99px; padding:6px;
+        .dock { position:fixed; bottom:10px; left:8px; right:8px; display:flex; gap:2px; z-index:50;
+          background:rgba(18,22,42,.72); border:1px solid rgba(255,255,255,.14); border-radius:22px; padding:7px 4px;
           backdrop-filter:blur(24px); -webkit-backdrop-filter:blur(24px); box-shadow:0 10px 36px rgba(0,0,0,.5); }
         .timerow { display:flex; align-items:center; gap:8px; margin-top:2px; }
         .timeinput { width:auto; padding:2px 6px; font-size:11px; border-radius:7px; background:rgba(255,255,255,.06);
@@ -2871,110 +3678,149 @@ function Shell({ children, theme }) {
         .recipe { border-top:1px solid rgba(255,255,255,.08); padding-top:10px; font-size:13px; }
         .recipe ul, .recipe ol { margin:8px 0 0; padding-left:18px; display:flex; flex-direction:column; gap:5px; }
         .recipe ul { color:rgba(241,245,249,.7); }
-        .dockbtn { background:none; border:none; color:rgba(241,245,249,.5); font:inherit; font-size:9.5px; cursor:pointer;
-          display:flex; flex-direction:column; align-items:center; gap:3px; padding:8px 9px; border-radius:99px; transition:all .25s; }
-        .dockbtn.on { color:#0A0E1F; background:#F1F5F9; font-weight:600; }
+        .dockbtn { flex:1; min-width:0; background:none; border:none; color:rgba(241,245,249,.55); font:inherit; font-size:11px; cursor:pointer;
+          display:flex; flex-direction:column; align-items:center; gap:4px; padding:10px 2px; border-radius:16px; transition:all .2s; }
+        .dockbtn.on { color:#0A0E1F; background:#F1F5F9; font-weight:700; }
+        .dockbtn span { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .app *:focus-visible { outline:2px solid #6EE7F9; outline-offset:2px; }
 
-        /* ================= Desktop '95 theme ================= */
         .tray { display:none; }
-        .app.retro { background:#008080; color:#000; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:14px; }
-        .app.retro::before, .app.retro::after { display:none; }
-        .app.retro *:focus-visible { outline:1px dotted #000; outline-offset:-4px; }
-        .app.retro h2 { font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:15px; font-weight:bold; letter-spacing:0; }
-        .app.retro .dim { color:#404040; }
-        .app.retro .alert { color:#C00000; }
 
-        /* windows */
-        .app.retro .glass { background:#C0C0C0; border:none; border-radius:0; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff;
-          backdrop-filter:none; -webkit-backdrop-filter:none; padding:3px; }
-        .app.retro .glass::before { content:""; display:block; height:20px; margin:0 0 3px; align-self:stretch;
-          background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='52' height='14' shape-rendering='crispEdges'%3E%3Cg fill='%23C0C0C0'%3E%3Crect width='16' height='14'/%3E%3Crect x='16' width='16' height='14'/%3E%3Crect x='36' width='16' height='14'/%3E%3C/g%3E%3Cpath d='M.5 13V.5H15M16.5 13V.5H31M36.5 13V.5H51' stroke='%23fff' fill='none'/%3E%3Cpath d='M0 13.5H16M15.5 0V14M16 13.5H32M31.5 0V14M36 13.5H52M51.5 0V14' stroke='%23000' fill='none'/%3E%3Crect x='4' y='9' width='6' height='2'/%3E%3Cpath d='M19.5 3.5h9v7h-9z' fill='none' stroke='%23000'/%3E%3Crect x='19' y='3' width='10' height='2'/%3E%3Cpath d='M40 3.5l7 7M47 3.5l-7 7' stroke='%23000' stroke-width='1.6' shape-rendering='geometricPrecision'/%3E%3C/svg%3E") no-repeat right 3px center, linear-gradient(90deg, #000080, #1084D0); }
-        .app.retro .glass.pad { padding:3px 14px 14px; }
-        .app.retro .glass.pad::before { margin:0 -11px 10px; }
-        .app.retro .glass.hero { padding:3px 14px 16px; }
-        .app.retro .glass.hero::before { margin:0 -11px 4px; }
-        .app.retro .composer::before { display:none; }
-        .app.retro .composer { padding:8px; }
+        /* ================= Arena Scoreboard theme ================= */
+        .app.arena {
+          background:
+            radial-gradient(1100px 500px at 50% -180px, color-mix(in srgb, var(--pri) 22%, transparent), transparent 70%),
+            repeating-linear-gradient(90deg, #0B0D12 0 3px, #0A0C11 3px 6px),
+            #05060A;
+          color:#E7EAF0; font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; font-size:14.5px; --pri:#552583; --sec:#FDB927;
+        }
+        .app.arena::before, .app.arena::after { display:none; }
+        .app.arena h2 { font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:.05em; font-size:15px; }
+        .app.arena .dim { color:#8B93A1; } .app.arena .alert { color:#EF4444; font-weight:600; }
+        .app.arena *:focus-visible { outline:2px solid var(--sec); outline-offset:2px; }
 
-        /* the big numbers stay big — in a terminal face that still reads at a glance */
-        .app.retro .huge, .app.retro .bignum, .app.retro .midnum, .app.retro .codebox { font-family:'VT323', 'Courier New', monospace; font-weight:400; letter-spacing:0; }
-        .app.retro .huge { font-size:46px; line-height:.95; }
-        .app.retro .bignum { font-size:60px; line-height:.9; }
-        .app.retro .midnum { font-size:32px; }
-        .app.retro .mono { font-family:'VT323', 'Courier New', monospace; font-size:19px; }
-        .app.retro .unit { opacity:.7; }
-        .app.retro .stagename { font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-weight:bold; }
-        .app.retro .stagebody { color:#000; }
+        .app.arena .glass { background:linear-gradient(180deg,#14161C,#0D0F14); border:1px solid #22262f; border-radius:6px;
+          box-shadow:0 0 0 1px #05060A, 0 10px 26px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.04); backdrop-filter:none; -webkit-backdrop-filter:none; }
+        .app.arena .glass.hero, .app.arena .glass.pad { border-top:3px solid var(--pri); }
+        .app.arena .glass::-webkit-scrollbar { display:none; }
 
-        /* buttons */
-        .app.retro .btn, .app.retro .chip { background:#C0C0C0; color:#000; border:none; border-radius:0; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff;
-          font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-weight:normal; transition:none; }
-        .app.retro .btn:active, .app.retro .chip:active { box-shadow:inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px #808080; transform:none; }
-        .app.retro .btn.solid, .app.retro .btn.accent { font-weight:bold; box-shadow:0 0 0 1px #000, inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; background:#C0C0C0; color:#000; }
-        .app.retro .btn.solid:active, .app.retro .btn.accent:active { box-shadow:0 0 0 1px #000, inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px #808080; }
-        .app.retro .btn:disabled, .app.retro .chip:disabled { opacity:1; color:#808080; text-shadow:1px 1px #fff; }
-        .app.retro .chip { padding:6px 11px; font-size:12.5px; }
-        .app.retro .chip.on { background:#000080; color:#fff; box-shadow:inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px #808080; font-weight:bold; }
-        .app.retro .icon, .app.retro .linkbtn { color:#000; }
+        /* the scoreboard digits */
+        .app.arena .huge, .app.arena .bignum, .app.arena .midnum, .app.arena .mono, .app.arena .codebox {
+          font-family:'Orbitron','JetBrains Mono',monospace; letter-spacing:.02em; }
+        .app.arena .huge, .app.arena .bignum { font-weight:900; text-shadow:0 0 14px currentColor, 0 0 3px currentColor; }
+        .app.arena .midnum { font-weight:700; }
+        .app.arena .unit { opacity:.65; font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; text-transform:uppercase; font-size:13px; }
+        .app.arena .stagename { font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
 
-        /* list boxes and fields */
-        .app.retro .listbtn { background:#fff; color:#000; border:1px solid #808080; border-radius:0; }
-        .app.retro .listbtn.on { background:#000080; color:#fff; border-color:#000080; font-weight:bold; }
-        .app.retro input, .app.retro textarea { background:#fff; color:#000; border:none; border-radius:0; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; }
-        .app.retro input:focus, .app.retro textarea:focus { background:#fff; border:none; }
-        .app.retro input::placeholder, .app.retro textarea::placeholder { color:#808080; }
-        .app.retro label { color:#000; }
-        .app.retro .timeinput { background:#fff; color:#000; border-radius:0; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; border:none; font-family:'VT323', monospace; font-size:15px; }
+        .app.arena .btn, .app.arena .chip { background:linear-gradient(180deg,#2A303C,#171A21); color:#E7EAF0; border:1px solid #2c313d; border-radius:5px;
+          font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; text-transform:uppercase; letter-spacing:.03em; font-weight:600; font-size:12.5px; }
+        .app.arena .btn:active, .app.arena .chip:active { transform:scale(.97); }
+        .app.arena .btn.solid, .app.arena .btn.accent { background:var(--pri-btn,var(--pri)); border-color:var(--pri-btn,var(--pri)); color:var(--pri-ink,#fff); box-shadow:0 0 16px color-mix(in srgb, var(--pri) 50%, transparent); }
+        .app.arena .btn.ghost { background:transparent; }
+        .app.arena .chip.on { background:var(--sec-btn,var(--sec)); border-color:var(--sec-btn,var(--sec)); color:var(--sec-ink,#0A0C11); font-weight:700; }
+        .app.arena .btn:disabled, .app.arena .chip:disabled { opacity:.4; }
+        .app.arena .icon, .app.arena .linkbtn { color:#8B93A1; }
 
-        /* progress bars: the chunky block style, each bar keeping its own color */
-        .app.retro .track, .app.retro .fuel { background:#fff; border-radius:0; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; height:16px; padding:3px; box-sizing:border-box; }
-        .app.retro .track.tall { height:20px; }
-        .app.retro .track > div, .app.retro .fuel > div { border-radius:0; box-shadow:none !important;
-          background-image:repeating-linear-gradient(90deg, transparent 0 8px, #fff 8px 10px) !important; }
-        .app.retro .overtick { background:#C00000; opacity:1; }
-        .app.retro .dot { border-radius:0; box-shadow:none !important; }
+        .app.arena .listbtn { background:#0D0F14; border:1px solid #22262f; border-radius:5px; color:#E7EAF0; }
+        .app.arena .listbtn.on { background:var(--pri-btn,var(--pri)); border-color:var(--pri-btn,var(--pri)); color:var(--pri-ink,#fff); font-weight:700; }
+        .app.arena input, .app.arena textarea { background:#0B0D12; border:1px solid #262b36; border-radius:5px; color:#E7EAF0; font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; }
+        .app.arena input:focus, .app.arena textarea:focus { border-color:var(--sec); background:#0B0D12; box-shadow:0 0 0 2px color-mix(in srgb, var(--sec) 35%, transparent); }
+        .app.arena label { color:#8B93A1; text-transform:uppercase; font-size:10.5px; letter-spacing:.05em; }
+        .app.arena .teampick { width:100%; box-sizing:border-box; background:#0B0D12; border:1px solid #262b36; border-radius:5px; color:#E7EAF0; padding:11px 13px; font:inherit; font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; }
+        .app.arena .timeinput { background:#0B0D12; color:#E7EAF0; border:1px solid #262b36; border-radius:4px; font-family:'JetBrains Mono',monospace; }
 
-        /* list views */
-        .app.retro .mealhead { background:#C0C0C0; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; font-weight:bold; color:#000; }
-        .app.retro .fooditem, .app.retro .dish, .app.retro .listitem, .app.retro .histrow { background:#fff; color:#000; border-top:1px solid #C0C0C0; }
-        .app.retro .histrow:hover, .app.retro .histrow:focus-visible { background:#000080; color:#fff; }
-        .app.retro .histrow:hover .dim { color:#dfdfdf; }
-        .app.retro .stagerow { background:#fff; border-top:1px solid #C0C0C0; }
-        .app.retro .stagerow.on { background:#000080; color:#fff; }
-        .app.retro .stagerow.on .dim, .app.retro .stagerow.on .hr { color:#dfdfdf; opacity:1; }
-        .app.retro .tick { border-radius:0; border-color:#000; background:#fff; }
-        .app.retro .tick.on { background:#fff; color:#000; border-color:#000; }
+        .app.arena .track, .app.arena .fuel { background:#111318; border-radius:3px; box-shadow:inset 0 0 0 1px #22262f; }
+        .app.arena .track > div, .app.arena .fuel > div { border-radius:2px; box-shadow:0 0 8px currentColor; }
+        .app.arena .overtick { background:#fff; }
+        .app.arena .dot { box-shadow:0 0 6px currentColor; }
 
-        /* group boxes */
-        .app.retro .editbox, .app.retro .subpanel, .app.retro .ingredients, .app.retro .qbox, .app.retro .itemcard, .app.retro .recipe {
-          background:transparent; border:2px groove #f4f4f4; border-radius:0; }
-        .app.retro .ingrow { border-bottom-color:#a0a0a0; }
-        .app.retro .cue { color:#000; background:#FFFFE1; border:1px solid #000; padding:6px 9px; }
-        .app.retro .badge { background:#C0C0C0; color:#000; border:1px solid #808080; border-radius:0; }
-        .app.retro .badge.good { color:#006B00; }
-        .app.retro .badge.low { color:#C00000; }
-        .app.retro .codebox { background:#fff; color:#000080; border:none; border-radius:0; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; font-size:26px; }
-        .app.retro .dropzone { background:#fff; color:#000; border:1px dashed #000; border-radius:0; }
-        .app.retro .shot, .app.retro .thumb, .app.retro .menuthumb, .app.retro .compare > div > img, .app.retro .viewer .full { border-radius:0; border:1px solid #000; }
-        .app.retro .viewer { background:rgba(0,128,128,.94); }
-        .app.retro .viewerInner { background:#C0C0C0; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; padding:10px; }
+        .app.arena .mealhead { background:linear-gradient(90deg, color-mix(in srgb, var(--pri) 30%, #0D0F14), #0D0F14); font-weight:700; text-transform:uppercase; font-size:11.5px; letter-spacing:.05em; }
+        .app.arena .fooditem, .app.arena .dish, .app.arena .listitem, .app.arena .histrow { background:transparent; border-top:1px solid #1c2029; }
+        .app.arena .stagerow { border-top:1px solid #1c2029; } .app.arena .stagerow.on { background:color-mix(in srgb, var(--pri) 18%, transparent); }
+        .app.arena .tick { border-radius:3px; border-color:#2c313d; }
+        .app.arena .tick.on { background:var(--sec-btn,var(--sec)); border-color:var(--sec-btn,var(--sec)); color:var(--sec-ink,#0A0C11); }
 
-        /* coach */
-        .app.retro .bubble { background:#fff; color:#000; border:1px solid #000; border-radius:0; }
-        .app.retro .bubble.me { background:#FFFFE1; border-color:#000; }
+        .app.arena .editbox, .app.arena .subpanel, .app.arena .ingredients, .app.arena .qbox, .app.arena .itemcard, .app.arena .recipe {
+          background:#0B0D12; border:1px solid #1c2029; border-radius:5px; }
+        .app.arena .cue { color:var(--sec); border-left-color:var(--sec); }
+        .app.arena .gradebox { background:#0B0D12; border:1px solid #22C55E; border-radius:5px; }
+        .app.arena .tierbox { border-color:var(--tier); }
+        .app.arena .tierbox strong { color:inherit; }
+        .app.arena .gradebox strong { color:#22C55E; text-transform:uppercase; letter-spacing:.03em; font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; }
+        .app.arena .badge { background:#1c2029; color:#8B93A1; border-radius:3px; }
+        .app.arena .badge.good { background:color-mix(in srgb, #22C55E 22%, transparent); color:#22C55E; }
+        .app.arena .badge.low { background:color-mix(in srgb, #EF4444 22%, transparent); color:#EF4444; }
+        .app.arena .codebox { background:#0B0D12; color:var(--sec); border:1px dashed var(--sec); border-radius:5px; }
+        .app.arena .dropzone { background:#0B0D12; border:1px dashed #2c313d; border-radius:5px; }
+        .app.arena .shot, .app.arena .thumb, .app.arena .menuthumb, .app.arena .compare > div > img, .app.arena .viewer .full { border-radius:5px; border:1px solid #22262f; }
+        .app.arena .viewer { background:rgba(5,6,10,.92); } .app.arena .viewerInner { background:#14161C; border:1px solid #22262f; padding:12px; border-radius:6px; }
+        .app.arena .bubble { background:#0D0F14; border:1px solid #22262f; border-radius:6px; } .app.arena .bubble.me { background:color-mix(in srgb, var(--pri) 22%, #0D0F14); border-color:var(--pri); }
 
-        /* bottom dock becomes a taskbar */
-        .app.retro .dock { left:0; right:0; bottom:0; transform:none; border-radius:0; border:none; background:#C0C0C0;
-          box-shadow:inset 0 1px #dfdfdf, inset 0 2px #fff; padding:4px 4px calc(4px + env(safe-area-inset-bottom)); gap:3px;
-          backdrop-filter:none; -webkit-backdrop-filter:none; }
-        .app.retro .dockbtn { flex:1; flex-direction:row; justify-content:center; gap:4px; border-radius:0; padding:6px 2px;
-          background:#C0C0C0; color:#000; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:11px; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; transition:none; min-width:0; }
-        .app.retro .dockbtn.on { background:repeating-conic-gradient(#C0C0C0 0 25%, #fff 0 50%) 0 0 / 2px 2px; color:#000; box-shadow:inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px #808080; font-weight:bold; }
-        .app.retro .tray { display:flex; align-items:center; padding:0 8px; font-size:11px; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; white-space:nowrap; }
-        @media (max-width:430px) { .app.retro .tray { display:none; } .app.retro .dockbtn span { font-size:10px; } }
-        @media (max-width:360px) { .app.retro .dockbtn span { display:none; } }
-        .app.retro { padding-bottom:84px; }
+        .app.arena .dock { background:#0B0D12; border:1px solid #22262f; border-top:3px solid var(--pri); border-radius:14px; box-shadow:0 -6px 24px rgba(0,0,0,.5); backdrop-filter:none; -webkit-backdrop-filter:none; }
+        .app.arena .dockbtn { color:#6B7280; font-family:'Oswald',ui-sans-serif,system-ui,sans-serif; text-transform:uppercase; font-size:10.5px; letter-spacing:.03em; }
+        .app.arena .dockbtn.on { color:var(--pri-ink,#fff); background:var(--pri-btn,var(--pri)); font-weight:700; box-shadow:0 0 14px color-mix(in srgb, var(--pri) 55%, transparent); }
+        .app.arena .tray { display:flex; align-items:center; padding:0 8px; font-family:'Orbitron',monospace; font-size:11px; color:var(--sec); }
+        @media (max-width:430px) { .app.arena .tray { display:none; } }
+
+        /* ================= Modern 2026 theme ================= */
+        .app.modern { background:#08090D; color:#ECEDF2; font-size:15px; }
+        .app.modern::before { width:560px; height:560px; top:-260px; left:50%; margin-left:-280px; background:radial-gradient(circle, rgba(99,102,241,.30), transparent 66%); filter:blur(30px); opacity:1; animation:none; }
+        .app.modern::after { width:420px; height:420px; right:-160px; bottom:-120px; background:radial-gradient(circle, rgba(34,211,238,.14), transparent 68%); filter:blur(40px); opacity:1; animation:none; }
+        .app.modern h2 { font-size:17px; font-weight:600; letter-spacing:-.015em; }
+        .app.modern .dim { color:#8D93A5; }
+        .app.modern .glass { background:#11131A; border:1px solid #1E2230; border-radius:24px; box-shadow:inset 0 1px 0 rgba(255,255,255,.04), 0 10px 34px rgba(0,0,0,.4); backdrop-filter:none; -webkit-backdrop-filter:none; }
+        .app.modern .huge, .app.modern .bignum, .app.modern .midnum { font-weight:300; letter-spacing:-.03em; text-shadow:none; }
+        .app.modern .btn, .app.modern .chip { background:#191C27; color:#ECEDF2; border:1px solid #232739; border-radius:999px; }
+        .app.modern .btn.ghost { background:transparent; }
+        .app.modern .btn.solid, .app.modern .btn.accent { background:linear-gradient(135deg,#5B5BF0,#7C5CF5); border-color:transparent; color:#fff; box-shadow:0 8px 24px rgba(91,91,240,.35); }
+        .app.modern .chip.on { background:#ECEDF2; color:#0B0C10; border-color:#ECEDF2; font-weight:600; }
+        .app.modern .btn:disabled, .app.modern .chip:disabled { opacity:.4; }
+        .app.modern input, .app.modern textarea, .app.modern select { background:#0C0E14; border:1px solid #1E2230; border-radius:16px; color:#ECEDF2; }
+        .app.modern input:focus, .app.modern textarea:focus { border-color:#6366F1; box-shadow:0 0 0 3px rgba(99,102,241,.25); }
+        .app.modern .track, .app.modern .fuel { background:#1A1D29; border-radius:999px; }
+        .app.modern .track > div, .app.modern .fuel > div { border-radius:999px; }
+        .app.modern .mealhead { background:transparent; border-bottom:1px solid #1E2230; }
+        .app.modern .fooditem, .app.modern .histrow, .app.modern .stagerow { border-top:1px solid #1B1E2A; }
+        .app.modern .gradebox { background:#0C0E14; border:1px solid #232739; border-radius:16px; }
+        .app.modern .tierbox { border-color:var(--tier); }
+        .app.modern .bubble { background:#171A24; border-radius:20px; } .app.modern .bubble.me { background:#26285F; }
+        .app.modern .dock { background:rgba(17,19,26,.92); border:1px solid #23273A; border-radius:30px; box-shadow:0 14px 40px rgba(0,0,0,.55); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px); }
+        .app.modern .dockbtn { color:#7A8095; border-radius:22px; }
+        .app.modern .dockbtn.on { background:#ECEDF2; color:#0B0C10; }
+
+        /* ================= Hardwood court theme (builds on Arena) ================= */
+        .app.arena.court {
+          background:
+            radial-gradient(900px 520px at 50% -140px, color-mix(in srgb, var(--pri) 38%, transparent), transparent 72%),
+            linear-gradient(180deg, rgba(8,4,0,.62), rgba(8,4,0,.38) 45%, rgba(8,4,0,.7)),
+            repeating-linear-gradient(90deg, #7A4E27 0 46px, #5A3818 46px 48px, #74492A 48px 94px, #5A3818 94px 96px),
+            #6B4423;
+        }
+        .app.arena.court::before {
+          display:block; content:''; position:fixed; inset:0; width:auto; height:auto; border-radius:0; filter:none; animation:none; opacity:.2; z-index:0; pointer-events:none;
+          background:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 800'><g fill='none' stroke='white' stroke-width='4'><rect x='6' y='6' width='388' height='788'/><line x1='6' y1='400' x2='394' y2='400'/><circle cx='200' cy='400' r='60'/><rect x='130' y='6' width='140' height='190'/><circle cx='200' cy='196' r='60'/><path d='M40 6 V120 A170 170 0 0 0 360 120 V6'/><rect x='130' y='604' width='140' height='190'/><circle cx='200' cy='604' r='60'/><path d='M40 794 V680 A170 170 0 0 1 360 680 V794'/></g></svg>") center / auto 100% no-repeat;
+        }
+        .app.arena.court .dim { color:#CDBBA3; }
+        .app.arena.court .glass { background:linear-gradient(180deg,rgba(24,17,12,.96),rgba(14,10,7,.97)); border-color:#4a3320; }
+        .app.arena.court .huge { font-family:'Orbitron',monospace; letter-spacing:.04em; }
+        .app.court .ringwrap { position:relative; }
+        .app.court .ballseams { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); color:#E8892B; opacity:.2; pointer-events:none; }
+        .app.court .ringinner { position:relative; z-index:1; }
+        .app.court .wlstrip { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
+        .app.court .wl { width:24px; height:24px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; }
+        .app.court .wl.w { background:#22C55E; color:#04210f; } .app.court .wl.l { background:#3a2a22; color:#E8892B; border:1px solid #E8892B; } .app.court .wl.n { background:transparent; color:#8B7A68; border:1px dashed #5a4636; }
+        .wlstrip { display:flex; align-items:center; flex-wrap:wrap; gap:4px; }
+        .wl { width:24px; height:24px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; }
+        .wl.w { background:#22C55E; color:#04210f; } .wl.l { background:transparent; color:#F59E0B; border:1px solid #F59E0B; } .wl.n { background:transparent; color:#8B93A1; border:1px dashed #5b6270; }
+        .gamespanel .gamerow { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:7px 0; border-top:1px solid rgba(255,255,255,.08); }
+        .gamespanel .gameteams { flex:1; font-weight:600; }
+        .gamespanel .gameteams > div { display:flex; justify-content:space-between; gap:8px; }
+        .gamespanel .gscore { min-width:30px; text-align:right; }
+        .gamespanel .gamewhen { display:flex; flex-direction:column; align-items:flex-end; min-width:92px; font-size:13px; }
+        .gamespanel .live { color:#EF4444; font-weight:700; font-size:12px; }
+        .gamespanel a { color:var(--sec,#60A5FA); }
+        .app.arena.court .dock { border-top-color:#E8892B; }
+
         @media (prefers-reduced-motion:reduce) { *, .app::before, .app::after { animation:none !important; transition:none !important; } }
       `}</style>
       {children}
