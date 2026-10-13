@@ -259,14 +259,16 @@ function computeTargets(p, tags = [], tdeeOverride = null, recovering = false) {
   const minor = Number.isFinite(+p.age) && +p.age > 0 && +p.age < 18;
   const floor = p.sex === "male" ? 1500 : 1200;
   const raw = tdee - (minor ? 0 : p.pace) * 500;
-  const base = minor ? Math.round(raw / 10) * 10 : Math.max(floor, Math.round(raw / 10) * 10);
+  // The recommendation is the starting point. People can nudge it up or down (calAdjust), within reason.
+  const adj = minor ? 0 : Math.max(-600, Math.min(600, Math.round(+p.calAdjust || 0)));
+  const base = minor ? Math.round(raw / 10) * 10 : Math.max(adj ? 1000 : floor, Math.round((raw + adj) / 10) * 10);
   const earned = recovering ? 0 : Math.min(500, tags.reduce((a, t) => a + (TAGS[t]?.cal || 0), 0));
   const calories = base + earned;
-  const protein = Math.round((minor ? Math.min(p.weight, p.goalWeight || p.weight) * 0.75 : p.goalWeight) * (minor ? 1 : (recovering || tags.some((t) => TAGS[t]?.hard) ? 1.0 : 0.8)));
+  const protein = Math.max(30, (minor ? 0 : Math.max(-60, Math.min(80, Math.round(+p.proteinAdjust || 0)))) + Math.round((minor ? Math.min(p.weight, p.goalWeight || p.weight) * 0.75 : p.goalWeight) * (minor ? 1 : (recovering || tags.some((t) => TAGS[t]?.hard) ? 1.0 : 0.8))));
   const fat = Math.round((calories * 0.27) / 9);
   const carbs = Math.max(0, Math.round((calories - protein * 4 - fat * 9) / 4));
   return { bmr: Math.round(bmr), tdee: Math.round(tdee), base, earned, calories, protein, fat, carbs,
-    clamped: !minor && raw < floor, actualPace: minor ? 0 : (tdee - base) / 500, minor };
+    clamped: !minor && !adj && raw < floor, floor, actualPace: minor ? 0 : (tdee - base) / 500, minor };
 }
 
 /* ---------- food table (per 100 g as eaten) ---------- */
@@ -3917,7 +3919,7 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
 }
 
 const BLANK_PROFILE = { name: "", sex: "male", age: "", heightIn: 69, weight: "", goalWeight: "", activity: "light", pace: 1, goal: "lose",
-  health: [], allergies: [], allergyOther: "", diet: "", dislikes: "", meals: 3, cooking: "", budget: "", workouts: "", sleep: "", waterOz: 100, waterCustom: false };
+  health: [], allergies: [], allergyOther: "", diet: "", dislikes: "", meals: 3, cooking: "", budget: "", workouts: "", sleep: "", waterOz: 100, waterCustom: false, calAdjust: 0, proteinAdjust: 0 };
 // A daily water goal that fits the person: about half an ounce per pound of body weight, plus extra
 // for an active job, for workouts, and for pregnancy or nursing. General guidance, not medical advice.
 function waterPlan(p) {
@@ -3968,9 +3970,37 @@ function ProfileForm({ initial, title, cta, intro, onSave, wizard }) {
   const numsOk = ageOk && bodyOk && goalOk;
   const eff = { ...p, goalWeight: goal === "maintain" ? p.weight : p.goalWeight };
   const pv = computeTargets({ ...eff, weight: numsOk ? +eff.weight : 180, goalWeight: numsOk ? +eff.goalWeight : 160, age: numsOk ? +p.age : 30, heightIn: +p.heightIn || 69 }, []);
+  const rec = computeTargets({ ...eff, weight: numsOk ? +eff.weight : 180, goalWeight: numsOk ? +eff.goalWeight : 160, age: numsOk ? +p.age : 30, heightIn: +p.heightIn || 69, calAdjust: 0, proteinAdjust: 0 }, []);
   const ft = Math.floor(p.heightIn / 12), inch = p.heightIn % 12;
+  const bump = (k, d) => setP((x) => ({ ...x, [k]: (+x[k] || 0) + d }));
+  const adjusted = !pv.minor && (+p.calAdjust || +p.proteinAdjust);
+  const targetsBox = numsOk ? (
+    <div className="stack">
+      <div className="quad">
+        <div className="center">
+          <div className="row gap" style={{ justifyContent: "center" }}>
+            {!pv.minor && <button className="btn ghost" aria-label="Fewer calories" onClick={() => bump("calAdjust", -50)}>−</button>}
+            <div><div className="midnum" style={{ color: C.cal }}>{pv.base.toLocaleString()}</div><div className="dim tiny">calories a day</div></div>
+            {!pv.minor && <button className="btn ghost" aria-label="More calories" onClick={() => bump("calAdjust", 50)}>+</button>}
+          </div>
+        </div>
+        <div className="center">
+          <div className="row gap" style={{ justifyContent: "center" }}>
+            {!pv.minor && <button className="btn ghost" aria-label="Less protein" onClick={() => bump("proteinAdjust", -5)}>−</button>}
+            <div><div className="midnum" style={{ color: C.protein }}>{pv.protein}g</div><div className="dim tiny">protein a day</div></div>
+            {!pv.minor && <button className="btn ghost" aria-label="More protein" onClick={() => bump("proteinAdjust", 5)}>+</button>}
+          </div>
+        </div>
+      </div>
+      {!pv.minor && (adjusted
+        ? <button className="chip" onClick={() => setP((x) => ({ ...x, calAdjust: 0, proteinAdjust: 0 }))}>Use the recommended {rec.base.toLocaleString()} cal and {rec.protein}g</button>
+        : <p className="dim tiny center">Our best recommendation. Tap − or + to change it to fit you.</p>)}
+      {!pv.minor && pv.base < pv.floor && <p className="alert">That's below the usual minimum of {pv.floor.toLocaleString()} calories. Going this low for long can cost you muscle and energy. Only do it if your doctor says so.</p>}
+      {!pv.minor && pv.base > rec.base + 300 && goal === "lose" && <p className="dim tiny center">That's well above the recommendation, so you'll lose weight slower than planned.</p>}
+    </div>
+  ) : null;
   const save = () => onSave({ ...p, goal, age: +p.age, heightIn: +p.heightIn, weight: +p.weight, goalWeight: goal === "maintain" ? +p.weight : +p.goalWeight,
-    waterOz: waterNow, waterCustom: !!p.waterCustom, meals: +p.meals || 3, workouts: p.workouts === "" ? "" : +p.workouts });
+    waterOz: Math.max(16, Math.min(300, waterNow)), waterCustom: !!p.waterCustom, calAdjust: pv.minor ? 0 : Math.round(+p.calAdjust || 0), proteinAdjust: pv.minor ? 0 : Math.round(+p.proteinAdjust || 0), meals: +p.meals || 3, workouts: p.workouts === "" ? "" : +p.workouts });
   const q = (text, hint) => <div><label>{text}</label>{hint && <p className="dim tiny" style={{ margin: "2px 0 6px" }}>{hint}</p>}</div>;
   const pick = (map, k) => <div className="chips">{Object.entries(map).map(([v, l]) => (
     <button key={v} className={String(p[k]) === v ? "chip on" : "chip"} onClick={() => set(k, String(p[k]) === v ? "" : v)}>{l}</button>))}</div>;
@@ -4062,6 +4092,9 @@ function ProfileForm({ initial, title, cta, intro, onSave, wizard }) {
             <div className="center"><div className="midnum" style={{ color: C.water }}>{waterNow} oz</div><div className="dim tiny">about {Math.round((waterNow / 8) * 10) / 10} cups</div></div>
             <button className="btn ghost" aria-label="More water" onClick={() => setP((x) => ({ ...x, waterCustom: true, waterOz: Math.min(200, waterNow + 4) }))}>+</button>
           </div>
+          <div className="row gap" style={{ justifyContent: "center", alignItems: "center" }}><span className="dim small">Or type your own</span>
+            <input aria-label="Water goal in ounces" type="number" inputMode="numeric" style={{ width: 90 }} value={p.waterCustom ? p.waterOz : ""} placeholder={String(wp.oz)}
+              onChange={(e) => setP((x) => ({ ...x, waterCustom: e.target.value !== "", waterOz: e.target.value }))} /><span className="dim small">oz</span></div>
           {p.waterCustom
             ? <button className="chip" onClick={() => set("waterCustom", false)}>Use the recommended {wp.oz} oz</button>
             : <p className="dim tiny center">Recommended for you. Tap − or + to change it.</p>}
@@ -4076,13 +4109,10 @@ function ProfileForm({ initial, title, cta, intro, onSave, wizard }) {
     plan: { title: "Your plan", body: (
       numsOk ? (
         <>
-          <div className="quad">
-            <div><div className="midnum" style={{ color: C.cal }}>{pv.base.toLocaleString()}</div><div className="dim tiny">calories a day</div></div>
-            <div><div className="midnum" style={{ color: C.protein }}>{pv.protein}g</div><div className="dim tiny">protein a day</div></div>
-          </div>
+          {targetsBox}
           {pv.clamped && <p className="alert">That pace goes under a safe minimum, so your calories stop here.</p>}
           <p className="small">{goal === "maintain" ? "These numbers keep your weight steady." : goal === "gain" ? "These numbers add a small surplus so you gain slowly." : "These numbers put you in a steady, safe deficit."}</p>
-          {((p.allergies || []).length > 0 || (p.allergyOther || "").trim() || p.diet) && <p className="small">Meals will skip: {[...(p.allergies || []).map((k) => ALLERGENS[k]?.label), (p.allergyOther || "").trim(), p.diet && DIETS[p.diet]?.label].filter(Boolean).join(", ")}.</p>}
+          {(() => { const skip = [...(p.allergies || []).map((k) => ALLERGENS[k]?.label), (p.allergyOther || "").trim(), DIETS[p.diet]?.label].filter(Boolean); return skip.length ? <p className="small">Meals will skip: {skip.join(", ")}.</p> : null; })()}
           <p className="small">Water goal: {waterNow} oz a day.</p>
           <p className="dim tiny">You can change any answer later in Settings.</p>
         </>
@@ -4098,10 +4128,7 @@ function ProfileForm({ initial, title, cta, intro, onSave, wizard }) {
         {intro && <p className="dim small">{intro}</p>}
         {order.filter((k) => k !== "plan").map((k) => (
           <div key={k} className="stack"><h3 style={{ margin: "10px 0 0" }}>{S[k].title}</h3>{S[k].body}</div>))}
-        {numsOk ? <div className="quad">
-          <div><div className="midnum" style={{ color: C.cal }}>{pv.base.toLocaleString()}</div><div className="dim tiny">calories a day</div></div>
-          <div><div className="midnum" style={{ color: C.protein }}>{pv.protein}g</div><div className="dim tiny">protein a day</div></div>
-        </div> : <p className="dim small">Fill in your age, weight and goal to see your daily numbers.</p>}
+        {numsOk ? targetsBox : <p className="dim small">Fill in your age, weight and goal to see your daily numbers.</p>}
         <button className="btn solid wide" disabled={!numsOk} onClick={save}>{cta}</button>
       </div>
     );
