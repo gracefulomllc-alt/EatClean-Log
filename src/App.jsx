@@ -707,8 +707,8 @@ export default function CutLog() {
       </div>
       <div key={tab} className="fadein">
         {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay, goTab: () => { setTab("setup"); setTimeout(() => document.getElementById("fasting-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 250); } }} />}
-        {tab === "out" && <RoadTab data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} />}
-        {tab === "plan" && <Plan data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} />}
+        {tab === "out" && <RoadTab data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} dayId={viewDay} setDayId={setViewDay} />}
+        {tab === "plan" && <Plan data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} dayId={viewDay} setDayId={setViewDay} />}
         {tab === "weight" && <Weight data={data} setData={setData} targets={targets} updateDay={updateDay} />}
         {tab === "coach" && <Coach data={data} setData={setData} targets={targets} adaptive={adaptive} />}
         {tab === "log" && <LogTab data={data} setData={setData} onPick={(k) => { setViewDay(k); setTab("now"); }} />}
@@ -778,14 +778,14 @@ const saveFastIn = (fasts, rec, oldKey) => [rec, ...(fasts || []).filter((f) => 
 /* ---------- fast edits end ---------- */
 
 /* ---------- starting a fast: say what it is before the clock starts ---------- */
-function FastStart({ data, onStart, onCancel }) {
+function FastStart({ data, onStart, onCancel, early }) {
   const crew = (data.groups || []).filter((g) => !g.lost && (g.scopes?.fast ?? DEFAULT_SCOPES.fast));
   const [ago, setAgo] = useState(0);   // hours since the last meal
-  const [exact, setExact] = useState(null);   // or an exact time
+  const [exact, setExact] = useState(early ? Date.now() - 10 * 36e5 : null);   // or an exact time
   return (
     <div className="glass pad stack">
-      <h2>You're about to start a fast</h2>
-      <p className="small">A fast means <strong>no food</strong> until you end it. Water is fine. The clock starts when you tap Start.</p>
+      <h2>{early ? "Start a fast you forgot to start" : "You're about to start a fast"}</h2>
+      <p className="small">{early ? <>Set the time you <strong>stopped eating</strong>. The clock will count from then and keep running, so you're current right away.</> : <>A fast means <strong>no food</strong> until you end it. Water is fine. The clock starts when you tap Start.</>}</p>
       <div>
         <label>When did you last eat?</label>
         <div className="chips">{[[0, "Just now"], [2, "2h ago"], [4, "4h ago"], [8, "8h ago"]].map(([v, l]) => (
@@ -861,13 +861,19 @@ function PastFasts({ data, setData }) {
   const fasts = data.fasts || [];
   const [editing, setEditing] = useState(null);   // fast key, or "new"
   const [s, setS] = useState(0), [e, setE] = useState(0);
+  const [still, setStill] = useState(false);
   const open = (f) => {
+    setStill(false);
     if (f) { setEditing(String(f.id ?? f.end)); setE(f.end); setS(f.start ?? f.end - (f.hours || 16) * 36e5); }
     else { setEditing("new"); setE(Date.now()); setS(Date.now() - 16 * 36e5); }
   };
   const prev = editing && editing !== "new" ? fasts.find((f) => String(f.id ?? f.end) === editing) : null;
   const r = fastRecord(s, e, prev);
   const save = () => {
+    if (editing === "new" && still && !data.fast) {
+      if (checkFastStart(s)) return;
+      setData((d) => ({ ...d, fast: { start: s } })); setEditing(null); return;
+    }
     if (!r.rec) return;
     setData((d) => ({ ...d, fasts: saveFastIn(d.fasts, editing === "new" ? { ...r.rec, id: crypto.randomUUID() } : r.rec, editing === "new" ? null : editing) }));
     setEditing(null);
@@ -904,12 +910,38 @@ function PastFasts({ data, setData }) {
           <div className="dish stack fadein">
             <div className="dishname">Add a fast I forgot to log</div>
             <TimeField label="Started" ms={s} onChange={setS} max={Date.now()} />
-            <TimeField label="Ended" ms={e} onChange={setE} min={s} max={Date.now()} />
-            {r.rec && <p className="small">Total: <strong>{r.rec.hours} hours</strong></p>}
-            {r.error && <p className="alert">{r.error}</p>}
-            <div className="rowbtns"><button className="btn ghost wide" onClick={() => setEditing(null)}>Cancel</button><button className="btn solid wide" disabled={!r.rec} onClick={save}>Save</button></div>
+            {!data.fast && <label className="row small" style={{ gap: 8, justifyContent: "flex-start" }}><input type="checkbox" checked={still} onChange={(ev) => setStill(ev.target.checked)} /> I'm still fasting (keep the clock running)</label>}
+            {!(still && !data.fast) && <TimeField label="Ended" ms={e} onChange={setE} min={s} max={Date.now()} />}
+            {still && !data.fast
+              ? (checkFastStart(s) ? <p className="alert">{checkFastStart(s)}</p> : <p className="small">The clock will show <strong>{((Date.now() - s) / 36e5).toFixed(1)} hours</strong> and keep going.</p>)
+              : <>{r.rec && <p className="small">Total: <strong>{r.rec.hours} hours</strong></p>}{r.error && <p className="alert">{r.error}</p>}</>}
+            <div className="rowbtns"><button className="btn ghost wide" onClick={() => setEditing(null)}>Cancel</button><button className="btn solid wide" disabled={still && !data.fast ? !!checkFastStart(s) : !r.rec} onClick={save}>{still && !data.fast ? "Start the clock" : "Save"}</button></div>
           </div>)
         : <div className="pad"><button className="btn ghost wide" onClick={() => open(null)}>+ Add a fast I forgot to log</button></div>}
+    </div>
+  );
+}
+
+// Pick which day you're looking at and logging to. Used on Today, Meals and Eating Out.
+function DayBar({ dayId, setDayId }) {
+  const isToday = dayId === dayKey();
+  return (
+    <div className="glass pad stack daybar">
+      <div className="row gap" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <button className="btn ghost" aria-label="Previous day" onClick={() => setDayId(shiftDay(dayId, -1))}><ChevronLeft size={16} /> Back</button>
+        <div className="center"><div className="daybig">{prettyDay(dayId)}</div><div className="dim tiny">{isToday ? "Today" : "a past day"}</div></div>
+        <button className="btn ghost" aria-label="Next day" disabled={isToday} onClick={() => setDayId(shiftDay(dayId, 1))}>Next <ChevronRight size={16} /></button>
+      </div>
+      <div className="row gap" style={{ justifyContent: "center", alignItems: "center" }}>
+        <span className="dim small">Jump to a date</span>
+        <input aria-label="Jump to a date" type="date" max={dayKey()} value={dayId} style={{ width: 160 }}
+          onChange={(e) => { const v = e.target.value; if (/^\d{4}-\d{2}-\d{2}$/.test(v) && v <= dayKey()) setDayId(v); }} />
+      </div>
+      {!isToday && (
+        <div className="cue">
+          You're viewing <strong>{prettyDay(dayId)}</strong>. Anything you add or change goes on that day.
+          <div style={{ marginTop: 6 }}><button className="chip" onClick={() => setDayId(dayKey())}>Back to today</button></div>
+        </div>)}
     </div>
   );
 }
@@ -927,7 +959,8 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
   const [showPast, setShowPast] = useState(false);
   const [now, setNow] = useState(Date.now());
   const fast = data.fast;
-  const fastOn = fastingEnabled(data);
+  const fastEnabled = fastingEnabled(data);
+  const fastOn = fastEnabled && dayId === dayKey();   // the fasting clock belongs to today
   const isToday = dayId === dayKey();
 
   useEffect(() => {
@@ -945,6 +978,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
 
   return (
     <>
+      <DayBar dayId={dayId} setDayId={setDayId} />
       {isToday && !PRO && <GamesPanel />}
       {isToday && (data.groups || []).length > 0 && <CrewFastStrip data={data} />}
       {fastOn && fast && (() => {
@@ -963,7 +997,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
           </div>
         );
       })()}
-      {!fastOn && !fast && fastGate(data.profile).ok && (
+      {!fastEnabled && !fast && isToday && fastGate(data.profile).ok && (
         <div className="glass pad stack">
           <strong>Planning to fast?</strong>
           <p className="dim small">Fasting is off. Press here to turn on the fasting tracker. You'll see what it is first, then you can start the clock any time.</p>
@@ -994,7 +1028,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
           </div>
         </div>
       ) : confirmFast ? (
-        <FastStart data={data} onCancel={() => setConfirmFast(false)}
+        <FastStart data={data} early={confirmFast === "early"} onCancel={() => setConfirmFast(false)}
           onStart={(start) => { setData((d) => ({ ...d, fast: { start } })); setConfirmFast(false); }} />
       ) : (
         <div className="glass hero">
@@ -1005,7 +1039,8 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
           <button className="btn solid wide big" onClick={() => setConfirmFast(true)}>{H("Start the clock", "Start fasting")}</button>
           <p className="dim tiny center">Starting a fast means no food until you end it. You'll see what it involves first.</p>
           {(data.fasts || [])[0] && <p className="dim tiny center">{H("Last game", "Last fast")}: {data.fasts[0].hours}h</p>}
-          <button className="chip" onClick={() => setShowPast(!showPast)}>{showPast ? "Hide past fasts" : "Forgot to log a fast? Edit or add one"}</button>
+          <button className="btn ghost wide" onClick={() => setConfirmFast("early")}>I forgot to press start. Start it from earlier</button>
+          <button className="chip" onClick={() => setShowPast(!showPast)}>{showPast ? "Hide past fasts" : "Edit or add a finished fast"}</button>
         </div>
       )}
       {fastOn && !fast && showPast && <PastFasts data={data} setData={setData} />}
@@ -1021,12 +1056,6 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, goTab })
           <p className="dim tiny pad">Rough averages. Your own switchover depends on your last meal, your training, and how depleted you already were.</p>
         </div>
       )}
-
-      <div className="daynav">
-        <button className="icon" onClick={() => setDayId(shiftDay(dayId, -1))} aria-label="Previous day"><ChevronLeft size={18} /></button>
-        <span>{isToday ? "Today" : prettyDay(dayId)}</span>
-        <button className="icon" onClick={() => setDayId(shiftDay(dayId, 1))} disabled={isToday} aria-label="Next day"><ChevronRight size={18} /></button>
-      </div>
 
       <div className="glass pad">
         <div className="fuelhead">
@@ -2665,8 +2694,8 @@ function DescribeIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Log" }) {
 const LAB_PRESETS = ["Total cholesterol", "LDL", "HDL", "Triglycerides", "A1c", "Fasting glucose",
   "ALT", "AST", "Vitamin D", "Ferritin", "TSH", "Creatinine", "eGFR", "CRP", "Uric acid"];
 
-function Plan({ data, setData, targets, day, updateDay }) {
-  const today = dayKey();
+function Plan({ data, setData, targets, day, updateDay, dayId, setDayId }) {
+  const today = dayId || dayKey();
   const menu = data.menus?.[today] || null;
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -2728,11 +2757,11 @@ Respond with ONLY JSON:
   };
 
   const choose = (m) => {
-    updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), meal: m.slot, name: m.name, at: Date.now(),
+    updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), meal: m.slot, name: m.name, at: stampFor(today),
       calories: Math.round(m.calories), protein: Math.round(m.protein), carbs: Math.round(m.carbs), fat: Math.round(m.fat) }] }));
   };
 
-  const logToday = (item) => updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: Date.now(), u: Date.now(), ...item }] }));
+  const logToday = (item) => updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: stampFor(today), u: Date.now(), ...item }] }));
   const dishCard = (m) => (
             <div key={m.id} className="dish">
               <div className="row gap">
@@ -2762,6 +2791,7 @@ Respond with ONLY JSON:
   const otherIdeas = ideas.length || !craving.trim() ? [] : suggestMeals(craving, null, remainCal, remainP, 4, data.profile).map((m) => ({ ...m, slot: m.slots[0], id: "lib-x" + m.name }));
   return (
     <>
+      {setDayId && <DayBar dayId={today} setDayId={setDayId} />}
       <div className="chips">
         {[["today", "Today"], ["week", "Week"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
@@ -2819,8 +2849,8 @@ Respond with ONLY JSON:
   );
 }
 /* ---------- Eating Out tab: built-in drive-thru picks, ranked for what's left today ---------- */
-function RoadTab({ data, setData, targets, day, updateDay }) {
-  const today = dayKey();
+function RoadTab({ data, setData, targets, day, updateDay, dayId, setDayId }) {
+  const today = dayId || dayKey();
   const eaten = day.foods.reduce((a, f) => ({ cal: a.cal + f.calories, p: a.p + f.protein }), { cal: 0, p: 0 });
   const remainCal = targets.calories - eaten.cal, remainP = targets.protein - eaten.p;
   const [slot, setSlot] = useState(guessMeal());
@@ -2831,13 +2861,14 @@ function RoadTab({ data, setData, targets, day, updateDay }) {
   const [saved, setSaved] = useState({});
   const [ai, setAi] = useState(false);
   const orders = data.orders || [];
-  const logToday = (item) => updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: Date.now(), u: Date.now(), ...item }] }));
+  const logToday = (item) => updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: stampFor(today), u: Date.now(), ...item }] }));
   const picks = roadPicks(slot, remainCal, remainP, data.profile, chain, more ? 40 : 8);
   const hasMore = !more && roadPicks(slot, remainCal, remainP, data.profile, chain, 40).length > 8;
   return (
     <>
+      {setDayId && <DayBar dayId={today} setDayId={setDayId} />}
       <div className="glass pad stack">
-        <div className="row"><h2>What's left today</h2><span className="dim tiny">{Math.max(0, Math.round(remainCal)).toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g protein left</span></div>
+        <div className="row"><h2>What's left {today === dayKey() ? "today" : "that day"}</h2><span className="dim tiny">{Math.max(0, Math.round(remainCal)).toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g protein left</span></div>
         <p className="dim small">Stopping for food on the road? These are the best orders for what you have left today. Tap Eat this to log it.</p>
         <div className="chips">{MEALS.map((m) => <button key={m} className={slot === m ? "chip on" : "chip"} onClick={() => { setSlot(m); setMore(false); }}>{m}</button>)}</div>
         <label>Only show one place <span className="dim tiny">(swipe for more)</span></label>
@@ -4450,6 +4481,8 @@ function Shell({ children, theme, top }) {
         .recipe { border-top:1px solid rgba(255,255,255,.08); padding-top:10px; font-size:13px; }
         .recipe ul, .recipe ol { margin:8px 0 0; padding-left:18px; display:flex; flex-direction:column; gap:5px; }
         .recipe ul { color:rgba(241,245,249,.7); }
+        .daybig { font-size:22px; font-weight:800; }
+        .daybar .btn { padding:10px 12px; display:inline-flex; align-items:center; gap:4px; }
         .tabtitle { text-align:center; margin:6px 0 14px; }
         .tabtitle span { display:inline-block; font-size:34px; font-weight:800; letter-spacing:-.5px; line-height:1.1; padding-bottom:6px; border-bottom:4px solid var(--nbared, var(--pri, #6EE7F9)); }
         .tabtitle small { display:block; margin-top:8px; font-size:13.5px; opacity:.7; }
