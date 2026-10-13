@@ -1222,7 +1222,8 @@ function GamesPanel() {
             <span className="gl">{g.phase || "NBA"}{g.state === "in" ? <span className="live"> ● {g.status}</span> : ""}</span>
             <div className="grow"><span>{g.away.logo && <img className="glogo" width="18" height="18" src={g.away.logo} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }} />}{g.away.abbr || g.away.name}</span><b className="gscore">{g.state !== "pre" ? g.away.score : ""}</b></div>
             <div className="grow"><span>{g.home.logo && <img className="glogo" width="18" height="18" src={g.home.logo} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.display = "none"; }} />}{g.home.abbr || g.home.name}</span><b className="gscore">{g.state !== "pre" ? g.home.score : ""}</b></div>
-            <span className="gf">{g.state === "pre" ? gt(g.start) : g.state === "post" ? "Final" : "Live"}{g.tv ? ` · ${g.tv}` : ""}</span>
+            {g.start && <span className="gf">{g.state === "pre" ? "Starts" : "Started"} {gd(g.start)} · {gt(g.start)}</span>}
+            {(g.state !== "pre" || g.tv) && <span className="gf">{g.state === "post" ? "Final" : g.state === "in" ? "Live" : ""}{g.state !== "pre" && g.tv ? " · " : ""}{g.tv}</span>}
           </div>
         ))}
         {[...spc.today, ...spc.upcoming].map((g) => (
