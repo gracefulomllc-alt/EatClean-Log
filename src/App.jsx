@@ -264,6 +264,29 @@ function computeTargets(p, tags = [], tdeeOverride = null) {
     clamped: raw < floor, actualPace: (tdee - base) / 500 };
 }
 
+/* ---------- how big should this one meal be? ----------
+   Two answers, because they disagree and both are worth knowing:
+     even split   - what's left today, divided by the meals you haven't eaten yet
+     typical share - the slice of the whole day's budget a meal of this kind usually takes
+   The even split is the number to cook to; the two together give you a band to land inside.
+   Weighing everything is what makes either number mean anything, so both are stated in
+   calories you can actually hit on a scale rather than a vague "light dinner". */
+const MEAL_SHARE = { Breakfast: 0.25, Lunch: 0.3, Dinner: 0.35, Snack: 0.1 };
+
+function mealTarget(slot, targets, day, remainCal, remainP) {
+  const eaten = new Set((day.foods || []).map((f) => f.meal));
+  // Still to come: every meal with nothing logged against it, plus the one being planned.
+  const mealsLeft = Math.max(1, MEALS.filter((m) => !eaten.has(m) || m === slot).length);
+  const even = Math.max(0, Math.round(remainCal / mealsLeft));
+  const typical = Math.round(targets.calories * (MEAL_SHARE[slot] ?? 0.25));
+  return {
+    even, typical, mealsLeft,
+    lo: Math.min(even, typical), hi: Math.max(even, typical),
+    protein: Math.max(0, Math.round(remainP / mealsLeft)),
+    over: remainCal <= 0,
+  };
+}
+
 /* ---------- food table (per 100 g as eaten) ---------- */
 const FOODS = [
   { n: "Chicken breast, cooked", m: [165, 31, 0, 3.6], r: 1 },
@@ -329,14 +352,14 @@ const PALETTES = {
     stages: ["#94A3B8", "#7DD3FC", "#6EE7F9", "#5EEAD4", "#A3E635", "#FBBF24", "#FB923C", "#FB7185"],
   },
   retro: {
-    cal: "#000080", protein: "#006B00", carbs: "#7A007A", fat: "#8A5A00", bad: "#C00000",
-    water: "#00688A", warn: "#A04000", idle: "#808080",
-    track: "#FFFFFF", tickOff: "#808080", dimText: "#404040", faint: "#909090",
-    grid: "#A8A8A8", axis: "#000000",
-    tip: { fontSize: 12, borderRadius: 0, border: "1px solid #000", background: "#FFFFE1", color: "#000" },
-    cap: "butt", glow: false, ringFade: 1,
-    meal: { Breakfast: "#000080", Lunch: "#006B00", Dinner: "#7A007A", Snack: "#8A5A00" },
-    stages: ["#606060", "#00608A", "#000080", "#006B6B", "#006B00", "#8A5A00", "#A04000", "#C00000"],
+    cal: "#1668C8", protein: "#3C912D", carbs: "#8A4FC0", fat: "#E59700", bad: "#C33A2A",
+    water: "#2A9FD0", warn: "#E07000", idle: "#9AA7B4",
+    track: "#F2F2F2", tickOff: "#9AA7B4", dimText: "#4A5A6A", faint: "#AAB6C2",
+    grid: "#C3CEDA", axis: "#7F9DB9",
+    tip: { fontSize: 12, borderRadius: 4, border: "1px solid #C9B87A", background: "#FFFFE1", color: "#000" },
+    cap: "round", glow: false, ringFade: 0.8,
+    meal: { Breakfast: "#1668C8", Lunch: "#3C912D", Dinner: "#8A4FC0", Snack: "#E59700" },
+    stages: ["#9AA7B4", "#2A9FD0", "#1668C8", "#2FA89A", "#3C912D", "#E59700", "#E07000", "#C33A2A"],
   },
 };
 let THEME = "glass";
@@ -436,7 +459,7 @@ export default function CutLog() {
     return n && n !== d ? { ...n, u: Date.now() } : n;
   }), []);
   const [locked, setLocked] = useState(null);
-  THEME = data?.theme === "retro" ? "retro" : "glass";
+  THEME = data?.theme === "glass" ? "glass" : "retro";
   const [sync, setSync] = useState({ state: localStorage.getItem("cutlog:sync") ? "idle" : "off" });
   const dataRef = useRef(null);
   const syncBusy = useRef(false);
@@ -487,9 +510,9 @@ export default function CutLog() {
 
   // The strip above the app (phone status bar, page edges) matches the theme too
   useEffect(() => {
-    const retro = data?.theme === "retro";
-    document.body.style.background = retro ? "#008080" : "#0A0E1F";
-    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", retro ? "#000080" : "#0A0E1F");
+    const retro = data?.theme !== "glass";
+    document.body.style.background = retro ? "#3A6EA5" : "#0A0E1F";
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", retro ? "#1C4CB4" : "#0A0E1F");
   }, [data?.theme]);
 
   // First sync once the local copy has loaded
@@ -580,10 +603,11 @@ export default function CutLog() {
       title="Set your numbers" cta="Start" intro="Sets your daily budget. Change any of it later."
       onSave={(profile) => setData((d) => ({ ...d, profile }))} /></Shell>;
 
-  const TABS = [["now", "Now", Timer], ["plan", "Plan", ChefHat], ["coach", "Coach", MessageCircle], ["weight", "Weight", Scale], ["log", "Log", CalendarDays], ["setup", "Setup", Cog]];
+  const TABS = START_ITEMS;
 
   return (
     <Shell theme={THEME}>
+      {THEME === "retro" && <RetroBoot />}
       {saveErr && <div className="glass pad alert">That change didn’t save. Back up from Setup before closing.</div>}
       <div key={tab} className="fadein">
         {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay }} />}
@@ -595,6 +619,7 @@ export default function CutLog() {
           sync={sync} syncNow={syncNow} startSync={startSync} joinSync={joinSync} leaveSync={leaveSync} />}
       </div>
       <nav className="dock">
+        {THEME === "retro" && <StartMenu setTab={setTab} />}
         {TABS.map(([id, label, Icon]) => (
           <button key={id} className={tab === id ? "dockbtn on" : "dockbtn"} onClick={() => setTab(id)}>
             <Icon size={19} strokeWidth={1.7} /><span>{label}</span>
@@ -603,6 +628,73 @@ export default function CutLog() {
         <TrayClock />
       </nav>
     </Shell>
+  );
+}
+
+// The tab list, shared by the taskbar and the Start menu.
+const START_ITEMS = [["now", "Now", Timer], ["plan", "Plan", ChefHat], ["coach", "Coach", MessageCircle],
+  ["weight", "Weight", Scale], ["log", "Log", CalendarDays], ["setup", "Setup", Cog]];
+
+/* ---------- early-2000s desktop furniture: boot splash and a Start menu ---------- */
+// Shown once per browser session, and never when the OS asks for reduced motion.
+function RetroBoot() {
+  const [done, setDone] = useState(() => reduced() || sessionStorage.getItem("cutlog:booted") === "1");
+  const finish = useCallback(() => { sessionStorage.setItem("cutlog:booted", "1"); setDone(true); }, []);
+  useEffect(() => {
+    if (done) return;
+    const t = setTimeout(finish, 1700);
+    return () => clearTimeout(t);
+  }, [done, finish]);
+  if (done) return null;
+  return (
+    <div className="boot" onClick={finish} role="presentation">
+      <div className="bootbox">
+        <div className="bootlogo">Cut Log<span>XP</span></div>
+        <div className="bootbar"><div /></div>
+        <p className="boottip">Starting Cut Log…</p>
+      </div>
+    </div>
+  );
+}
+
+const StartFlag = () => (
+  <svg width="17" height="16" viewBox="0 0 17 16" aria-hidden="true">
+    <g transform="rotate(-9 8.5 8)">
+      <path d="M2 3.4 8 2.2v5.6L2 9z" fill="#F35325" /><path d="M8.7 2.05 15 .8v6.9l-6.3.1z" fill="#81BC06" />
+      <path d="M2 9.7 8 8.5v5.6L2 15.3z" fill="#05A6F0" /><path d="M8.7 8.45 15 8.35v6.9l-6.3 1.25z" fill="#FFBA08" />
+    </g>
+  </svg>
+);
+
+function StartMenu({ setTab }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("pointerdown", close); window.removeEventListener("keydown", onKey); };
+  }, [open]);
+  return (
+    <>
+      <button className="startbtn" aria-expanded={open} aria-label="Start"
+        onPointerDown={(e) => { e.stopPropagation(); setOpen((o) => !o); }}>
+        <StartFlag /><span>Start</span>
+      </button>
+      {open && (
+        <div className="startmenu" onPointerDown={(e) => e.stopPropagation()}>
+          <div className="startstripe"><span>Cut Log XP</span></div>
+          <div className="startitems">
+            {START_ITEMS.map(([id, label, Icon]) => (
+              <button key={id} className="startitem" onClick={() => { setTab(id); setOpen(false); }}>
+                <Icon size={17} strokeWidth={1.8} />{label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1482,6 +1574,23 @@ function DescribeIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Log" }) {
 const LAB_PRESETS = ["Total cholesterol", "LDL", "HDL", "Triglycerides", "A1c", "Fasting glucose",
   "ALT", "AST", "Vitamin D", "Ferritin", "TSH", "Creatinine", "eGFR", "CRP", "Uric acid"];
 
+// Menus saved before weights existed kept ingredients as plain strings under recipe.ingredients,
+// and only for "cook" dishes. Read both shapes so an old saved menu still opens.
+function weighList(m) {
+  if (Array.isArray(m.weigh) && m.weigh.length) return m.weigh;
+  const old = m.recipe?.ingredients;
+  if (Array.isArray(old)) return old.map((i) => (typeof i === "string" ? { item: i } : i));
+  return [];
+}
+
+// If you're weighing every line, what you eat is the sum of those lines - not whatever total
+// the model wrote next to the dish name. Its own arithmetic drifts a few percent often enough
+// to matter, so the weighed sum wins and the card, the table and the log all show one number.
+function dishCal(m) {
+  const sum = weighList(m).reduce((a, i) => a + (+i.calories || 0), 0);
+  return Math.round(sum > 0 ? sum : +m.calories || 0);
+}
+
 function Plan({ data, setData, targets, day, updateDay }) {
   const today = dayKey();
   const menu = data.menus?.[today] || null;
@@ -1497,6 +1606,7 @@ function Plan({ data, setData, targets, day, updateDay }) {
   const eaten = day.foods.reduce((a, f) => ({ cal: a.cal + f.calories, p: a.p + f.protein }), { cal: 0, p: 0 });
   const remainCal = targets.calories - eaten.cal;
   const remainP = targets.protein - eaten.p;
+  const mt = mealTarget(slot, targets, day, remainCal, remainP);
   const labs = data.labs || [];
 
   const build = async () => {
@@ -1507,43 +1617,49 @@ function Plan({ data, setData, targets, day, updateDay }) {
 
 ${craving.trim() ? `What they're in the mood for: "${craving.trim()}". Take this seriously — all three options should satisfy that craving, worked into their numbers rather than replaced with something virtuous.` : "No particular craving — give three genuinely different options."}
 
-Their numbers: ${targets.calories} calorie budget today, ${targets.protein}g protein target. ${remainCal} calories and ${Math.max(0, Math.round(remainP))}g protein left for the rest of the day. Size these options so they fit what's left without using all of it, unless this is their last meal of the day.
+Their numbers: ${targets.calories} calorie budget today, ${targets.protein}g protein target. ${remainCal} calories and ${Math.max(0, Math.round(remainP))}g protein left for the rest of the day, across ${mt.mealsLeft} remaining meal${mt.mealsLeft === 1 ? "" : "s"}.
+
+Size all three options to about ${mt.even} calories each — anywhere in ${mt.lo}-${mt.hi} is fine — with roughly ${mt.protein}g protein. Do not go over ${mt.hi}. This is the number that matters; hit it.
 ${data.fast ? "They are fasting right now, so this will break the fast — lead with protein." : ""}
 ${likes.length ? `Foods they already eat: ${likes.join(", ")}.` : ""}
 ${labs.length ? `\nLab values they entered:\n${labs.slice(0, 12).map((l) => `${l.name}: ${l.value}${l.unit ? " " + l.unit : ""} (${l.date})`).join("\n")}\n\nUse these ONLY to lean on well-established dietary patterns. Do NOT diagnose or name conditions. If a value looks meaningfully out of range, put one plain sentence in "flag" telling them to raise it with their doctor.` : ""}
 
 Repetition is fine — do not avoid obvious or familiar meals. Real food, honestly counted, including the oil it's cooked in.
 
-"effort": "grab" is no cooking, "simple" is under 10 minutes, "cook" is a real recipe. Include the recipe object ONLY for "cook".
+"effort": "grab" is no cooking, "simple" is under 10 minutes, "cook" is a real recipe. Include "steps" ONLY for "cook".
+
+They weigh everything on a digital scale, so every option — including the no-cook ones — needs a "weigh" list: each component with its weight in grams and the calories that weight contributes. Use raw weights for things that get cooked, and say so in the item name ("chicken breast, raw"). Count the cooking oil as its own line. The "weigh" list is for ONE serving — exactly the portion they sit down and eat — and its calories must add up to that dish's "calories" to within about 3%, because they are going to weigh it out and expect the total to land. Never give batch weights. Add the line calories up yourself and set the dish "calories" to exactly that sum.
 
 Respond with ONLY JSON:
-{"menu":[{"name":"short dish name","blurb":"one short line","calories":number,"protein":number,"carbs":number,"fat":number,"effort":"grab"|"simple"|"cook","recipe":{"servings":number,"ingredients":["amount + item"],"steps":["step"]}}],
+{"menu":[{"name":"short dish name","blurb":"one short line","calories":number,"protein":number,"carbs":number,"fat":number,"effort":"grab"|"simple"|"cook","weigh":[{"item":"ingredient, prep state","grams":number,"calories":number}],"recipe":{"steps":["step"]}}],
 "note":"one line on how this fits today",
 "flag":"one sentence about a lab value worth raising with a doctor, or null"}` }]);
 
       const items = (p.menu || []).slice(0, 3).map((m) => ({ ...m, slot, id: crypto.randomUUID() }));
-      setData((d) => ({ ...d, menus: { [today]: { items, note: p.note, flag: p.flag, slot, craving: craving.trim() } } }));
+      setData((d) => ({ ...d, menus: { [today]: { items, note: p.note, flag: p.flag, slot, craving: craving.trim(),
+        target: { even: mt.even, lo: mt.lo, hi: mt.hi, protein: mt.protein } } } }));
       setOpenRecipe(null);
     } catch { setErr("Couldn't put a menu together just now. Try again in a moment."); }
     setBusy(false);
   };
 
   const addToList = (m) => {
-    if (!m.recipe) return;
+    const wl = weighList(m);
+    if (!wl.length) return;
     setData((d) => {
       // Replacing a dish of the same name: mark the old one deleted so another device can't bring it back.
       const old = (d.list || []).filter((x) => x.name === m.name);
       const deleted = old.reduce((acc, x) => ({ ...acc, ["list:" + x.id]: Date.now() }), d.deleted || {});
       return { ...d, deleted, list: [...(d.list || []).filter((x) => x.name !== m.name),
-        { id: crypto.randomUUID(), name: m.name, servings: m.recipe.servings || 1, u: Date.now(),
-          items: m.recipe.ingredients.map((t) => ({ text: t, done: false })) }] };
+        { id: crypto.randomUUID(), name: m.name, servings: 1, u: Date.now(),
+          items: wl.map((i) => ({ text: i.grams ? `${Math.round(i.grams)} g ${i.item}` : i.item, done: false })) }] };
     });
     setShowList(true);
   };
 
   const choose = (m) => {
     updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), meal: m.slot, name: m.name, at: Date.now(),
-      calories: Math.round(m.calories), protein: Math.round(m.protein), carbs: Math.round(m.carbs), fat: Math.round(m.fat) }] }));
+      calories: dishCal(m), protein: Math.round(m.protein), carbs: Math.round(m.carbs), fat: Math.round(m.fat) }] }));
   };
 
   const logToday = (item) => updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: Date.now(), u: Date.now(), ...item }] }));
@@ -1561,6 +1677,28 @@ Respond with ONLY JSON:
           <span className="dim tiny">{remainCal.toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g left</span></div>
         <div className="chips">{MEALS.map((s) => (
           <button key={s} className={slot === s ? "chip on" : "chip"} onClick={() => setSlot(s)}>{s}</button>))}</div>
+
+        <div className="mealtarget">
+          <div className="row gap">
+            <div>
+              <div className="dim tiny">This {slot.toLowerCase()} should be</div>
+              <div><span className="midnum mono" style={{ color: C.cal }}>{mt.even.toLocaleString()}</span><span className="dim tiny"> cal</span></div>
+            </div>
+            {!mt.over && (
+              <div className="right">
+                <div className="dim tiny">Aim inside</div>
+                <div className="mono">{mt.lo.toLocaleString()}–{mt.hi.toLocaleString()}</div>
+                <div className="dim tiny">{mt.protein}g protein</div>
+              </div>
+            )}
+          </div>
+          <p className="dim tiny">
+            {mt.over
+              ? `You've used today's budget, so anything now puts you over. For reference, a typical ${slot.toLowerCase()} is ${mt.typical.toLocaleString()} cal of a ${targets.calories.toLocaleString()} day.`
+              : `${remainCal.toLocaleString()} cal left, split evenly across the ${mt.mealsLeft} meal${mt.mealsLeft === 1 ? "" : "s"} you've not eaten. A typical ${slot.toLowerCase()} runs ${mt.typical.toLocaleString()} cal of a ${targets.calories.toLocaleString()} day — the range covers both. Weigh everything and these numbers hold.`}
+          </p>
+        </div>
+
         <input placeholder="burgers, something Mexican, steak — or leave it blank" value={craving}
           onChange={(e) => setCraving(e.target.value)} onKeyDown={(e) => e.key === "Enter" && build()} />
         <button className="btn accent wide" onClick={build} disabled={busy}>
@@ -1574,33 +1712,55 @@ Respond with ONLY JSON:
             <span className="dot" style={{ background: MEAL_COLOR[menu.slot], boxShadow: `0 0 8px ${MEAL_COLOR[menu.slot]}` }} />
             {menu.slot}{menu.craving ? ` · ${menu.craving}` : ""}
           </div>
+          {menu.target && <p className="dim tiny pad" style={{ paddingBottom: 0 }}>
+            Sized for about {menu.target.even.toLocaleString()} cal and {menu.target.protein}g protein.</p>}
           {menu.note && <p className="dim tiny pad" style={{ paddingBottom: 0 }}>{menu.note}</p>}
           {menu.flag && <p className="cue" style={{ color: C.warn, borderColor: `${C.warn}55`, margin: "10px 16px 0" }}>{menu.flag}</p>}
-          {menu.items.map((m) => (
+          {menu.items.map((m) => {
+            const wl = weighList(m);
+            const wcal = wl.reduce((a, i) => a + (+i.calories || 0), 0);
+            const wg = wl.reduce((a, i) => a + (+i.grams || 0), 0);
+            const steps = m.recipe?.steps || [];
+            return (
             <div key={m.id} className="dish">
               <div className="row gap">
                 <div><div className="dishname">{m.name}</div><div className="dim tiny">{m.blurb}</div></div>
                 <span className={`badge ${m.effort === "cook" ? "" : "good"}`}>{m.effort}</span>
               </div>
               <div className="dishmacros">
-                <span className="mono" style={{ color: C.cal }}>{Math.round(m.calories)}</span>
+                <span className="mono" style={{ color: C.cal }}>{dishCal(m)}</span>
                 <span className="dim tiny">{Math.round(m.protein)}p · {Math.round(m.carbs)}c · {Math.round(m.fat)}f</span>
               </div>
               <div className="rowbtns">
-                {m.recipe && <button className="btn ghost wide" onClick={() => setOpenRecipe(openRecipe === m.id ? null : m.id)}>
-                  {openRecipe === m.id ? "Hide recipe" : "Recipe"}</button>}
-                {m.recipe && <button className="btn ghost wide" onClick={() => addToList(m)}>+ List</button>}
+                {wl.length > 0 && <button className="btn ghost wide" onClick={() => setOpenRecipe(openRecipe === m.id ? null : m.id)}>
+                  {openRecipe === m.id ? "Hide" : steps.length ? "Weigh + cook" : "Weigh it"}</button>}
+                {wl.length > 0 && <button className="btn ghost wide" onClick={() => addToList(m)}>+ List</button>}
                 <button className="btn solid wide" onClick={() => choose(m)}>Eat this</button>
               </div>
-              {openRecipe === m.id && m.recipe && (
+              {openRecipe === m.id && wl.length > 0 && (
                 <div className="recipe fadein">
-                  <div className="dim tiny">Makes {m.recipe.servings || 1}</div>
-                  <ul>{m.recipe.ingredients.map((i, n) => <li key={n}>{i}</li>)}</ul>
-                  <ol>{m.recipe.steps.map((s, n) => <li key={n}>{s}</li>)}</ol>
+                  <div className="dim tiny">One serving. Weigh each line raw unless it says otherwise.</div>
+                  <table className="weightbl">
+                    <thead><tr><th>Put on the scale</th><th className="right">Grams</th><th className="right">Cal</th></tr></thead>
+                    <tbody>
+                      {wl.map((i, n) => (
+                        <tr key={n}>
+                          <td>{i.item}</td>
+                          <td className="right mono">{i.grams ? Math.round(i.grams) : "—"}</td>
+                          <td className="right mono">{i.calories != null ? Math.round(i.calories) : "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    {wcal > 0 && (
+                      <tfoot><tr><td>Total</td><td className="right mono">{Math.round(wg)}</td><td className="right mono">{Math.round(wcal)}</td></tr></tfoot>
+                    )}
+                  </table>
+                  {steps.length > 0 && <ol>{steps.map((t, n) => <li key={n}>{t}</li>)}</ol>}
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
       </>)}
@@ -2660,10 +2820,10 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
       <div className="glass pad stack">
         <h2>Look</h2>
         <div className="chips">
-          <button className={data.theme !== "retro" ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: "glass" }))}>Glass</button>
-          <button className={data.theme === "retro" ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: "retro" }))}>Desktop '95</button>
+          <button className={data.theme === "glass" ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: "glass" }))}>Glass</button>
+          <button className={data.theme !== "glass" ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: "retro" }))}>Desktop XP</button>
         </div>
-        <p className="dim tiny">Switches the whole app. Nothing about your data changes.</p>
+        <p className="dim tiny">Desktop XP is the default. Switches the whole app — nothing about your data changes.</p>
       </div>
       <AdaptivePanel adaptive={adaptive} on={data.useAdaptive !== false} onToggle={(v) => setData((d) => ({ ...d, useAdaptive: v }))} />
       <SyncPanel {...{ sync, syncNow, startSync, joinSync, leaveSync }} />
@@ -2734,9 +2894,9 @@ function ProfileForm({ initial, title, cta, intro, onSave }) {
 /* ---------- shell ---------- */
 function Shell({ children, theme }) {
   return (
-    <div className={theme === "retro" ? "app retro" : "app"}>
+    <div className={theme === "glass" ? "app" : "app retro"}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600&family=JetBrains+Mono:wght@400;600&family=VT323&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600&family=JetBrains+Mono:wght@400;600&display=swap');
         .app { position:relative; min-height:100vh; font-family:'Sora',ui-sans-serif,system-ui,sans-serif;
           color:#F1F5F9; font-size:15px; line-height:1.5; overflow-x:hidden;
           background:#0A0E1F; padding:16px 14px 96px; max-width:560px; margin:0 auto;
@@ -2871,110 +3031,204 @@ function Shell({ children, theme }) {
         .recipe { border-top:1px solid rgba(255,255,255,.08); padding-top:10px; font-size:13px; }
         .recipe ul, .recipe ol { margin:8px 0 0; padding-left:18px; display:flex; flex-direction:column; gap:5px; }
         .recipe ul { color:rgba(241,245,249,.7); }
+
+        /* what this one meal should come to */
+        .mealtarget { border:1px solid rgba(255,255,255,.1); border-radius:14px; padding:12px 14px;
+          background:rgba(255,255,255,.04); display:flex; flex-direction:column; gap:8px; }
+        .mealtarget p { margin:0; }
+
+        /* the weighed breakdown: item, grams on the scale, calories that adds */
+        .weightbl { width:100%; border-collapse:collapse; margin-top:8px; font-size:13px; }
+        .weightbl th { text-align:left; font-weight:400; font-size:11px; letter-spacing:.04em; text-transform:uppercase;
+          color:rgba(241,245,249,.45); padding:0 0 5px; border-bottom:1px solid rgba(255,255,255,.1); }
+        .weightbl td { padding:5px 0; border-bottom:1px solid rgba(255,255,255,.05); vertical-align:top; }
+        .weightbl td:not(:first-child), .weightbl th:not(:first-child) { padding-left:10px; width:58px; }
+        .weightbl tfoot td { border-bottom:none; border-top:1px solid rgba(255,255,255,.18); font-weight:600; }
+        .weightbl .mono { font-size:13px; }
         .dockbtn { background:none; border:none; color:rgba(241,245,249,.5); font:inherit; font-size:9.5px; cursor:pointer;
           display:flex; flex-direction:column; align-items:center; gap:3px; padding:8px 9px; border-radius:99px; transition:all .25s; }
         .dockbtn.on { color:#0A0E1F; background:#F1F5F9; font-weight:600; }
         .app *:focus-visible { outline:2px solid #6EE7F9; outline-offset:2px; }
 
-        /* ================= Desktop '95 theme ================= */
+        /* ================= Desktop XP theme: early-2000s Luna ================= */
         .tray { display:none; }
-        .app.retro { background:#008080; color:#000; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:14px; }
+        .app.retro { color:#000; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:14px;
+          background-color:#3A6EA5; background-image:linear-gradient(180deg, #5B95CE 0%, #3A6EA5 55%, #2B5480 100%);
+          background-attachment:fixed; }
         .app.retro::before, .app.retro::after { display:none; }
-        .app.retro *:focus-visible { outline:1px dotted #000; outline-offset:-4px; }
+        .app.retro *:focus-visible { outline:1px dotted #33475C; outline-offset:-3px; }
         .app.retro h2 { font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:15px; font-weight:bold; letter-spacing:0; }
-        .app.retro .dim { color:#404040; }
-        .app.retro .alert { color:#C00000; }
+        .app.retro .dim { color:#4A5A6A; }
+        .app.retro .alert { color:#C33A2A; }
 
-        /* windows */
-        .app.retro .glass { background:#C0C0C0; border:none; border-radius:0; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff;
-          backdrop-filter:none; -webkit-backdrop-filter:none; padding:3px; }
-        .app.retro .glass::before { content:""; display:block; height:20px; margin:0 0 3px; align-self:stretch;
-          background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='52' height='14' shape-rendering='crispEdges'%3E%3Cg fill='%23C0C0C0'%3E%3Crect width='16' height='14'/%3E%3Crect x='16' width='16' height='14'/%3E%3Crect x='36' width='16' height='14'/%3E%3C/g%3E%3Cpath d='M.5 13V.5H15M16.5 13V.5H31M36.5 13V.5H51' stroke='%23fff' fill='none'/%3E%3Cpath d='M0 13.5H16M15.5 0V14M16 13.5H32M31.5 0V14M36 13.5H52M51.5 0V14' stroke='%23000' fill='none'/%3E%3Crect x='4' y='9' width='6' height='2'/%3E%3Cpath d='M19.5 3.5h9v7h-9z' fill='none' stroke='%23000'/%3E%3Crect x='19' y='3' width='10' height='2'/%3E%3Cpath d='M40 3.5l7 7M47 3.5l-7 7' stroke='%23000' stroke-width='1.6' shape-rendering='geometricPrecision'/%3E%3C/svg%3E") no-repeat right 3px center, linear-gradient(90deg, #000080, #1084D0); }
+        /* windows: soft panel, glossy blue caption bar with rounded top corners */
+        .app.retro .glass { background:#ECE9D8; border:1px solid #0A4FAE; border-radius:8px 8px 4px 4px;
+          box-shadow:0 2px 6px rgba(0,0,0,.28); backdrop-filter:none; -webkit-backdrop-filter:none; padding:3px; }
+        .app.retro .glass::before { content:""; display:block; height:26px; margin:0 0 4px; align-self:stretch;
+          border-radius:6px 6px 0 0;
+          background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='52' height='14'%3E%3Crect x='.5' y='.5' width='14' height='13' rx='2.5' fill='%234C93E8' stroke='%231D5FB0'/%3E%3Crect x='4' y='9' width='7' height='2.2' fill='%23fff'/%3E%3Crect x='18.5' y='.5' width='14' height='13' rx='2.5' fill='%234C93E8' stroke='%231D5FB0'/%3E%3Crect x='22.4' y='3.4' width='6.6' height='6.6' fill='none' stroke='%23fff' stroke-width='1.5'/%3E%3Crect x='37.5' y='.5' width='14' height='13' rx='2.5' fill='%23D9503C' stroke='%23A32D1C'/%3E%3Cpath d='M41.6 4.2l6 6M47.6 4.2l-6 6' stroke='%23fff' stroke-width='1.7' fill='none'/%3E%3C/svg%3E") no-repeat right 5px center, linear-gradient(180deg, #0F6BD4 0%, #3E96F0 9%, #1B72DC 20%, #0C5BC4 82%, #1A6FD2 95%, #0A4FAE 100%);
+          box-shadow:inset 0 1px rgba(255,255,255,.45); }
         .app.retro .glass.pad { padding:3px 14px 14px; }
-        .app.retro .glass.pad::before { margin:0 -11px 10px; }
+        .app.retro .glass.pad::before { margin:0 -11px 12px; }
         .app.retro .glass.hero { padding:3px 14px 16px; }
-        .app.retro .glass.hero::before { margin:0 -11px 4px; }
+        .app.retro .glass.hero::before { margin:0 -11px 6px; }
         .app.retro .composer::before { display:none; }
-        .app.retro .composer { padding:8px; }
+        .app.retro .glass.composer { padding:8px; }
 
-        /* the big numbers stay big — in a terminal face that still reads at a glance */
-        .app.retro .huge, .app.retro .bignum, .app.retro .midnum, .app.retro .codebox { font-family:'VT323', 'Courier New', monospace; font-weight:400; letter-spacing:0; }
-        .app.retro .huge { font-size:46px; line-height:.95; }
-        .app.retro .bignum { font-size:60px; line-height:.9; }
-        .app.retro .midnum { font-size:32px; }
-        .app.retro .mono { font-family:'VT323', 'Courier New', monospace; font-size:19px; }
-        .app.retro .unit { opacity:.7; }
+        /* big numbers: the humanist sans this era put on everything */
+        .app.retro .huge, .app.retro .bignum, .app.retro .midnum, .app.retro .codebox {
+          font-family:'Trebuchet MS', Tahoma, Verdana, sans-serif; font-weight:bold; letter-spacing:-.01em; }
+        .app.retro .huge { font-size:40px; line-height:1; }
+        .app.retro .bignum { font-size:52px; line-height:.95; }
+        .app.retro .midnum { font-size:29px; }
+        .app.retro .mono { font-family:'Trebuchet MS', Tahoma, Verdana, sans-serif; font-weight:bold; font-size:15px; }
+        .app.retro .unit { opacity:.65; font-weight:normal; }
         .app.retro .stagename { font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-weight:bold; }
         .app.retro .stagebody { color:#000; }
 
-        /* buttons */
-        .app.retro .btn, .app.retro .chip { background:#C0C0C0; color:#000; border:none; border-radius:0; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff;
-          font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-weight:normal; transition:none; }
-        .app.retro .btn:active, .app.retro .chip:active { box-shadow:inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px #808080; transform:none; }
-        .app.retro .btn.solid, .app.retro .btn.accent { font-weight:bold; box-shadow:0 0 0 1px #000, inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; background:#C0C0C0; color:#000; }
-        .app.retro .btn.solid:active, .app.retro .btn.accent:active { box-shadow:0 0 0 1px #000, inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px #808080; }
-        .app.retro .btn:disabled, .app.retro .chip:disabled { opacity:1; color:#808080; text-shadow:1px 1px #fff; }
-        .app.retro .chip { padding:6px 11px; font-size:12.5px; }
-        .app.retro .chip.on { background:#000080; color:#fff; box-shadow:inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px #808080; font-weight:bold; }
-        .app.retro .icon, .app.retro .linkbtn { color:#000; }
+        /* buttons: rounded, glossy, blue-bordered, amber on hover */
+        .app.retro .btn, .app.retro .chip { color:#000; border:1px solid #003C74; border-radius:3px;
+          background:linear-gradient(180deg, #fff 0%, #F3F1E5 44%, #E3DFC9 88%, #D6D2BA 100%); box-shadow:inset 0 0 0 1px rgba(255,255,255,.6);
+          font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-weight:normal; transition:background .12s; }
+        .app.retro .btn:hover, .app.retro .chip:hover { background:linear-gradient(180deg, #fff 0%, #FFF4CC 44%, #FFE79A 88%, #FFD97A 100%); border-color:#E59700; }
+        .app.retro .btn:active, .app.retro .chip:active {
+          background:linear-gradient(180deg, #D8D4BE 0%, #E7E3CE 60%, #F3F1E5 100%);
+          box-shadow:inset 1px 1px 2px rgba(0,0,0,.25); transform:none; }
+        .app.retro .btn.solid, .app.retro .btn.accent { font-weight:bold; color:#fff; border-color:#14508F;
+          background:linear-gradient(180deg, #6FB2F5 0%, #2A80E0 46%, #1668C8 88%, #0E56AC 100%);
+          box-shadow:inset 0 1px rgba(255,255,255,.5); text-shadow:0 -1px rgba(0,0,0,.25); }
+        .app.retro .btn.solid:hover, .app.retro .btn.accent:hover {
+          background:linear-gradient(180deg, #8CC4F8 0%, #3E92EC 46%, #1F76D6 88%, #145FBC 100%); border-color:#14508F; }
+        .app.retro .btn.solid:active, .app.retro .btn.accent:active {
+          background:linear-gradient(180deg, #0E56AC 0%, #1668C8 40%, #2A80E0 100%); box-shadow:inset 1px 1px 3px rgba(0,0,0,.3); }
+        .app.retro .btn:disabled, .app.retro .chip:disabled { opacity:1; color:#A0A0A0; text-shadow:0 1px #fff;
+          background:linear-gradient(180deg, #F5F4EC, #E6E3D2); border-color:#B4B0A0; }
+        .app.retro .chip { padding:6px 12px; font-size:12.5px; }
+        .app.retro .chip.on { color:#fff; font-weight:bold; border-color:#14508F;
+          background:linear-gradient(180deg, #6FB2F5 0%, #2A80E0 46%, #1668C8 88%, #0E56AC 100%);
+          box-shadow:inset 0 1px rgba(255,255,255,.45); text-shadow:0 -1px rgba(0,0,0,.25); }
+        .app.retro .icon, .app.retro .linkbtn { color:#14508F; }
 
         /* list boxes and fields */
-        .app.retro .listbtn { background:#fff; color:#000; border:1px solid #808080; border-radius:0; }
-        .app.retro .listbtn.on { background:#000080; color:#fff; border-color:#000080; font-weight:bold; }
-        .app.retro input, .app.retro textarea { background:#fff; color:#000; border:none; border-radius:0; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; }
-        .app.retro input:focus, .app.retro textarea:focus { background:#fff; border:none; }
-        .app.retro input::placeholder, .app.retro textarea::placeholder { color:#808080; }
+        .app.retro .listbtn { background:#fff; color:#000; border:1px solid #7F9DB9; border-radius:3px; }
+        .app.retro .listbtn.on { background:#316AC5; color:#fff; border-color:#2255A8; font-weight:bold; }
+        .app.retro input, .app.retro textarea { background:#fff; color:#000; border:1px solid #7F9DB9; border-radius:2px;
+          box-shadow:inset 1px 1px 1px rgba(0,0,0,.12); font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; }
+        .app.retro input:focus, .app.retro textarea:focus { background:#fff; border-color:#2A80E0;
+          box-shadow:inset 1px 1px 1px rgba(0,0,0,.1), 0 0 4px rgba(42,128,224,.55); }
+        .app.retro input::placeholder, .app.retro textarea::placeholder { color:#8A9AAA; }
         .app.retro label { color:#000; }
-        .app.retro .timeinput { background:#fff; color:#000; border-radius:0; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; border:none; font-family:'VT323', monospace; font-size:15px; }
+        .app.retro .timeinput { background:#fff; color:#000; border:1px solid #7F9DB9; border-radius:2px;
+          box-shadow:inset 1px 1px 1px rgba(0,0,0,.12); font-family:'Trebuchet MS', Tahoma, sans-serif; font-weight:bold; font-size:15px; }
 
-        /* progress bars: the chunky block style, each bar keeping its own color */
-        .app.retro .track, .app.retro .fuel { background:#fff; border-radius:0; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; height:16px; padding:3px; box-sizing:border-box; }
-        .app.retro .track.tall { height:20px; }
-        .app.retro .track > div, .app.retro .fuel > div { border-radius:0; box-shadow:none !important;
-          background-image:repeating-linear-gradient(90deg, transparent 0 8px, #fff 8px 10px) !important; }
-        .app.retro .overtick { background:#C00000; opacity:1; }
-        .app.retro .dot { border-radius:0; box-shadow:none !important; }
+        /* progress bars: the XP trough and gloss, each bar keeping its own colour */
+        .app.retro .track, .app.retro .fuel { background:#F2F2F2; border:1px solid #9AA7B4; border-radius:4px;
+          box-shadow:inset 1px 1px 1px rgba(0,0,0,.12); height:15px; padding:2px; box-sizing:border-box; }
+        .app.retro .track > div, .app.retro .fuel > div { border-radius:3px; box-shadow:inset 0 1px rgba(255,255,255,.55) !important; }
+        .app.retro .overtick { background:#C33A2A; opacity:1; }
+        .app.retro .dot { box-shadow:none !important; }
 
         /* list views */
-        .app.retro .mealhead { background:#C0C0C0; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; font-weight:bold; color:#000; }
-        .app.retro .fooditem, .app.retro .dish, .app.retro .listitem, .app.retro .histrow { background:#fff; color:#000; border-top:1px solid #C0C0C0; }
-        .app.retro .histrow:hover, .app.retro .histrow:focus-visible { background:#000080; color:#fff; }
-        .app.retro .histrow:hover .dim { color:#dfdfdf; }
-        .app.retro .stagerow { background:#fff; border-top:1px solid #C0C0C0; }
-        .app.retro .stagerow.on { background:#000080; color:#fff; }
-        .app.retro .stagerow.on .dim, .app.retro .stagerow.on .hr { color:#dfdfdf; opacity:1; }
-        .app.retro .tick { border-radius:0; border-color:#000; background:#fff; }
-        .app.retro .tick.on { background:#fff; color:#000; border-color:#000; }
+        .app.retro .mealhead { color:#fff; font-weight:bold; border-radius:4px 4px 0 0;
+          background:linear-gradient(180deg, #4E9BEE 0%, #2276DC 50%, #1663C2 100%); text-shadow:0 -1px rgba(0,0,0,.2); }
+        .app.retro .fooditem, .app.retro .dish, .app.retro .listitem, .app.retro .histrow { background:#fff; color:#000; border-top:1px solid #DCE4EC; }
+        .app.retro .histrow:hover, .app.retro .histrow:focus-visible { background:#316AC5; color:#fff; }
+        .app.retro .histrow:hover .dim { color:#D8E4F5; }
+        .app.retro .stagerow { background:#fff; border-top:1px solid #DCE4EC; }
+        .app.retro .stagerow.on { background:#316AC5; color:#fff; }
+        .app.retro .stagerow.on .dim, .app.retro .stagerow.on .hr { color:#D8E4F5; opacity:1; }
+        .app.retro .tick { border-radius:2px; border:1px solid #7F9DB9; background:#fff; }
+        .app.retro .tick.on { background:linear-gradient(180deg, #6FB2F5, #1668C8); color:#fff; border-color:#14508F; }
 
         /* group boxes */
         .app.retro .editbox, .app.retro .subpanel, .app.retro .ingredients, .app.retro .qbox, .app.retro .itemcard, .app.retro .recipe {
-          background:transparent; border:2px groove #f4f4f4; border-radius:0; }
-        .app.retro .ingrow { border-bottom-color:#a0a0a0; }
-        .app.retro .cue { color:#000; background:#FFFFE1; border:1px solid #000; padding:6px 9px; }
-        .app.retro .badge { background:#C0C0C0; color:#000; border:1px solid #808080; border-radius:0; }
-        .app.retro .badge.good { color:#006B00; }
-        .app.retro .badge.low { color:#C00000; }
-        .app.retro .codebox { background:#fff; color:#000080; border:none; border-radius:0; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; font-size:26px; }
-        .app.retro .dropzone { background:#fff; color:#000; border:1px dashed #000; border-radius:0; }
-        .app.retro .shot, .app.retro .thumb, .app.retro .menuthumb, .app.retro .compare > div > img, .app.retro .viewer .full { border-radius:0; border:1px solid #000; }
-        .app.retro .viewer { background:rgba(0,128,128,.94); }
-        .app.retro .viewerInner { background:#C0C0C0; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; padding:10px; }
+          background:rgba(255,255,255,.55); border:1px solid #C3CEDA; border-radius:5px; }
+        .app.retro .ingrow { border-bottom-color:#C3CEDA; }
+        .app.retro .cue { color:#000; background:#FFFFE1; border:1px solid #C9B87A; border-radius:4px; padding:7px 10px; }
+        .app.retro .badge { background:linear-gradient(180deg, #fff, #E6E3D2); color:#33475C; border:1px solid #B4B0A0; border-radius:3px; }
+        .app.retro .badge.good { color:#2E8B2E; }
+        .app.retro .badge.low { color:#C33A2A; }
+        .app.retro .codebox { background:#fff; color:#14508F; border:1px solid #7F9DB9; border-radius:3px;
+          box-shadow:inset 1px 1px 1px rgba(0,0,0,.12); font-size:24px; }
+        .app.retro .dropzone { background:rgba(255,255,255,.7); color:#33475C; border:1px dashed #7F9DB9; border-radius:5px; }
+        .app.retro .shot, .app.retro .thumb, .app.retro .menuthumb, .app.retro .compare > div > img, .app.retro .viewer .full {
+          border-radius:4px; border:1px solid #7F9DB9; }
+        .app.retro .viewer { background:rgba(23,52,90,.88); }
+        .app.retro .viewerInner { background:#ECE9D8; border:1px solid #0A4FAE; border-radius:8px; box-shadow:0 4px 14px rgba(0,0,0,.4); padding:10px; }
 
         /* coach */
-        .app.retro .bubble { background:#fff; color:#000; border:1px solid #000; border-radius:0; }
-        .app.retro .bubble.me { background:#FFFFE1; border-color:#000; }
+        .app.retro .bubble { background:#fff; color:#000; border:1px solid #C3CEDA; border-radius:8px; }
+        .app.retro .bubble.me { background:linear-gradient(180deg, #E8F2FE, #D3E6FC); border-color:#A8C8EC; }
 
-        /* bottom dock becomes a taskbar */
-        .app.retro .dock { left:0; right:0; bottom:0; transform:none; border-radius:0; border:none; background:#C0C0C0;
-          box-shadow:inset 0 1px #dfdfdf, inset 0 2px #fff; padding:4px 4px calc(4px + env(safe-area-inset-bottom)); gap:3px;
+        /* what this one meal should come to */
+        .app.retro .mealtarget { background:#FFFFE1; border:1px solid #C9B87A; border-radius:5px; }
+
+        /* the weighed breakdown */
+        .app.retro .weightbl { background:#fff; }
+        .app.retro .weightbl th { color:#33475C; text-transform:none; letter-spacing:0; font-size:11.5px; font-weight:bold;
+          padding:4px 6px; border-bottom:1px solid #9AA7B4; background:linear-gradient(180deg, #fff, #E6E3D2); }
+        .app.retro .weightbl td { padding:5px 6px; border-bottom:1px solid #DCE4EC; color:#000; }
+        .app.retro .weightbl tfoot td { border-top:1px solid #9AA7B4; background:#F2F4F7; font-weight:bold; }
+        .app.retro .weightbl .mono { font-size:14px; }
+
+        /* bottom dock becomes the XP taskbar */
+        .app.retro .dock { left:0; right:0; bottom:0; transform:none; border-radius:0; border:none;
+          background:linear-gradient(180deg, #4A8DF0 0%, #2A5BD7 9%, #245ED8 84%, #1C4CB4 94%, #14399A 100%);
+          box-shadow:inset 0 1px rgba(255,255,255,.5), 0 -1px 4px rgba(0,0,0,.25);
+          padding:3px 5px calc(3px + env(safe-area-inset-bottom)); gap:3px;
           backdrop-filter:none; -webkit-backdrop-filter:none; }
-        .app.retro .dockbtn { flex:1; flex-direction:row; justify-content:center; gap:4px; border-radius:0; padding:6px 2px;
-          background:#C0C0C0; color:#000; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:11px; box-shadow:inset -1px -1px #0a0a0a, inset 1px 1px #dfdfdf, inset -2px -2px #808080, inset 2px 2px #fff; transition:none; min-width:0; }
-        .app.retro .dockbtn.on { background:repeating-conic-gradient(#C0C0C0 0 25%, #fff 0 50%) 0 0 / 2px 2px; color:#000; box-shadow:inset -1px -1px #fff, inset 1px 1px #0a0a0a, inset -2px -2px #dfdfdf, inset 2px 2px #808080; font-weight:bold; }
-        .app.retro .tray { display:flex; align-items:center; padding:0 8px; font-size:11px; box-shadow:inset -1px -1px #fff, inset 1px 1px #808080, inset -2px -2px #dfdfdf, inset 2px 2px #0a0a0a; white-space:nowrap; }
+        .app.retro .dockbtn { flex:1; flex-direction:row; justify-content:center; gap:5px; border-radius:3px; padding:6px 2px;
+          background:rgba(255,255,255,.08); color:#fff; border:1px solid transparent;
+          font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:11px; transition:background .12s; min-width:0; }
+        .app.retro .dockbtn:hover { background:rgba(255,255,255,.2); }
+        .app.retro .dockbtn.on { color:#fff; font-weight:bold; border-color:#1A3F8F;
+          background:linear-gradient(180deg, #1B44A4 0%, #2559C4 55%, #3A72DC 100%);
+          box-shadow:inset 1px 1px 3px rgba(0,0,0,.35); }
+        .app.retro .tray { display:flex; align-items:center; padding:0 9px; font-size:11px; color:#fff; border-radius:3px;
+          background:linear-gradient(180deg, #14399A, #1B4CB0); box-shadow:inset 1px 1px 2px rgba(0,0,0,.35); white-space:nowrap; }
         @media (max-width:430px) { .app.retro .tray { display:none; } .app.retro .dockbtn span { font-size:10px; } }
         @media (max-width:360px) { .app.retro .dockbtn span { display:none; } }
         .app.retro { padding-bottom:84px; }
+
+        /* Start button: the green pill, and the menu it opens */
+        .app.retro .startbtn { display:flex; align-items:center; gap:6px; flex:0 0 auto; padding:5px 13px 5px 9px;
+          border:1px solid #2E7D2E; border-radius:4px 12px 12px 4px; color:#fff;
+          background:linear-gradient(180deg, #7CC96A 0%, #4FA83C 46%, #3C912D 88%, #2F7A22 100%);
+          box-shadow:inset 0 1px rgba(255,255,255,.5); font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif;
+          font-size:13px; font-weight:bold; font-style:italic; text-shadow:0 -1px rgba(0,0,0,.3); cursor:pointer; }
+        .app.retro .startbtn:hover { background:linear-gradient(180deg, #92D982 0%, #5EBA49 46%, #4AA038 88%, #3A8A2B 100%); }
+        .app.retro .startbtn[aria-expanded="true"] { background:linear-gradient(180deg, #2F7A22 0%, #3C912D 50%, #4FA83C 100%);
+          box-shadow:inset 1px 1px 3px rgba(0,0,0,.35); }
+        .app.retro .startmenu { position:fixed; left:5px; bottom:calc(46px + env(safe-area-inset-bottom)); width:228px; z-index:70;
+          display:flex; flex-direction:column; padding:0; overflow:hidden;
+          background:#fff; border:1px solid #0A4FAE; border-radius:7px 7px 5px 5px; box-shadow:0 4px 16px rgba(0,0,0,.4); }
+        .app.retro .startstripe { width:auto; flex:0 0 auto; margin:0; padding:9px 12px;
+          background:linear-gradient(180deg, #0F6BD4 0%, #3E96F0 9%, #1B72DC 20%, #0C5BC4 82%, #1A6FD2 95%, #0A4FAE 100%); box-shadow:inset 0 1px rgba(255,255,255,.4); }
+        .app.retro .startstripe span { display:block; writing-mode:horizontal-tb; transform:none; color:#fff; font-weight:bold;
+          font-size:13px; padding:0; letter-spacing:0; text-shadow:0 -1px rgba(0,0,0,.25); }
+        .app.retro .startitems { flex:1; display:flex; flex-direction:column; padding:4px; background:#fff; }
+        .app.retro .startitem { display:flex; align-items:center; gap:10px; width:100%; padding:9px 10px; border:none;
+          background:transparent; border-radius:3px; color:#000;
+          font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:13px; text-align:left; cursor:pointer; }
+        .app.retro .startitem:hover, .app.retro .startitem:focus-visible {
+          background:linear-gradient(180deg, #4E9BEE, #1663C2); color:#fff; outline:none; }
+
+        /* the loading screen this era booted to */
+        .boot { position:fixed; inset:0; z-index:100; display:flex; align-items:center; justify-content:center;
+          background:radial-gradient(120% 90% at 50% 38%, #123A6B 0%, #0A1E3C 55%, #050E1E 100%); padding:24px; }
+        .bootbox { width:100%; max-width:290px; text-align:center; }
+        .bootlogo { font-family:'Trebuchet MS', Tahoma, sans-serif; font-weight:bold; font-size:36px; color:#fff;
+          line-height:1.05; letter-spacing:-.015em; text-shadow:0 2px 10px rgba(90,169,255,.65); }
+        .bootlogo span { display:inline-block; margin-left:6px; font-size:22px; vertical-align:super;
+          color:#FFB13B; text-shadow:0 2px 8px rgba(255,177,59,.5); }
+        .bootbar { margin:24px 0 12px; height:15px; padding:2px; box-sizing:border-box; overflow:hidden;
+          background:#060C18; border:1px solid #2A3550; border-radius:9px; box-shadow:inset 0 1px 3px rgba(0,0,0,.6); }
+        .bootbar > div { width:46px; height:100%; border-radius:7px;
+          background:linear-gradient(90deg, rgba(90,169,255,0) 0%, #2A7FE0 35%, #BBDCFF 55%, rgba(90,169,255,0) 100%);
+          animation:bootscroll 1.25s ease-in-out infinite; }
+        @keyframes bootscroll { 0% { margin-left:-48px; } 100% { margin-left:100%; } }
+        .boottip { margin:0; color:#C8DCF5; font-family:Tahoma, Verdana, 'Segoe UI', Arial, sans-serif; font-size:12.5px; }
+
         @media (prefers-reduced-motion:reduce) { *, .app::before, .app::after { animation:none !important; transition:none !important; } }
       `}</style>
       {children}

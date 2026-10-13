@@ -5,9 +5,12 @@ const PER_IP_PER_HOUR = 40;
 const GLOBAL_PER_DAY = 800;
 const MAX_TOKENS = 8192;   // a week of meal prep is a long answer
 
-// Gemini model names change often. Override with a GEMINI_MODEL env var
-// if this one 404s - check aistudio.google.com for the current name.
-const DEFAULT_MODEL = "gemini-2.5-flash";
+// Netlify AI Gateway injects ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL at runtime, so there is
+// no key to manage here. Override the model with ANTHROPIC_MODEL if you want a cheaper or
+// newer one - it must be a model AI Gateway supports.
+const DEFAULT_MODEL = "claude-sonnet-4-5";
+
+const env = (k) => (typeof Netlify !== "undefined" ? Netlify.env.get(k) : undefined) ?? process.env[k];
 
 const hourKey = () => `h:${new Date().toISOString().slice(0, 13)}`;
 const dayKey = () => `d:${new Date().toISOString().slice(0, 10)}`;
@@ -19,32 +22,21 @@ async function bump(store, key, limit) {
   return true;
 }
 
-// The app speaks Anthropic's message format. Translate it to Gemini's.
-function toGemini(messages) {
-  return messages.map((m) => {
-    const content = typeof m.content === "string" ? [{ type: "text", text: m.content }] : m.content;
-    return {
-      role: m.role === "assistant" ? "model" : "user",
-      parts: content.map((b) => {
-        if (b.type === "image") {
-          return { inline_data: { mime_type: b.source.media_type, data: b.source.data } };
-        }
-        return { text: b.text };
-      }),
-    };
-  });
-}
-
 export default async (req) => {
   if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
 
-  const code = Netlify.env.get("ACCESS_CODE");
+  const code = env("ACCESS_CODE");
   if (code && req.headers.get("x-access-code") !== code) {
     return new Response("Bad access code", { status: 401 });
   }
 
-  const key = Netlify.env.get("GEMINI_API_KEY");
-  if (!key) return new Response("Server is missing GEMINI_API_KEY", { status: 500 });
+  // AI Gateway sets both of these. If they're missing, the site hasn't had a production
+  // deploy yet or AI features are switched off for the team.
+  const key = env("ANTHROPIC_API_KEY");
+  const base = env("ANTHROPIC_BASE_URL");
+  if (!key || !base) {
+    return new Response("AI isn't wired up for this site yet. Enable AI features in Netlify and deploy once.", { status: 503 });
+  }
 
   const limits = getStore("cutlog-limits");
   const ip = req.headers.get("x-nf-client-connection-ip") || "unknown";
@@ -60,48 +52,41 @@ export default async (req) => {
   try { body = await req.json(); } catch { return new Response("Bad JSON", { status: 400 }); }
   if (!Array.isArray(body.messages)) return new Response("No messages", { status: 400 });
 
-  const model = Netlify.env.get("GEMINI_MODEL") || DEFAULT_MODEL;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+  // The app already speaks Anthropic's message format - text and base64 image blocks both
+  // pass straight through, so there's nothing to translate.
+  const wantsJson = body.json !== false;
+  const messages = [...body.messages];
+  // Structured answers (menus, labels, estimates) must parse. Prefilling the reply with "{"
+  // means the model can only continue a JSON object - no preamble, no fences. The coach
+  // chats in plain text, so it skips this.
+  if (wantsJson) messages.push({ role: "assistant", content: "{" });
 
-  const generationConfig = {
-    maxOutputTokens: Math.min(body.max_tokens || 1500, MAX_TOKENS),
-    // Gemini 2.5 Flash "thinks" before answering by default, and that thinking is
-    // charged against maxOutputTokens - on a real request it can eat the whole budget
-    // and return nothing. Everything this app asks for is extraction or formatting,
-    // so thinking buys nothing here. Turn it off.
-    thinkingConfig: { thinkingBudget: 0 },
+  const payload = {
+    model: env("ANTHROPIC_MODEL") || DEFAULT_MODEL,
+    max_tokens: Math.min(body.max_tokens || 1500, MAX_TOKENS),
+    messages,
   };
-  // Structured answers (menus, labels, estimates) come back as JSON. The coach chats in plain text.
-  if (body.json !== false) generationConfig.responseMimeType = "application/json";
+  if (wantsJson) payload.system = "Reply with one valid JSON object and nothing else. No markdown fences, no commentary before or after.";
 
-  const call = (cfg) => fetch(url, {
+  const r = await fetch(`${base.replace(/\/$/, "")}/v1/messages`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contents: toGemini(body.messages), generationConfig: cfg }),
+    headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
+    body: JSON.stringify(payload),
   });
-
-  let r = await call(generationConfig);
-  // Some models (2.5 Pro, and whatever Google ships next) reject a zero thinking budget.
-  // If GEMINI_MODEL points at one of those, retry once with the model's own default.
-  if (r.status === 400) {
-    const { thinkingConfig, ...rest } = generationConfig;
-    r = await call(rest);
-  }
 
   if (!r.ok) {
     const detail = await r.text();
-    return new Response(`Gemini error ${r.status}: ${detail.slice(0, 400)}`, { status: r.status });
+    return new Response(`AI error ${r.status}: ${detail.slice(0, 400)}`, { status: r.status });
   }
 
   const data = await r.json();
-  const text = (data?.candidates?.[0]?.content?.parts || [])
-    .map((p) => p.text || "")
-    .join("");
+  let text = (data?.content || []).filter((b) => b.type === "text").map((b) => b.text || "").join("");
+  // Put back the "{" that was handed to the model as a prefill - it isn't echoed in the reply.
+  if (wantsJson && text) text = `{${text}`;
 
-  const reason = data?.candidates?.[0]?.finishReason;
-  if (!text) return new Response(`Gemini returned nothing (${reason || "empty response"})`, { status: 502 });
+  if (!text) return new Response(`AI returned nothing (${data?.stop_reason || "empty response"})`, { status: 502 });
   // A cut-off JSON answer won't parse. Say so plainly instead of letting the app choke on it.
-  if (reason === "MAX_TOKENS" && body.json !== false) {
+  if (data?.stop_reason === "max_tokens" && wantsJson) {
     return new Response("That answer ran too long and got cut off. Try asking for less at once.", { status: 502 });
   }
 
