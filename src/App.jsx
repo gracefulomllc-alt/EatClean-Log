@@ -2,6 +2,7 @@ import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
 import { roadPicks, ROAD_CHAINS, modsFor, applyMods, modLabel } from "./fastFood.js";
 import { gradeFood, gradeTone } from "./grade.js";
 import { decodeFrame } from "./barcode.js";
+import { MORE_FOODS, COMMON_NAMES } from "./ingredients.js";
 import { scaleIngredient, tagsFor, TAG_FILTERS, swapsFor, applySwaps } from "./mealTools.js";
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { SPC_GAMES, SPC_URL } from "./spcSchedule.js";
@@ -113,7 +114,7 @@ const b64ToBytes = (b64) => {
 
 // "6oz", "250g", "2 servings", "1 scoop"
 const fmtQty = (q, unit) => (unit === "g" || unit === "oz") ? `${q}${unit}`
-  : unit === "serving" ? `${q} serving${+q === 1 ? "" : "s"}` : `${q} ${unit}${+q === 1 || /s$/.test(unit) ? "" : "s"}`;
+  : unit === "serving" ? `${q} serving${+q === 1 ? "" : "s"}` : `${q} ${unit}${+q <= 1 || /s$/.test(unit) ? "" : "s"}`;
 
 /* ---------- progress photos: kept in this browser, and on your server if sync is on ---------- */
 const photoDb = (() => {
@@ -311,6 +312,9 @@ const FOODS = [
   { n: "Olive oil", m: [884, 0, 0, 100], s: { label: "tbsp", g: 13.5 } },
   { n: "Butter", m: [717, 0.9, 0.1, 81], s: { label: "tbsp", g: 14 } },
 ];
+
+FOODS.push(...MORE_FOODS.filter((f) => !FOODS.some((x) => x.n === f.n)));
+let USUAL_FOODS = [];   // ingredients you log most, set each render, shown first in the ingredient dropdown
 
 const MEALS = ["Breakfast", "Lunch", "Dinner", "Snack"];
 const tsToHHMM = (ts) => (ts ? new Date(ts).toTimeString().slice(0, 5) : "");
@@ -677,6 +681,12 @@ export default function CutLog() {
   const todayTags = data?.days?.[todayKey]?.tags;
   const todayTargets = useMemo(() => (data?.profile ? computeTargets(data.profile, todayTags || [], useAdaptive ? adaptive.tdee : null, !!data?.recovery?.on) : null),
     [data?.profile, todayTags, useAdaptive, adaptive, data?.recovery?.on]);
+  const usual = useMemo(() => {
+    const n = new Map();
+    Object.values(data?.days || {}).forEach((d) => (d.foods || []).forEach((f) => { if (f.baseName) n.set(f.baseName, (n.get(f.baseName) || 0) + 1); }));
+    return [...n.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => FOODS.find((f) => f.n === k)).filter(Boolean).slice(0, 6);
+  }, [data?.days]);
+  USUAL_FOODS = usual;
   GRADE_CTX = { goal: data?.profile ? goalOf(data.profile) : "lose", targetCal: todayTargets?.calories || 2000 };
   useEffect(() => {
     if (!data?.groups?.length || !todayTargets) return;
@@ -1909,16 +1919,17 @@ function mealHistory(days, slot) {
   return [...seen.values()].sort((a, b) => (b.meal === slot) - (a.meal === slot) || b.count - a.count || (a.last < b.last ? 1 : -1));
 }
 const scaleItem = (f, x) => x === 1 ? f : ({ ...f, name: `${f.name} (${x}x)`, calories: Math.round(f.calories * x), protein: +(f.protein * x).toFixed(1), carbs: +(f.carbs * x).toFixed(1), fat: +(f.fat * x).toFixed(1), ...(f.qty ? { qty: +(f.qty * x).toFixed(2) } : {}) });
-const histTitle = (items) => items.length === 1 ? items[0].name : `${items[0].name.replace(/,.*$/, "")} + ${items.length - 1} more`;
+const histTitle = (items) => items[0].mealName ? items[0].mealName : items.length === 1 ? items[0].name : `${items[0].name.replace(/,.*$/, "")} + ${items.length - 1} more`;
 
 function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
   const [slot, setSlot] = useState(guessMeal());
   const [tray, setTray] = useState([]);
   const [grade, setGrade] = useState(null);
   const [x, setX] = useState(1);
+  const [mealName, setMealName] = useState("");
   const [all, setAll] = useState(false);
   const [round, setRound] = useState(0);   // changes after each add so the builder starts clean
-  const [mode, setMode] = useState("meal");   // stays on the same way of adding between items
+  const [mode, setMode] = useState("weigh");   // stays on the same way of adding between items
   const hist = useMemo(() => mealHistory(data.days, slot), [data.days, slot]);
   const shown = all ? hist.slice(0, 30) : hist.slice(0, 5);
   const stage = (items, g) => { setTray((t) => [...t, ...items.map((i) => ({ ...i, id: crypto.randomUUID() }))]); if (g) setGrade(g); };
@@ -1945,7 +1956,8 @@ function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
                   <div key={h.sig} className="histcard">
                     <div className="histinfo">
                       <div className="histwhen">{d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} · {h.meal}{h.count > 1 ? ` · eaten ${h.count}x` : ""}</div>
-                      <div className="histname">{h.items.map((f) => f.name.replace(/,\s*[\d.]+.*$/, "")).join(", ")}</div>
+                      <div className="histname">{h.items[0].mealName || h.items.map((f) => f.name.replace(/,\s*[\d.]+.*$/, "")).join(", ")}</div>
+                      {h.items[0].mealName && <div className="dim tiny">{h.items.map((f) => f.name.replace(/,\s*[\d.]+.*$/, "")).join(", ")}</div>}
                       <div className="histmacros"><strong>{Math.round(tot.c * x)} cal</strong>
                         <span className="mP">P {Math.round(tot.p * x)}g</span><span className="mC">C {Math.round(tot.cb * x)}g</span><span className="mF">F {Math.round(tot.f * x)}g</span></div>
                     </div>
@@ -1968,20 +1980,21 @@ function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
       </div>
 
       <div className="stepbox">
-        <div className="steptitle"><span className="stepnum">3</span>Review and log</div>
-        {tray.length === 0 ? <p className="dim tiny">Nothing added yet. Pick something in step 2 and it shows up here.</p> : (
+        <div className="steptitle"><span className="stepnum">3</span>Your meal: review and log</div>
+        {tray.length === 0 ? <p className="dim tiny">Nothing added yet. Add ingredients above, one at a time, and they build your meal here.</p> : (
           <>
             {tray.map((f) => (
               <div key={f.id} className="row small trayrow"><span>{f.name}</span>
                 <span className="fright"><span className="mono">{Math.round(f.calories)}</span>
                   <button className="icon" title="Remove" onClick={() => setTray((t) => t.filter((y) => y.id !== f.id))}><X size={15} /></button></span></div>
             ))}
+            <input placeholder="Name this meal (optional), like My usual breakfast" value={mealName} maxLength={50} onChange={(e) => setMealName(e.target.value)} aria-label="Meal name" />
             <div className="row"><strong>{slot}: {Math.round(sum.cal)} cal · {Math.round(sum.p)}g protein</strong><GradeBadge items={tray} /></div>
           </>
         )}
         <div className="rowbtns">
           <button className="btn ghost wide" onClick={onDone}>Cancel</button>
-          <button className="btn solid wide" disabled={!tray.length} onClick={() => { commit(tray.map((f) => ({ ...f, meal: slot })), grade); onDone(); }}>Log {slot.toLowerCase()}</button>
+          <button className="btn solid wide" disabled={!tray.length} onClick={() => { commit(tray.map((f) => ({ ...f, meal: slot, ...(mealName.trim() ? { mealName: mealName.trim() } : {}) })), grade); onDone(); }}>Log {slot.toLowerCase()}</button>
         </div>
       </div>
     </div>
@@ -1989,14 +2002,14 @@ function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
 }
 
 function AddFood({ onAdd, onCancel, calib, onCalib, recipes, setData, budget, budgetLeft, meal: mealIn, setMeal: setMealIn, bare, mode0, onMode }) {
-  const [mode, setModeRaw] = useState(mode0 || "meal");
+  const [mode, setModeRaw] = useState(mode0 || "weigh");
   const setMode = (k) => { setModeRaw(k); onMode && onMode(k); };
   const [mealOwn, setMealOwn] = useState(guessMeal());
   const meal = mealIn ?? mealOwn, setMeal = setMealIn ?? setMealOwn;
   return (
     <div className={bare ? "stack fadein" : "glass pad stack fadein"}>
       <div className="chips">
-        {[["meal", "Meal"], ["scan", "Scan"], ["weigh", "Ingredient"], ["label", "Label"], ["recipe", "Recipe"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
+        {[["weigh", "Ingredient"], ["scan", "Scan"], ["label", "Label"], ["recipe", "Recipe"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
       </div>
       {mode === "meal" && <MealBuilder meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} calib={calib} onCalib={onCalib} budget={budget} budgetLeft={budgetLeft} />}
@@ -2694,7 +2707,7 @@ function WeighIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Add to meal"
   const local = (() => {
     if (pick) return [];
     const t = q.trim().toLowerCase();
-    if (!t) return FOODS.slice(0, 8);
+    if (!t) { const first = [...USUAL_FOODS, ...COMMON_NAMES.map((n) => FOODS.find((f) => f.n === n)).filter(Boolean)]; return first.filter((f, i) => first.indexOf(f) === i).slice(0, 10); }
     const starts = FOODS.filter((f) => f.n.toLowerCase().startsWith(t) || f.n.toLowerCase().split(/[ ,]+/).some((w) => w.startsWith(t)));
     return [...starts, ...FOODS.filter((f) => !starts.includes(f) && f.n.toLowerCase().includes(t))].slice(0, 7);
   })();
@@ -2745,7 +2758,7 @@ function WeighIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Add to meal"
 
       {!pick && (
         <div className="dropdown" role="listbox">
-          <div className="dd-head">{q.trim() ? "Matches" : "Common foods"}</div>
+          <div className="dd-head">{q.trim() ? "Matches" : USUAL_FOODS.length ? "Your usual and common foods" : "Common foods"}</div>
           {local.map((f) => (
             <button key={f.n} className="dd-row" role="option" onClick={() => take(f, "Table")}>
               <span>{f.n}</span><span className="dim tiny">{perLine(f)}</span>
