@@ -1,6 +1,7 @@
 import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
 import { roadPicks, ROAD_CHAINS, modsFor, applyMods, modLabel } from "./fastFood.js";
-import { gradeFood, gradeTone } from "./grade.js";
+import { gradeFood, gradeTone, letterFor } from "./grade.js";
+import { buildStatBook, RANGES } from "./statbook.js";
 import { decodeFrame } from "./barcode.js";
 import { MORE_FOODS, COMMON_NAMES, ingredientClass, isAddon } from "./ingredients.js";
 import { scaleIngredient, tagsFor, TAG_FILTERS, swapsFor, applySwaps } from "./mealTools.js";
@@ -714,13 +715,13 @@ export default function CutLog() {
       title="Let's build your plan" cta="Start"
       onSave={(profile) => setData((d) => ({ ...d, profile }))} /></Shell>;
 
-  const TABS = [["now", H("Court", "Today"), COURT ? Dribbble : Timer], ["plan", H("Plays", "Meals"), ChefHat], ["out", "Restaurants", Utensils], ["coach", "Coach", MessageCircle], ["weight", H("Stats", "Progress"), Scale], ["log", H("Scores", "History"), CalendarDays], ["setup", H("Locker", "Settings"), Cog]];
+  const TABS = [["now", H("Court", "Today"), COURT ? Dribbble : Timer], ["plan", H("Plays", "Meals"), ChefHat], ["out", "Restaurants", Utensils], ["coach", "Coach", MessageCircle], ["weight", "Stat Book", Scale], ["log", H("Scores", "History"), CalendarDays], ["setup", H("Locker", "Settings"), Cog]];
 
   return (
     <Shell theme={THEME} top={PRO ? <ProTop onSettings={() => setTab("setup")} settingsOn={tab === "setup"} /> : null}>
       {saveErr && <div className="glass pad alert">That change didn’t save. Back up from Setup before closing.</div>}
       <TabHeader tab={tab} title={tab === "log" ? "History and friends" : (TABS.find((t) => t[0] === tab) || [])[1]} dayId={viewDay} setDayId={setViewDay} onSettings={() => setTab("setup")}
-        sub={{ now: "Your day at a glance", plan: "Ideas for what to eat", out: "Best picks when you're on the road", coach: "Ask anything about your food", weight: "Your weight and progress", log: "Your past days, your friends and your group", setup: "Your profile and options" }[tab]} />
+        sub={{ now: "Your day at a glance", plan: "Ideas for what to eat", out: "Best picks when you're on the road", coach: "Ask anything about your food", weight: "Your numbers, weight and goal", log: "Your past days, your friends and your group", setup: "Your profile and options" }[tab]} />
       {(tab === "weight" || tab === "log") && <ProgressSwitch tab={tab} setTab={setTab} />}
       <PopHost />
       <div key={tab} className="fadein">
@@ -2305,6 +2306,15 @@ function TierBox({ grade }) {
   );
 }
 /* ---------- school grades: every food and meal gets an A+ to F automatically ---------- */
+// Grade one food or a whole meal (several foods). The processing class comes from the food names, weighted by calories.
+// A meal from the built-in list is never counted as heavily processed just because its name says "burger".
+function gradeItems(list, share) {
+  const sum = list.reduce((a, f) => ({ calories: a.calories + (+f.calories || 0), protein: a.protein + (+f.protein || 0), carbs: a.carbs + (+f.carbs || 0), fat: a.fat + (+f.fat || 0) }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
+  if (sum.calories <= 0) return null;
+  const classOf = (f) => ingredientClass(f.baseName || f.name, (n) => FOODS.some((x) => x.n === n)) ?? (f.effort ? Math.min(2, guessClass(f.name)) : guessClass(f.name));
+  const cls = list.reduce((a, f) => a + classOf(f) * (+f.calories || 0), 0) / sum.calories;
+  return gradeFood(sum, cls < 1.5 ? 1 : cls > 2.4 ? 3 : 2, { ...GRADE_CTX, share, addon: list.every((f) => isAddon(f.baseName || f.name)), names: list.map((f) => f.baseName || f.name).join(" ") });
+}
 function GradeBadge({ food, items, share }) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState(null);
@@ -2326,13 +2336,8 @@ function GradeBadge({ food, items, share }) {
     return () => { document.removeEventListener("pointerdown", off); window.removeEventListener("scroll", close, true); window.removeEventListener("resize", close); };
   }, [open]);
   const list = items || [food];
-  const sum = list.reduce((a, f) => ({ calories: a.calories + (+f.calories || 0), protein: a.protein + (+f.protein || 0), carbs: a.carbs + (+f.carbs || 0), fat: a.fat + (+f.fat || 0) }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
-  if (sum.calories <= 0) return null;
-  // The processing class comes from the food names; weighted by calories when several foods are graded together.
-  // A meal from the built-in list (made at home or grabbed) is never counted as heavily processed just because its name says "burger".
-  const classOf = (f) => ingredientClass(f.baseName || f.name, (n) => FOODS.some((x) => x.n === n)) ?? (f.effort ? Math.min(2, guessClass(f.name)) : guessClass(f.name));
-  const cls = list.reduce((a, f) => a + classOf(f) * (+f.calories || 0), 0) / sum.calories;
-  const g = gradeFood(sum, cls < 1.5 ? 1 : cls > 2.4 ? 3 : 2, { ...GRADE_CTX, share, addon: list.every((f) => isAddon(f.baseName || f.name)), names: list.map((f) => f.baseName || f.name).join(" ") });
+  const g = gradeItems(list, share);
+  if (!g) return null;
   const tone = gradeTone(g.letter);
   return (
     <span className="gradewrap" ref={ref} style={{ "--g": tone }}>
@@ -3956,6 +3961,86 @@ function Progress({ data, setData }) {
   );
 }
 
+/* ---------- Stat Book: a box score of what you've done over 7, 15, 30, 60 days or all time ---------- */
+function StatBook({ data }) {
+  const [range, setRange] = useState(() => { try { return localStorage.getItem("cutlog:statrange") || "30"; } catch { return "30"; } });
+  const pick = (id) => { setRange(id); try { localStorage.setItem("cutlog:statrange", id); } catch { /* fine */ } };
+  const r = RANGES.find((x) => x.id === range) || RANGES[2];
+  const prof = { ...data.profile, recovering: !!data.recovery?.on };
+  const sb = useMemo(() => buildStatBook({
+    days: data.days, endKey: dayKey(), n: r.n, fasts: data.fasts || [], waterGoal: data.profile?.waterOz || 100,
+    targetsFor: (day) => computeTargets(data.profile, day?.tags || [], null, false),
+    scoreFn: (day, t) => dayScore(day, t, prof),
+    onTrack: ON_TRACK,
+    gradeMeals: (day) => MEALS.map((m) => { const g = gradeItems((day.foods || []).filter((f) => f.meal === m), m === "Snack" ? 0.15 : 0.4); return g ? { score: g.score, letter: g.letter } : null; }).filter(Boolean),
+  }), [data.days, data.fasts, data.profile, range]);
+  const n0 = (v, d = 0) => (v == null ? "—" : Math.round(v * 10 ** d) / 10 ** d).toLocaleString();
+  const sign = (v, d = 1) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}`);
+  const of = (a, b) => `${a} of ${b}`;
+  const L = (v) => (v == null ? "—" : `${letterFor(Math.round(v))} · ${Math.round(v)}`);
+  const rows = [
+    ["Games played", null],
+    ["Days logged", of(sb.logged, sb.span), "", "A day counts when you logged any food."],
+    ["Per day, average", null],
+    ["Calories", n0(sb.nutrition.cal), "", "Average on days you logged food."],
+    ["Protein (g)", n0(sb.nutrition.protein), n0(sb.nutrition.bestProtein)],
+    ["Carbs (g)", n0(sb.nutrition.carbs)],
+    ["Fat (g)", n0(sb.nutrition.fat)],
+    ["Hitting your targets", null],
+    ["Protein goal days", of(sb.nutrition.proteinDays, sb.logged), "", "Days you reached 90% of your protein target."],
+    ["Calorie range days", of(sb.nutrition.calDays, sb.logged), "", "Days within 10% of your calorie budget (two or more meals logged)."],
+    ["Health", null],
+    ["Daily score", sb.score.avg == null ? "—" : `${n0(sb.score.avg)} / 100`, n0(sb.score.best)],
+    ["On-track days (70+)", of(sb.score.onTrack, sb.logged)],
+    ["Meal grade", L(sb.grades.avg), L(sb.grades.best), "Each meal (breakfast, lunch, dinner, snack) gets a grade. This is the average."],
+    ["Tier 1 meals (A)", sb.grades.count ? `${sb.grades.tier1} of ${sb.grades.count} (${Math.round(100 * sb.grades.tier1 / sb.grades.count)}%)` : "—", "", "Whole, healthy meals."],
+    ["Body", null],
+    ["Weight", sb.body.weightNow == null ? "—" : `${n0(sb.body.weightNow, 1)} lb`, "", sb.body.weightChange == null ? "Weigh in at least twice in this range to see the change." : `${sign(sb.body.weightChange)} lb since the start of this range (${sb.body.weighIns} weigh-ins).`],
+    ["Waist", sb.body.waistNow == null ? "—" : `${n0(sb.body.waistNow, 1)} in`, "", sb.body.waistChange == null ? "" : `${sign(sb.body.waistChange)} in over this range.`],
+    ["Habits", null],
+    ["Water (oz)", n0(sb.habits.waterAvg), n0(sb.habits.waterBest), sb.habits.waterAvg == null ? "" : `Reached your water goal on ${sb.habits.waterDays} days.`],
+    ["Steps", n0(sb.habits.stepsAvg), n0(sb.habits.stepsBest)],
+    ["Sleep (h)", n0(sb.habits.sleepAvg, 1), n0(sb.habits.sleepBest, 1)],
+    ["Active days", String(sb.habits.activeDays), "", "Days with a workout, a tag like Lifted or Job site, or a logged lift."],
+    ["Rest days", String(sb.habits.restDays)],
+    ["Fasts finished", String(sb.habits.fasts), sb.habits.fastLongest == null ? "" : `${n0(sb.habits.fastLongest, 1)} h`, sb.habits.fastAvg == null ? "" : `Average ${n0(sb.habits.fastAvg, 1)} hours.`],
+  ];
+  return (
+    <>
+      <SectionBar title="Box score" sub="Your season so far. Pick a range." />
+      <div className="chips" role="tablist" aria-label="Time range">
+        {RANGES.map((x) => <button key={x.id} role="tab" aria-selected={range === x.id} className={range === x.id ? "chip on" : "chip"} onClick={() => pick(x.id)}>{x.label}</button>)}
+      </div>
+      <div className="glass pad">
+        {sb.active === 0 ? <p className="dim center">Nothing logged in this range yet. Log a meal on Today and it shows up here.</p> : (
+          <table className="boxscore">
+            <thead><tr><th>STAT</th><th>AVG / TOTAL</th><th>BEST</th></tr></thead>
+            <tbody>
+              {rows.map((row, i) => row[1] === null
+                ? <tr key={i} className="bs-head"><th colSpan={3}>{row[0]}</th></tr>
+                : <tr key={i}><td>{row[0]}{row[3] && <div className="dim tiny">{row[3]}</div>}{!row[3] && row[2] && null}</td><td className="mono">{row[1]}</td><td className="mono dim">{row[2] || ""}</td></tr>)}
+            </tbody>
+          </table>
+        )}
+      </div>
+      {sb.top.length > 0 && (
+        <div className="glass pad">
+          <div className="small" style={{ fontWeight: 700, marginBottom: 6 }}>Most eaten</div>
+          {sb.top.map((f, i) => <div key={f.name} className="row small"><span>{i + 1}. {f.name}</span><span className="mono dim">{f.count}×</span></div>)}
+        </div>
+      )}
+      {sb.grades.count > 0 && (
+        <div className="glass pad">
+          <div className="small" style={{ fontWeight: 700, marginBottom: 6 }}>Meal grades handed out</div>
+          {[["A", "A (Tier 1)"], ["B", "B (Tier 2)"], ["C", "C (Tier 3)"], ["D", "D"], ["F", "F (off plan)"]].map(([k, l]) => (
+            <div key={k} className="row small"><span>{l}</span><span className="mono dim">{sb.grades.dist[k] || 0}</span></div>))}
+        </div>
+      )}
+      <SectionBar title="Weight and goal" sub="Weigh in, waist, photos and your challenge" />
+    </>
+  );
+}
+
 function Weight({ data, setData, targets, updateDay }) {
   const today = dayKey();
   const cur = data.days[today]?.weight ?? "";
@@ -3977,6 +4062,7 @@ function Weight({ data, setData, targets, updateDay }) {
 
   return (
     <>
+      <StatBook data={data} />
       <div className="glass hero">
         <Ring pct={start !== goal ? Math.max(0, lost) / Math.abs(start - goal) : 0} color={C.protein} size={220}>
           <div className="huge">{shown.toFixed(1)}<span className="unit">lb</span></div>
@@ -4909,6 +4995,13 @@ function Shell({ children, theme, top }) {
         .dot { width:7px; height:7px; border-radius:50%; }
         .fooditem { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:12px 16px; border-top:1px solid rgba(255,255,255,.06); font-size:14px; }
         .fright { display:flex; align-items:center; gap:6px; }
+        .boxscore { width:100%; border-collapse:collapse; font-size:14px; }
+        .boxscore th { text-align:left; font-size:11px; letter-spacing:.08em; color:inherit; opacity:.6; padding:4px 0; font-weight:700; }
+        .boxscore th:nth-child(n+2), .boxscore td:nth-child(n+2) { text-align:right; white-space:nowrap; padding-left:10px; }
+        .boxscore td { padding:8px 0; border-top:1px solid rgba(255,255,255,.07); vertical-align:top; }
+        .boxscore td:first-child { padding-right:10px; }
+        .boxscore tr.bs-head th { padding:14px 0 4px; font-size:12px; opacity:1; color:${C.cal}; text-align:left; border-top:none; }
+        .boxscore tr.bs-head:first-child th { padding-top:4px; }
         .histcard { display:flex; align-items:center; gap:10px; padding:12px 14px; border-radius:14px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08); }
         .histwhen { font-size:12px; opacity:.65; }
         .histcard .histname { font-size:15px; font-weight:700; white-space:normal; margin:2px 0 6px; }
@@ -5319,7 +5412,7 @@ function TabHeader({ tab, title, sub, dayId, setDayId, onSettings }) {
 function ProgressSwitch({ tab, setTab }) {
   return (
     <div className="chips" style={{ marginBottom: 10 }}>
-      <button className={tab === "weight" ? "chip on" : "chip"} onClick={() => setTab("weight")}>Progress</button>
+      <button className={tab === "weight" ? "chip on" : "chip"} onClick={() => setTab("weight")}>Stat Book</button>
       <button className={tab === "log" ? "chip on" : "chip"} onClick={() => setTab("log")}>History and friends</button>
     </div>
   );
