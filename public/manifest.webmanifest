@@ -1,6 +1,6 @@
 {
-  "name": "Cut Log",
-  "short_name": "Cut Log",
+  "name": "D1 Reload",
+  "short_name": "D1 Reload",
   "description": "Fasting timer, food log and meal planner",
   "start_url": "/",
   "scope": "/",

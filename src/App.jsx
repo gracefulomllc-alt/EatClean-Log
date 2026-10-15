@@ -767,7 +767,7 @@ function Welcome({ onDone }) {
   return (
     <div className="glass pad stack">
       <h1 className="welcomehead">Know exactly what to eat today.</h1>
-      <p className="small">Cut Log is a food and fasting tracker. It builds your daily calorie and protein goal, finds meals that fit it, and tracks your day.</p>
+      <p className="small">D1 Reload is a food and fasting tracker. It builds your daily calorie and protein goal, finds meals that fit it, and tracks your day.</p>
       <button className="btn solid wide big" onClick={onDone}>Build my plan</button>
       {steps.map(([n, t, b]) => <div key={n} className="row gap" style={{ alignItems: "flex-start" }}><span className="stepnum">{n}</span><div><strong>{t}</strong><p className="dim small" style={{ margin: "2px 0 0" }}>{b}</p></div></div>)}
       <h3 style={{ margin: "8px 0 0" }}>Also inside</h3>
@@ -1924,7 +1924,7 @@ function JoinSync({ onJoin }) {
   };
   if (!open) return (
     <button className="btn ghost wide" style={{ marginBottom: 12 }} onClick={() => setOpen(true)}>
-      Already use Cut Log on another device?</button>
+      Already use D1 Reload on another device?</button>
   );
   return (
     <div className="glass pad stack">
@@ -3749,7 +3749,7 @@ function Gate({ onOk }) {
 
   return (
     <div className="glass pad stack" style={{ marginTop: "22vh" }}>
-      <h2>Cut Log</h2>
+      <h2>D1 Reload</h2>
       <p className="dim small">This one's invite-only. Enter the code you were given.</p>
       <input autoFocus placeholder="Access code" value={code}
         onChange={(e) => setCode(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
@@ -4348,7 +4348,7 @@ function InstallPanel() {
     <div className="glass pad stack">
       <h2>Put it on your home screen</h2>
       {prompt
-        ? <button className="btn solid wide" onClick={async () => { prompt.prompt(); await prompt.userChoice; window.__installPrompt = null; setPrompt(null); }}>Install Cut Log</button>
+        ? <button className="btn solid wide" onClick={async () => { prompt.prompt(); await prompt.userChoice; window.__installPrompt = null; setPrompt(null); }}>Install D1 Reload</button>
         : <p className="dim small">In Chrome, tap ⋮ → <strong>Add to Home screen</strong> (or <strong>Install app</strong>). On iPhone, Share → Add to Home Screen.</p>}
       <p className="dim tiny">Installed, it opens full-screen like any other app, and fasting alerts are more reliable.</p>
     </div>
@@ -5310,7 +5310,7 @@ function ProgressSwitch({ tab, setTab }) {
 function ProTop({ onSettings, settingsOn }) {
   return (
     <>
-      <header className="probar"><span className="prologo">CUT<b>LOG</b></span><button className={settingsOn ? "progear on" : "progear"} aria-label="Settings" onClick={onSettings}><Cog size={20} /></button></header>
+      <header className="probar"><span className="prologo">D1<b>RELOAD</b></span><button className={settingsOn ? "progear on" : "progear"} aria-label="Settings" onClick={onSettings}><Cog size={20} /></button></header>
       <div className="proscores"><GamesPanel /></div>
     </>
   );

@@ -1,4 +1,4 @@
-// Cut Log service worker: opens offline, and shows fasting-stage notifications.
+// D1 Reload service worker: opens offline, and shows fasting-stage notifications.
 const CACHE = "cutlog-v1";
 
 self.addEventListener("install", (e) => {
@@ -31,7 +31,7 @@ self.addEventListener("fetch", (e) => {
 self.addEventListener("push", (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch { d = { body: e.data?.text() }; }
-  e.waitUntil(self.registration.showNotification(d.title || "Cut Log", {
+  e.waitUntil(self.registration.showNotification(d.title || "D1 Reload", {
     body: d.body || "",
     icon: "/icon-192.png",
     badge: "/icon-192.png",
