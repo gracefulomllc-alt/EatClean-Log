@@ -38,9 +38,13 @@ export function gradeFood(m, cls = 2, ctx = {}) {
   // 4. Added sugar and refined carbs
   const names = String(ctx.names || "");
   const refined = REFINED.test(names) && !WHOLEGRAIN.test(names);
-  const sugarPts = tiny ? 15 : sugary ? (cls === 1 ? 9 : 2) : cls === 3 ? (carbPct > 0.5 ? 6 : 10) : refined ? 8 : 15;
+  const labs = ctx.labs || {};
+  let sugarPts = tiny ? 15 : sugary ? (cls === 1 ? 9 : 2) : cls === 3 ? (carbPct > 0.5 ? 6 : 10) : refined ? 8 : 15;
   // 5. Fat quality: the natural fat in eggs, salmon, avocado or nuts is fine; the same share in fried or packaged food is not.
-  const [fatLim, fatSpan] = cls === 1 ? [0.75, 0.3] : cls === 3 ? [0.3, 0.25] : [0.5, 0.35];
+  const [fatLim0, fatSpan] = cls === 1 ? [0.75, 0.3] : cls === 3 ? [0.3, 0.25] : [0.5, 0.35];
+  // Lab results make the weak spots count a little more (at most a few points, and never for lean whole food).
+  const fatLim = labs.heart && cls !== 1 ? fatLim0 - 0.1 : fatLim0;
+  if (labs.sugar && !tiny && (sugary || refined || cls === 3)) sugarPts = Math.round(sugarPts * 0.6);
   const fatPts = addon || tiny ? 10 : 10 - Math.min(1, Math.max(0, (fatPct - fatLim) / fatSpan)) * 10;
 
   const score = Math.round(wholePts + proteinPts + portionPts + sugarPts + fatPts);
@@ -63,6 +67,8 @@ export function gradeFood(m, cls = 2, ctx = {}) {
       note: addon ? "Cooking fats and sauces are mostly fat by nature, so this is not held against it. Measure it, since the calories add up fast." : `${fp}% of the calories come from fat. ${fatPct <= fatLim ? (cls === 1 && fatPct > 0.4 ? "That's natural fat from a whole food, which is fine." : "Nicely balanced.") : cls === 1 ? "High, even for a whole food. Watch the oil or butter added." : `Under ${Math.round(fatLim * 100)}% is ideal for this kind of food.`}`,
       tip: "Use less oil, butter or cheese, or pick a leaner cut." },
   ];
+  if (labs.sugar && !tiny && (sugary || refined || cls === 3)) parts.find((x) => x.key === "sugar").note += " Your lab results make this count more.";
+  if (labs.heart && cls !== 1 && fatPct > fatLim) parts.find((x) => x.key === "fat").note += " Your lab results make this count more.";
   // The weakest area becomes the one-line reason and the tip.
   const lost = (p) => (p.max - p.pts) / p.max;
   const ranked = parts.slice().sort((a, b) => lost(b) - lost(a));

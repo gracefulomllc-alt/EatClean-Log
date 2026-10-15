@@ -1,6 +1,7 @@
 import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
 import { roadPicks, ROAD_CHAINS, searchChains, visitCounts, chainGroups, modsFor, applyMods, modLabel } from "./fastFood.js";
 import { gradeFood, gradeTone, letterFor } from "./grade.js";
+import { labFocus, parseLabReport, mergeNewLabs } from "./labs.js";
 import { buildStatBook, RANGES } from "./statbook.js";
 import { applyWatch } from "./watch.js";
 import { cyclePhase } from "./cycle.js";
@@ -731,7 +732,7 @@ export default function CutLog() {
     return [...n.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => FOODS.find((f) => f.n === k)).filter(Boolean).slice(0, 6);
   }, [data?.days]);
   USUAL_FOODS = usual;
-  GRADE_CTX = { goal: data?.profile ? goalOf(data.profile) : "lose", targetCal: todayTargets?.calories || 2000 };
+  GRADE_CTX = { goal: data?.profile ? goalOf(data.profile) : "lose", targetCal: todayTargets?.calories || 2000, labs: labFocus(data?.labs) };
   useEffect(() => {
     if (!data?.groups?.length || !todayTargets) return;
     const pub = () => (dataRef.current?.groups || []).forEach((g) => {
@@ -769,7 +770,7 @@ export default function CutLog() {
       <div key={tab} className="fadein">
         {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay, openCrew, goTab: () => { setTab("setup"); setTimeout(() => document.getElementById("fasting-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 250); } }} />}
         {tab === "out" && <RoadTab data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} dayId={viewDay} setDayId={setViewDay} />}
-        {tab === "plan" && <Plan data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} dayId={viewDay} setDayId={setViewDay} />}
+        {tab === "plan" && <Plan data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} dayId={viewDay} setDayId={setViewDay} goSettings={() => setTab("setup")} />}
         {tab === "weight" && <Weight data={data} setData={setData} targets={targets} updateDay={updateDay} />}
         {tab === "coach" && <Coach data={data} setData={setData} targets={targets} adaptive={adaptive} />}
         {tab === "log" && <LogTab view={logView} setView={setLogView} data={data} setData={setData} onPick={(k) => { setViewDay(k); setTab("now"); }} />}
@@ -1032,12 +1033,13 @@ function NextUp({ data, left, proteinLeft, dayId, updateDay }) {
     return pool.map((m) => ({ m, g: gradeFood(m, ingredientClass(m.name, () => false) ?? Math.min(2, guessClass(m.name)), { ...GRADE_CTX, names: m.name }) }))
       .sort((a, b) => b.g.score - a.g.score || Math.abs(a.m.protein - Math.min(proteinLeft, 50)) - Math.abs(b.m.protein - Math.min(proteinLeft, 50)))
       .slice(0, 3);
-  }, [slot, Math.round(left / 25), Math.round(proteinLeft / 10), data.profile]);
+  }, [slot, Math.round(left / 25), Math.round(proteinLeft / 10), data.profile, data.labs]);
   const log = (m) => { updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), meal: tight ? "Snack" : slot, at: stampFor(dayId), u: Date.now(), name: m.name, calories: Math.round(m.calories), protein: Math.round(m.protein), carbs: Math.round(m.carbs), fat: Math.round(m.fat) }] }));
     pop(m); setAdded((a) => ({ ...a, [m.name]: true })); };
   return (
     <div className="glass pad stack">
       <div className="row"><h2>What to eat next</h2><span className="dim tiny">{Math.max(0, Math.round(left)).toLocaleString()} cal · {Math.max(0, Math.round(proteinLeft))}g protein left</span></div>
+      {(GRADE_CTX.labs?.heart || GRADE_CTX.labs?.sugar) && <p className="dim tiny">Picked with your lab results in mind.</p>}
       {tight ? <p className="small">{left <= 0 ? "You've used today's calories." : "Only a little room left today."} If you're still hungry, these are light and filling:</p>
         : <>
           <div className="chips" style={{ marginBottom: 0 }}>{MEALS.map((m) => <button key={m} className={slot === m ? "chip on" : "chip"} onClick={() => setSlot(m)}>{m}</button>)}</div>
@@ -3170,7 +3172,7 @@ function DescribeIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Add to me
 const LAB_PRESETS = ["Total cholesterol", "LDL", "HDL", "Triglycerides", "A1c", "Fasting glucose",
   "ALT", "AST", "Vitamin D", "Ferritin", "TSH", "Creatinine", "eGFR", "CRP", "Uric acid"];
 
-function Plan({ data, setData, targets, day, updateDay, dayId, setDayId }) {
+function Plan({ data, setData, targets, day, updateDay, dayId, setDayId, goSettings }) {
   const today = dayId || dayKey();
   const menu = data.menus?.[today] || null;
   const [busy, setBusy] = useState(false);
@@ -3180,7 +3182,6 @@ function Plan({ data, setData, targets, day, updateDay, dayId, setDayId }) {
   const [swapApplied, setSwapApplied] = useState({});   // dish id -> applied swap ids
   const [swapOpen, setSwapOpen] = useState(null);
   const [tagFilter, setTagFilter] = useState("");
-  const [showLabs, setShowLabs] = useState(false);
   const [showList, setShowList] = useState(false);
   const [craving, setCraving] = useState("");
   const [slot, setSlot] = useState(guessMeal());
@@ -3202,7 +3203,7 @@ ${craving.trim() ? `What they're in the mood for: "${craving.trim()}". Take this
 Their numbers: ${targets.calories} calorie budget today, ${targets.protein}g protein target. ${remainCal} calories and ${Math.max(0, Math.round(remainP))}g protein left for the rest of the day. Size these options so they fit what's left without using all of it, unless this is their last meal of the day.
 ${data.fast ? "They are fasting right now, so this will break the fast — lead with protein." : ""}
 ${likes.length ? `Foods they already eat: ${likes.join(", ")}.` : ""}
-${labs.length ? `\nLab values they entered:\n${labs.slice(0, 12).map((l) => `${l.name}: ${l.value}${l.unit ? " " + l.unit : ""} (${l.date})`).join("\n")}\n\nUse these ONLY to lean on well-established dietary patterns. Do NOT diagnose or name conditions. If a value looks meaningfully out of range, put one plain sentence in "flag" telling them to raise it with their doctor.` : ""}
+${labs.length ? `\nLab values they entered:\n${labs.slice(0, 12).map((l) => `${l.name}: ${l.value}${l.unit ? " " + l.unit : ""} (${l.date})`).join("\n")}\n\n${labFocus(labs).hints.length ? "Lean toward: " + labFocus(labs).hints.join(" ") + "\n" : ""}Use these ONLY to lean on well-established dietary patterns. Do NOT diagnose or name conditions. If a value looks meaningfully out of range, put one plain sentence in "flag" telling them to raise it with their doctor.` : ""}
 
 Repetition is fine — do not avoid obvious or familiar meals. Real food, honestly counted, including the oil it's cooked in.
 
@@ -3367,9 +3368,8 @@ Respond with ONLY JSON:
         {showList ? "Hide shopping list" : `Shopping list${(data.list || []).length ? ` (${(data.list || []).length})` : ""}`}</button>
       {showList && <Shopping data={data} setData={setData} />}
 
-      <button className="btn ghost wide" onClick={() => setShowLabs(!showLabs)}>
-        {showLabs ? "Hide lab results" : `Lab results (blood work)${labs.length ? ` (${labs.length})` : ""}`}</button>
-      {showLabs && <Labs data={data} setData={setData} />}
+      <button className="btn ghost wide" onClick={goSettings}>
+        {labs.length ? `Lab results (${labs.length}) are shaping your meals. Update in Settings` : "Add your lab results (blood work) in Settings"}</button>
     </>
   );
 }
@@ -3779,28 +3779,73 @@ function Labs({ data, setData }) {
   const [value, setValue] = useState("");
   const [unit, setUnit] = useState("");
   const [date, setDate] = useState(dayKey());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [found, setFound] = useState(null);   // rows read from a report, waiting for you to confirm
+  const [manual, setManual] = useState(false);
+  const focus = labFocus(labs);
 
   const add = () => {
     if (!name.trim() || value === "") return;
-    setData((d) => ({ ...d, labs: [{ id: crypto.randomUUID(), name: name.trim(), value, unit: unit.trim(), date, u: Date.now() }, ...(d.labs || [])].slice(0, 60) }));
+    setData((d) => ({ ...d, labs: [{ id: crypto.randomUUID(), name: name.trim(), value, unit: unit.trim(), date, u: Date.now() }, ...(d.labs || [])].slice(0, 150) }));
     setName(""); setValue(""); setUnit("");
   };
 
+  const readReport = async (e) => {
+    const f = e.target.files?.[0]; e.target.value = "";
+    if (!f) return;
+    setBusy(true); setErr(""); setFound(null);
+    try {
+      const isPdf = f.type === "application/pdf";
+      if (isPdf && f.size > 4 * 1024 * 1024) throw new Error("big");
+      const data64 = isPdf
+        ? await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(f); })
+        : (await shrinkPhoto(f, 1800, 0.85)).split(",")[1];
+      const p = await askClaude([
+        { type: "image", source: { type: "base64", media_type: isPdf ? "application/pdf" : "image/jpeg", data: data64 } },
+        { type: "text", text: `This is a lab report or blood work results. Transcribe the numeric results exactly as printed. Do not estimate or correct anything. Skip anything without a number. Use short common names (LDL, HDL, Total cholesterol, Triglycerides, A1c, Fasting glucose, ALT, AST, Vitamin D, Ferritin, TSH, Creatinine, eGFR, CRP, Uric acid, or the name as printed). Respond with ONLY JSON: {"date":"collection date as YYYY-MM-DD, or null","labs":[{"name":"...","value":"number as printed","unit":"unit as printed or empty"}]}` }], 3000);
+      const rows = parseLabReport(p, dayKey());
+      if (!rows.length) throw new Error("none");
+      setFound(rows);
+    } catch (x) { setErr(x.message === "big" ? "That PDF is over 4 MB. Take a photo of each page instead." : "Couldn't find lab values in that. Try a clearer, straight-on photo, or type them in."); }
+    setBusy(false);
+  };
+  const saveFound = () => {
+    setData((d) => ({ ...d, labs: mergeNewLabs(d.labs, found, () => crypto.randomUUID()).labs }));
+    setFound(null);
+  };
+
   return (
-    <div className="glass pad stack fadein" style={{ marginTop: 12 }}>
-      <h2>Lab work</h2>
-      <p className="dim tiny">Never shared, even with sharing on. This isn't medical advice and it doesn't replace your doctor — it just lets the menu lean on general dietary patterns instead of guessing.</p>
-      <div className="chips">{LAB_PRESETS.map((l) => (
-        <button key={l} className={name === l ? "chip on" : "chip"} onClick={() => setName(l)}>{l}</button>))}</div>
-      <div className="row gap">
-        <input placeholder="Marker" value={name} onChange={(e) => setName(e.target.value)} />
-        <input className="mini" placeholder="Value" value={value} onChange={(e) => setValue(e.target.value)} />
-      </div>
-      <div className="row gap">
-        <input placeholder="Unit (mg/dL, %, ng/mL)" value={unit} onChange={(e) => setUnit(e.target.value)} />
-        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-      </div>
-      <button className="btn solid wide" onClick={add} disabled={!name.trim() || value === ""}>Add marker</button>
+    <div className="glass pad stack">
+      <h2>Lab results</h2>
+      <p className="dim tiny">Saved to your profile and synced to your other devices. Never shared with friends, even with sharing on. This isn't medical advice and doesn't replace your doctor. It lets meal ideas, Next Up picks and food grades lean on general healthy-eating patterns for your numbers.</p>
+      {focus.any && <div className="alert">{focus.hints.map((h, i) => <div key={i} className="small">{h}</div>)}</div>}
+      <label className="btn solid wide" style={{ textAlign: "center", cursor: "pointer" }}>{busy ? "Reading your report…" : "Upload a photo or PDF of your results"}
+        <input type="file" accept="image/*,application/pdf" onChange={readReport} style={{ display: "none" }} disabled={busy} /></label>
+      {err && <p className="alert small">{err}</p>}
+      {found && (
+        <div className="glass pad stack">
+          <strong>Check these against your report</strong>
+          {found.map((r, i) => (
+            <div key={i} className="row tiny"><span>{r.name}</span><span className="dim">{r.value}{r.unit ? ` ${r.unit}` : ""} · {r.date}</span>
+              <button className="icon" onClick={() => setFound(found.filter((_, j) => j !== i))}><X size={14} /></button></div>))}
+          <div className="row gap"><button className="btn solid wide" onClick={saveFound} disabled={!found.length}>Add {found.length} to my profile</button>
+            <button className="btn ghost" onClick={() => setFound(null)}>Cancel</button></div>
+        </div>)}
+      <button className="btn ghost wide" onClick={() => setManual(!manual)}>{manual ? "Hide typing them in" : "Or type them in"}</button>
+      {manual && <>
+        <div className="chips">{LAB_PRESETS.map((l) => (
+          <button key={l} className={name === l ? "chip on" : "chip"} onClick={() => setName(l)}>{l}</button>))}</div>
+        <div className="row gap">
+          <input placeholder="Marker" value={name} onChange={(e) => setName(e.target.value)} />
+          <input className="mini" placeholder="Value" value={value} onChange={(e) => setValue(e.target.value)} />
+        </div>
+        <div className="row gap">
+          <input placeholder="Unit (mg/dL, %, ng/mL)" value={unit} onChange={(e) => setUnit(e.target.value)} />
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </div>
+        <button className="btn solid wide" onClick={add} disabled={!name.trim() || value === ""}>Add marker</button>
+      </>}
       {labs.map((l) => (
         <div key={l.id} className="row tiny">
           <span>{l.name}</span>
@@ -4891,6 +4936,7 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
         {t.clamped && <p className="alert">Budget is held at the floor. Add movement instead of cutting lower.</p>}
       </div>
       <ProfileForm initial={data.profile} title="Your profile" cta="Save" onSave={onSave} />
+      <Labs data={data} setData={setData} />
       <div className="glass pad stack">
         <h2>Backup</h2>
         <p className="dim tiny">This lives in one browser. Copy it somewhere safe now and again.</p>

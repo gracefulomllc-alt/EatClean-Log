@@ -1,0 +1,26 @@
+import { labFocus, latestLabs, parseLabReport, mergeNewLabs } from "../src/labs.js";
+import { gradeFood } from "../src/grade.js";
+let ok = 0, bad = 0; const t = (c, m) => { c ? ok++ : (bad++, console.log("FAIL", m)); };
+t(!labFocus([]).any && !labFocus(undefined).heart, "no labs, no focus");
+t(labFocus([{ name: "LDL", value: "151", date: "2026-01-01" }]).heart && !labFocus([{ name: "LDL", value: "151", date: "2026-01-01" }]).sugar, "high LDL -> heart");
+t(labFocus([{ name: "A1c", value: "5.9", date: "2026-01-01" }]).sugar, "A1c 5.9 -> sugar");
+t(!labFocus([{ name: "LDL", value: "90", date: "2026-01-01" }, { name: "HDL", value: "55", date: "2026-01-01" }]).any, "healthy values -> nothing");
+t(!labFocus([{ name: "LDL", value: "151", date: "2025-01-01", u: 1 }, { name: "LDL", value: "100", date: "2026-01-01", u: 2 }]).heart, "newest value wins");
+t(labFocus([{ name: "HDL", value: "35", date: "2026-01-01" }]).heart, "low HDL -> heart");
+t(labFocus([{ name: "Vitamin D", value: "18 ng/mL", date: "2026-01-01" }]).hints.length === 1, "low vitamin D gives a hint only");
+t(Object.keys(latestLabs([{ name: "x", value: "abc" }])).length === 0, "non-numeric ignored");
+const rows = parseLabReport({ date: "2026-09-01", labs: [{ name: " LDL ", value: "120", unit: "mg/dL" }, { name: "LDL", value: "121" }, { name: "Notes", value: "see doctor" }, { name: "", value: "5" }, { name: "A1c", value: "5.4", unit: "%", date: "2099-01-01" }] }, "2026-10-15");
+t(rows.length === 2 && rows[0].name === "LDL" && rows[1].date === "2026-09-01", "report cleaned: " + JSON.stringify(rows));
+t(parseLabReport({ date: "garbage", labs: [{ name: "LDL", value: "1" }] }, "2026-10-15")[0].date === "2026-10-15", "bad date -> today");
+t(parseLabReport(null, "2026-10-15").length === 0, "null report");
+let n = 0; const m1 = mergeNewLabs([], rows, () => "id" + n++, 5);
+t(m1.added === 2 && m1.labs[0].u === 5, "merge adds");
+t(mergeNewLabs(m1.labs, rows, () => "z", 6).added === 0, "no duplicates on re-add");
+// grading
+const donut = { calories: 300, protein: 4, carbs: 45, fat: 12 }, base = gradeFood(donut, 3, { names: "glazed donut" });
+const sg = gradeFood(donut, 3, { names: "glazed donut", labs: { sugar: true } }), hr = gradeFood(donut, 3, { names: "glazed donut", labs: { heart: true } });
+t(sg.score < base.score && hr.score <= base.score, `labs lower sweets/fried: ${base.score} ${sg.score} ${hr.score}`);
+const chick = { calories: 350, protein: 45, carbs: 5, fat: 10 };
+t(gradeFood(chick, 1, { names: "grilled chicken", labs: { sugar: true, heart: true } }).score === gradeFood(chick, 1, { names: "grilled chicken" }).score, "whole lean food unchanged");
+t(base.score - sg.score <= 8, "effect is bounded");
+console.log(bad ? `${bad} failed` : `labs ok (${ok})`); process.exit(bad ? 1 : 0);
