@@ -5515,7 +5515,17 @@ function Shell({ children, theme, top }) {
         .app.pro .dockbtn.on svg { color:var(--nbablue); }
 
         @media (prefers-reduced-motion:reduce) { *, .app::before, .app::after { animation:none !important; transition:none !important; } }
-      `}</style>
+      
+        /* Centered layout: banners, card headings and button rows */
+        .secbar { flex-direction:column; justify-content:center; text-align:center; gap:6px; border-left:none; border-top:4px solid #E11D48; border-radius:12px; padding:12px 14px; }
+        .secbar > div { width:100%; }
+        .secright { font-size:14px; opacity:.95; }
+        .app h2, .app.pro h2, .app.modern h2, .app.arena h2 { text-align:center; border-left:none; padding-left:0; }
+        .row:has(> h2) { flex-direction:column; align-items:center; justify-content:center; text-align:center; gap:4px; }
+        .chips { justify-content:center; }
+        .rowbtns { justify-content:center; }
+        .steptitle { justify-content:center; text-align:center; }
+`}</style>
       {top}
       {children}
     </div>
