@@ -955,6 +955,16 @@ function PastFasts({ data, setData }) {
 }
 
 /* ---------- now ---------- */
+/* ---------- section banners: a clear break between fasting, food, water and activity ---------- */
+function SectionBar({ title, sub, right, id }) {
+  return (
+    <div className="secbar" id={id} role="heading" aria-level="2">
+      <div><div className="sectitle">{title}</div>{sub && <div className="secsub">{sub}</div>}</div>
+      {right && <div className="secright mono">{right}</div>}
+    </div>
+  );
+}
+
 function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew, goTab }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -988,6 +998,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
     <>
       {isToday && !PRO && <GamesPanel />}
       {isToday && <CrewCard data={data} onOpen={openCrew} />}
+      {(fastOn || (!fastEnabled && !fast && isToday && fastGate(data.profile).ok)) && <SectionBar title="Fasting" sub={fast && fastOn ? `${st?.name || "Fasting"} · next: ${nx?.name || "keep going"}` : "Your fasting clock"} right={fast && fastOn ? fmtHM(now - fast.start) : ""} />}
       {fastOn && fast && (() => {
         const cs = fastConfirmState(fast.start, fast.confirmedAt, now);
         if (cs.state !== "due" && cs.state !== "unconfirmed") return null;
@@ -1074,6 +1085,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
         </div>
       )}
 
+      <SectionBar title="Food" sub={`${t.cal.toLocaleString()} of ${targets.calories.toLocaleString()} calories`} right={`${Math.abs(Math.round(left)).toLocaleString()} ${left < 0 ? "over" : "left"}`} />
       <div className="glass pad">
         <div className="fuelhead">
           <div>
@@ -1187,20 +1199,23 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
       {(() => {
         const goal = data.profile.waterOz || 100, have = +day.water || 0;
         return (
+          <>
+          <SectionBar title="Water" sub="Press a button each time you drink" right={`${have} / ${goal} oz`} />
           <div className="glass pad">
             <div className="row"><label style={{ margin: 0 }}>Water</label>
               <span className="mono" style={{ color: have >= goal ? C.water : undefined }}>{have} / {goal} oz</span></div>
-            <p className="dim tiny">Press a button each time you drink.</p>
-            <div className="track"><div style={{ width: `${Math.min(100, (have / goal) * 100)}%`, background: C.water, boxShadow: `0 0 10px ${C.water}88` }} /></div>
+                        <div className="track"><div style={{ width: `${Math.min(100, (have / goal) * 100)}%`, background: C.water, boxShadow: `0 0 10px ${C.water}88` }} /></div>
             <div className="chips" style={{ marginTop: 10, marginBottom: 0 }}>
               {[8, 16, 24].map((n) => (
                 <button key={n} className="chip" onClick={() => updateDay(dayId, (d) => ({ ...d, water: (+d.water || 0) + n }))}>+{n} oz</button>))}
               <button className="chip" disabled={!have} onClick={() => updateDay(dayId, (d) => ({ ...d, water: Math.max(0, (+d.water || 0) - 8) }))}>−8</button>
             </div>
           </div>
+          </>
         );
       })()}
 
+      <SectionBar title="Activity and daily check" sub="Lifts, steps, sleep and your score" right={day.steps ? `${Number(day.steps).toLocaleString()} steps` : ""} />
       <LiftLog {...{ data, setData, dayId, day, updateDay }} />
 
       <ScoreCard {...{ data, dayId, day, targets, updateDay }} />
@@ -4735,6 +4750,11 @@ function Shell({ children, theme, top }) {
         .scanwrap .shot { width:100%; display:block; max-height:300px; object-fit:cover; }
         .scanline { position:absolute; left:8%; right:8%; top:50%; height:2px; background:#EF4444; box-shadow:0 0 10px #EF4444; animation:scanpulse 1.4s ease-in-out infinite; }
         @keyframes scanpulse { 0%,100% { opacity:.35; } 50% { opacity:1; } }
+        .secbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:34px 0 12px; padding:12px 14px 12px 16px; border-left:5px solid #E11D48; border-radius:4px 12px 12px 4px; background:linear-gradient(90deg, rgba(225,29,72,.18), rgba(255,255,255,.03)); }
+        .secbar:first-child { margin-top:8px; }
+        .sectitle { font-size:20px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; line-height:1.1; }
+        .secsub { font-size:12.5px; opacity:.7; margin-top:3px; }
+        .secright { font-size:15px; font-weight:700; white-space:nowrap; }
         .steps { display:flex; flex-direction:column; gap:12px; }
         .stepbox { background:rgba(255,255,255,.035); border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:14px; display:flex; flex-direction:column; gap:10px; }
         .steptitle { display:flex; align-items:center; gap:10px; font-weight:700; font-size:16px; }
