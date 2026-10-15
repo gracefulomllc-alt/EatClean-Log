@@ -967,9 +967,21 @@ function PastFasts({ data, setData }) {
 
 /* ---------- now ---------- */
 /* ---------- what to eat next: A-grade meals that fit the calories and protein you have left ---------- */
+function QuickRecipe({ recipe }) {
+  return (
+    <div className="recipe fadein">
+      <div className="small" style={{ fontWeight: 600 }}>What you need{recipe.servings > 1 ? ` (makes ${recipe.servings} servings)` : ""}</div>
+      <ul>{recipe.ingredients.map((i, n) => <li key={n}>{i}</li>)}</ul>
+      <div className="small" style={{ fontWeight: 600 }}>How to make it</div>
+      <ol>{recipe.steps.map((st, n) => <li key={n}>{st}</li>)}</ol>
+    </div>
+  );
+}
+
 function NextUp({ data, left, proteinLeft, dayId, updateDay }) {
   const [slot, setSlot] = useState(guessMeal());
   const [added, setAdded] = useState({});
+  const [openName, setOpenName] = useState(null);
   const tight = left < 120;
   const picks = useMemo(() => {
     const cap = tight ? 220 : left * 1.05;
@@ -986,16 +998,19 @@ function NextUp({ data, left, proteinLeft, dayId, updateDay }) {
       {tight ? <p className="small">{left <= 0 ? "You've used today's calories." : "Only a little room left today."} If you're still hungry, these are light and filling:</p>
         : <>
           <div className="chips" style={{ marginBottom: 0 }}>{MEALS.map((m) => <button key={m} className={slot === m ? "chip on" : "chip"} onClick={() => setSlot(m)}>{m}</button>)}</div>
-          <p className="dim tiny">The healthiest meals (Tier 1, A grades) that fit what you have left.</p></>}
+          <p className="dim tiny">The healthiest meals (Tier 1, A grades) that fit what you have left. Tap a meal to see how to make it.</p></>}
       {picks.length === 0 && <p className="dim small">Nothing in the built-in list fits right now. Try the Meals tab and ask the coach.</p>}
       {picks.map(({ m }) => (
-        <div key={m.name} className="histcard">
-          <div className="histinfo">
-            <div className="histname">{m.name}</div>
+        <div key={m.name}>
+        <div className="histcard">
+          <div className="histinfo tapable" role="button" tabIndex={0} aria-expanded={openName === m.name} onClick={() => setOpenName(openName === m.name ? null : m.name)} onKeyDown={(e) => { if (e.key === "Enter") setOpenName(openName === m.name ? null : m.name); }}>
+            <div className="histname">{m.name}{m.recipe && <span className="dim tiny"> {openName === m.name ? "▴" : "▾"} recipe</span>}</div>
             <div className="histmacros"><strong>{Math.round(m.calories)} cal</strong><span className="mP">P {Math.round(m.protein)}g</span><span className="mC">C {Math.round(m.carbs)}g</span><span className="mF">F {Math.round(m.fat)}g</span></div>
           </div>
           <GradeBadge food={m} />
           <button className="plusbtn" disabled={added[m.name]} aria-label={`Log ${m.name}`} onClick={() => log(m)}>{added[m.name] ? "✓" : "+"}</button>
+        </div>
+        {openName === m.name && m.recipe && <QuickRecipe recipe={m.recipe} />}
         </div>
       ))}
     </div>
@@ -3149,7 +3164,7 @@ ${labs.length ? `\nLab values they entered:\n${labs.slice(0, 12).map((l) => `${l
 
 Repetition is fine — do not avoid obvious or familiar meals. Real food, honestly counted, including the oil it's cooked in.
 
-"effort": "grab" is no cooking, "simple" is under 10 minutes, "cook" is a real recipe. Include the recipe object ONLY for "cook".
+"effort": "grab" is no cooking, "simple" is under 10 minutes, "cook" is a real recipe. Include a short recipe object for EVERY dish (grab and simple too): 3 to 6 ingredients with amounts and 2 to 4 short steps, for one serving.
 
 Respond with ONLY JSON:
 {"menu":[{"name":"short dish name","blurb":"one short line","calories":number,"protein":number,"carbs":number,"fat":number,"effort":"grab"|"simple"|"cook","recipe":{"servings":number,"ingredients":["amount + item"],"steps":["step"]}}],
@@ -3199,7 +3214,7 @@ Respond with ONLY JSON:
     return (
             <div key={m0.id} className="dish">
               <div className="row gap">
-                <div><div className="dishname">{m.name}</div><div className="dim tiny">{m.blurb}</div></div>
+                <div className="tapable" style={{ flex: 1 }} role="button" tabIndex={0} onClick={() => m.recipe && setOpenRecipe(openRecipe === m0.id ? null : m0.id)}><div className="dishname">{m.name}{m.recipe && <span className="dim tiny"> {openRecipe === m0.id ? "▴" : "▾"} recipe</span>}</div><div className="dim tiny">{m.blurb}</div></div>
                 <span className={`badge ${m.effort === "cook" ? "" : "good"}`}>{m.effort}</span>
               </div>
               <div className="dishmacros">

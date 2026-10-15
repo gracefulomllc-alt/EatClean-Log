@@ -5,7 +5,9 @@ const M = (name, slots, tags, [calories, protein, carbs, fat], effort, blurb, re
   ({ name, slots, tags, calories, protein, carbs, fat, effort, blurb, ...(recipe ? { recipe } : {}) });
 const R = (servings, ingredients, steps) => ({ servings, ingredients, steps });
 
-export const MEAL_LIBRARY = [
+import { RECIPES } from "./mealRecipes.js";
+
+const RAW_LIBRARY = [
   // ---- chicken
   M("Grilled chicken, rice and broccoli", ["Lunch", "Dinner"], "chicken rice broccoli bowl meal prep", [520, 52, 48, 10], "cook", "The classic. 6 oz chicken, 1 cup rice, big pile of broccoli.",
     R(1, ["6 oz chicken breast", "1 cup cooked rice", "2 cups broccoli", "1 tsp olive oil", "salt, pepper, garlic powder"], ["Season the chicken and grill or pan-sear 6 to 7 minutes a side.", "Steam the broccoli 4 minutes.", "Serve over the rice."])),
@@ -109,6 +111,7 @@ export const MEAL_LIBRARY = [
   M("Rice and beans with salsa", ["Lunch", "Dinner"], "vegetarian vegan rice beans mexican cheap meatless", [440, 16, 82, 5], "simple", "Cheap, filling, and easy to scale up.", null),
   M("Veggie pasta with white beans", ["Dinner"], "vegetarian vegan pasta beans tomato italian meatless", [520, 24, 90, 7], "cook", "Whole-wheat pasta, white beans, spinach, marinara.", null),
 ];
+export const MEAL_LIBRARY = RAW_LIBRARY.map((m) => (m.recipe || !RECIPES[m.name] ? m : { ...m, recipe: R(...RECIPES[m.name]) }));
 
 // How a typed word maps to the meals above. Plural, near-miss and casual words all count.
 const ALIASES = {
