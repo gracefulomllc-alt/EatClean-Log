@@ -966,6 +966,42 @@ function PastFasts({ data, setData }) {
 }
 
 /* ---------- now ---------- */
+/* ---------- what to eat next: A-grade meals that fit the calories and protein you have left ---------- */
+function NextUp({ data, left, proteinLeft, dayId, updateDay }) {
+  const [slot, setSlot] = useState(guessMeal());
+  const [added, setAdded] = useState({});
+  const tight = left < 120;
+  const picks = useMemo(() => {
+    const cap = tight ? 220 : left * 1.05;
+    const pool = suggestMeals("", tight ? "Snack" : slot, tight ? Infinity : left, proteinLeft, 80, data.profile).filter((m) => m.calories <= cap);
+    return pool.map((m) => ({ m, g: gradeFood(m, ingredientClass(m.name, () => false) ?? guessClass(m.name), GRADE_CTX) }))
+      .sort((a, b) => b.g.score - a.g.score || Math.abs(a.m.protein - Math.min(proteinLeft, 50)) - Math.abs(b.m.protein - Math.min(proteinLeft, 50)))
+      .slice(0, 3);
+  }, [slot, Math.round(left / 25), Math.round(proteinLeft / 10), data.profile]);
+  const log = (m) => { updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), meal: tight ? "Snack" : slot, at: stampFor(dayId), u: Date.now(), name: m.name, calories: Math.round(m.calories), protein: Math.round(m.protein), carbs: Math.round(m.carbs), fat: Math.round(m.fat) }] }));
+    pop(m); setAdded((a) => ({ ...a, [m.name]: true })); };
+  return (
+    <div className="glass pad stack">
+      <div className="row"><h2>What to eat next</h2><span className="dim tiny">{Math.max(0, Math.round(left)).toLocaleString()} cal · {Math.max(0, Math.round(proteinLeft))}g protein left</span></div>
+      {tight ? <p className="small">{left <= 0 ? "You've used today's calories." : "Only a little room left today."} If you're still hungry, these are light and filling:</p>
+        : <>
+          <div className="chips" style={{ marginBottom: 0 }}>{MEALS.map((m) => <button key={m} className={slot === m ? "chip on" : "chip"} onClick={() => setSlot(m)}>{m}</button>)}</div>
+          <p className="dim tiny">The best-graded meals that fit what you have left.</p></>}
+      {picks.length === 0 && <p className="dim small">Nothing in the built-in list fits right now. Try the Meals tab and ask the coach.</p>}
+      {picks.map(({ m }) => (
+        <div key={m.name} className="histcard">
+          <div className="histinfo">
+            <div className="histname">{m.name}</div>
+            <div className="histmacros"><strong>{Math.round(m.calories)} cal</strong><span className="mP">P {Math.round(m.protein)}g</span><span className="mC">C {Math.round(m.carbs)}g</span><span className="mF">F {Math.round(m.fat)}g</span></div>
+          </div>
+          <GradeBadge food={m} />
+          <button className="plusbtn" disabled={added[m.name]} aria-label={`Log ${m.name}`} onClick={() => log(m)}>{added[m.name] ? "✓" : "+"}</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ---------- section banners: a clear break between fasting, food, water and activity ---------- */
 function SectionBar({ title, sub, right, id }) {
   return (
@@ -1118,6 +1154,8 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
           <Bar label="Fat" have={t.ft} want={targets.fat} color={C.fat} />
         </div>
       </div>
+
+      {isToday && <NextUp data={data} left={left} proteinLeft={targets.protein - t.p} dayId={dayId} updateDay={updateDay} />}
 
       <div className="glass pad">
         <div className="chips">
