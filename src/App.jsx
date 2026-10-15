@@ -3156,9 +3156,16 @@ Respond with ONLY JSON:
   return (
     <>
       <div className="chips">
-        {[["today", "Today"], ["week", "Week"]].map(([k, l]) => (
+        {[["today", "Meal ideas"], ["build", "Build my own"], ["week", "Week plan"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
       </div>
+      {mode === "build" && <LogMeal data={data} setData={setData} dayId={today} budget={targets.calories} budgetLeft={remainCal} onDone={() => setMode("today")}
+        commit={(items, grade) => {
+          const mealId = crypto.randomUUID();
+          updateDay(today, (d) => ({ ...d, foods: [...d.foods, ...items.map((i) => ({ at: stampFor(today), ...i, mealId, u: Date.now() }))],
+            grades: grade ? { ...(d.grades || {}), [mealId]: { ...grade, at: Date.now() } } : d.grades }));
+          pop({ calories: items.reduce((a, f) => a + (+f.calories || 0), 0), protein: items.reduce((a, f) => a + (+f.protein || 0), 0) });
+        }} />}
       {mode === "week" && <WeekPlan data={data} setData={setData} onLog={logToday} onOpenList={() => setShowList(true)} />}
       {mode === "today" && (<>
       <div className="glass pad stack">
