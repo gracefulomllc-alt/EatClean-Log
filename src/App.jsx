@@ -974,7 +974,7 @@ function NextUp({ data, left, proteinLeft, dayId, updateDay }) {
   const picks = useMemo(() => {
     const cap = tight ? 220 : left * 1.05;
     const pool = suggestMeals("", tight ? "Snack" : slot, tight ? Infinity : left, proteinLeft, 80, data.profile).filter((m) => m.calories <= cap);
-    return pool.map((m) => ({ m, g: gradeFood(m, ingredientClass(m.name, () => false) ?? guessClass(m.name), GRADE_CTX) }))
+    return pool.map((m) => ({ m, g: gradeFood(m, ingredientClass(m.name, () => false) ?? Math.min(2, guessClass(m.name)), { ...GRADE_CTX, names: m.name }) }))
       .sort((a, b) => b.g.score - a.g.score || Math.abs(a.m.protein - Math.min(proteinLeft, 50)) - Math.abs(b.m.protein - Math.min(proteinLeft, 50)))
       .slice(0, 3);
   }, [slot, Math.round(left / 25), Math.round(proteinLeft / 10), data.profile]);
@@ -986,7 +986,7 @@ function NextUp({ data, left, proteinLeft, dayId, updateDay }) {
       {tight ? <p className="small">{left <= 0 ? "You've used today's calories." : "Only a little room left today."} If you're still hungry, these are light and filling:</p>
         : <>
           <div className="chips" style={{ marginBottom: 0 }}>{MEALS.map((m) => <button key={m} className={slot === m ? "chip on" : "chip"} onClick={() => setSlot(m)}>{m}</button>)}</div>
-          <p className="dim tiny">The best-graded meals that fit what you have left.</p></>}
+          <p className="dim tiny">The healthiest meals (Tier 1, A grades) that fit what you have left.</p></>}
       {picks.length === 0 && <p className="dim small">Nothing in the built-in list fits right now. Try the Meals tab and ask the coach.</p>}
       {picks.map(({ m }) => (
         <div key={m.name} className="histcard">
@@ -2312,9 +2312,10 @@ function GradeBadge({ food, items, share }) {
   const sum = list.reduce((a, f) => ({ calories: a.calories + (+f.calories || 0), protein: a.protein + (+f.protein || 0), carbs: a.carbs + (+f.carbs || 0), fat: a.fat + (+f.fat || 0) }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
   if (sum.calories <= 0) return null;
   // The processing class comes from the food names; weighted by calories when several foods are graded together.
-  const classOf = (f) => ingredientClass(f.baseName || f.name, (n) => FOODS.some((x) => x.n === n)) ?? guessClass(f.name);
+  // A meal from the built-in list (made at home or grabbed) is never counted as heavily processed just because its name says "burger".
+  const classOf = (f) => ingredientClass(f.baseName || f.name, (n) => FOODS.some((x) => x.n === n)) ?? (f.effort ? Math.min(2, guessClass(f.name)) : guessClass(f.name));
   const cls = list.reduce((a, f) => a + classOf(f) * (+f.calories || 0), 0) / sum.calories;
-  const g = gradeFood(sum, cls < 1.5 ? 1 : cls > 2.4 ? 3 : 2, { ...GRADE_CTX, share, addon: list.every((f) => isAddon(f.baseName || f.name)) });
+  const g = gradeFood(sum, cls < 1.5 ? 1 : cls > 2.4 ? 3 : 2, { ...GRADE_CTX, share, addon: list.every((f) => isAddon(f.baseName || f.name)), names: list.map((f) => f.baseName || f.name).join(" ") });
   const tone = gradeTone(g.letter);
   return (
     <span className="gradewrap" ref={ref} style={{ "--g": tone }}>
@@ -2323,6 +2324,7 @@ function GradeBadge({ food, items, share }) {
       {open && pos && createPortal(
         <div className="gradedrop" ref={dropRef} style={{ "--g": tone, top: pos.top, left: pos.left, width: pos.width }} role="region" aria-label="Why this grade" onClick={(e) => e.stopPropagation()}>
           <div className="gd-head"><strong>{g.letter}</strong><span>{g.score} out of 100</span></div>
+          <div className="gd-tier">{g.tier.name}</div>
           {g.parts.map((p) => {
             const f = p.pts / p.max;
             return (
@@ -2334,7 +2336,7 @@ function GradeBadge({ food, items, share }) {
             );
           })}
           {g.tip && <div className="gd-tip"><strong>To move up:</strong> {g.tip}</div>}
-          <div className="gd-foot">Graded on protein, how whole the food is, portion size and fat balance, against your daily goal.</div>
+          <div className="gd-foot">Health comes first: how whole the food is, protein, portion size, added sugar and fat quality, against your daily goal. Good health is what keeps the weight off.</div>
         </div>, document.body)}
     </span>
   );
@@ -4952,6 +4954,7 @@ function Shell({ children, theme, top }) {
         .grade.open { background:color-mix(in srgb, var(--g) 30%, transparent); }
         .gradedrop { position:fixed; z-index:200; color:#F3F4F6; font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; line-height:1.3; box-sizing:border-box; max-height:70vh; overflow-y:auto; padding:12px 14px; border-radius:12px; background:#15171C; border:1px solid color-mix(in srgb, var(--g) 60%, #333); box-shadow:0 10px 30px rgba(0,0,0,.55); text-align:left; font-weight:400; white-space:normal; cursor:default; }
         .gd-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:8px; }
+        .gd-tier { font-size:12.5px; font-weight:700; color:var(--g); margin:-4px 0 8px; }
         .gd-head strong { font-size:26px; color:var(--g); }
         .gd-row { margin-bottom:9px; }
         .gd-line { display:flex; justify-content:space-between; font-size:13px; font-weight:600; }

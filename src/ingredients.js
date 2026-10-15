@@ -105,8 +105,8 @@ export const MORE_FOODS = [
 export const COMMON_NAMES = ["Eggs", "Egg whites", "Chicken breast, cooked", "White rice, cooked", "Oats, dry", "Onion", "Spinach, raw", "Bell pepper", "Greek yogurt, nonfat", "Banana", "Bread", "Avocado"];
 
 // How processed each ingredient is, for grading: 1 whole food (the default for anything in the list), 2 mixed, 3 heavily processed.
-const MIXED = new Set(["Bread", "Whole wheat bread", "Flour tortilla", "Corn tortilla", "English muffin", "Bagel", "Granola", "Rice cakes", "Popcorn, popped", "Pasta, cooked",
-  "Cheddar cheese", "Mozzarella, part skim", "Parmesan", "Feta", "Cream cheese", "Sour cream", "Butter", "Olive oil", "Coconut oil", "Peanut butter", "Almond butter",
+const MIXED = new Set(["Bread", "Flour tortilla", "Corn tortilla", "English muffin", "Bagel", "Granola", "Rice cakes", "Popcorn, popped", "Pasta, cooked",
+  "Cheddar cheese", "Mozzarella, part skim", "Parmesan", "Feta", "Cream cheese", "Sour cream", "Butter", "Olive oil", "Coconut oil",
   "Whey protein powder", "Hummus", "Salsa", "Marinara sauce", "Mustard", "Soy sauce", "Mayonnaise", "Ketchup", "Jam", "Honey", "Maple syrup", "Sugar",
   "Ham, deli", "Turkey breast, deli", "Orange juice", "Apple juice", "Milk, 2%", "Milk, skim", "Almond milk, unsweetened"]);
 const ADDON = new Set(["Olive oil", "Coconut oil", "Butter", "Mayonnaise", "Ketchup", "Mustard", "Soy sauce", "BBQ sauce", "Ranch dressing", "Salsa", "Marinara sauce", "Honey", "Sugar", "Maple syrup", "Jam", "Cream cheese", "Sour cream"]);
