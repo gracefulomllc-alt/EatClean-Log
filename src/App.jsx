@@ -703,7 +703,7 @@ export default function CutLog() {
       title="Let's build your plan" cta="Start"
       onSave={(profile) => setData((d) => ({ ...d, profile }))} /></Shell>;
 
-  const TABS = [["now", H("Court", "Today"), COURT ? Dribbble : Timer], ["plan", H("Plays", "Meals"), ChefHat], ["out", "Eating Out", Utensils], ["coach", "Coach", MessageCircle], ["weight", H("Stats", "Progress"), Scale], ["log", H("Scores", "History"), CalendarDays], ["setup", H("Locker", "Settings"), Cog]];
+  const TABS = [["now", H("Court", "Today"), COURT ? Dribbble : Timer], ["plan", H("Plays", "Meals"), ChefHat], ["out", "Restaurants", Utensils], ["coach", "Coach", MessageCircle], ["weight", H("Stats", "Progress"), Scale], ["log", H("Scores", "History"), CalendarDays], ["setup", H("Locker", "Settings"), Cog]];
 
   return (
     <Shell theme={THEME} top={PRO ? <ProTop onSettings={() => setTab("setup")} settingsOn={tab === "setup"} /> : null}>
@@ -749,7 +749,7 @@ function Welcome({ onDone }) {
   ];
   const extras = [
     ["Meals that fit you", "Skips your allergies. Swap an ingredient or cook for more people."],
-    ["Eating Out", "The best order at McDonald's, Chipotle, gas stations and more."],
+    ["Restaurants", "The best order at McDonald's, Chipotle, gas stations and more."],
     ["Fasting timer", "Optional. Off until you turn it on."],
     ["Friends", "Join with a code. You choose what they can see."],
   ];
