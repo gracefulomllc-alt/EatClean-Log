@@ -1938,13 +1938,18 @@ function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
               <div className="row small"><span className="dim">Portion</span>
                 <div className="chips" style={{ marginBottom: 0 }}>{[0.5, 1, 1.5, 2].map((v) => <button key={v} className={x === v ? "chip on" : "chip"} onClick={() => setX(v)}>{v}x</button>)}</div></div>
               {shown.map((h) => {
-                const cal = Math.round(h.items.reduce((a, f) => a + f.calories, 0) * x), pr = Math.round(h.items.reduce((a, f) => a + f.protein, 0) * x);
+                const tot = h.items.reduce((m, f) => ({ c: m.c + f.calories, p: m.p + f.protein, cb: m.cb + f.carbs, f: m.f + f.fat }), { c: 0, p: 0, cb: 0, f: 0 });
+                const d = new Date(h.last + "T12:00:00");
                 return (
-                  <div key={h.sig} className="histrow">
-                    <div className="histinfo"><div className="histname">{histTitle(h.items)}</div>
-                      <div className="dim tiny">{h.meal} · {cal} cal · {pr}g protein · eaten {h.count}x</div></div>
+                  <div key={h.sig} className="histcard">
+                    <div className="histinfo">
+                      <div className="histwhen">{d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} · {h.meal}{h.count > 1 ? ` · eaten ${h.count}x` : ""}</div>
+                      <div className="histname">{h.items.map((f) => f.name.replace(/,\s*[\d.]+.*$/, "")).join(", ")}</div>
+                      <div className="histmacros"><strong>{Math.round(tot.c * x)} cal</strong>
+                        <span className="mP">P {Math.round(tot.p * x)}g</span><span className="mC">C {Math.round(tot.cb * x)}g</span><span className="mF">F {Math.round(tot.f * x)}g</span></div>
+                    </div>
                     <GradeBadge items={h.items.map((f) => scaleItem(f, x))} />
-                    <button className="btn solid mini" onClick={() => { stage(h.items.map((f) => { const { id, at, u, mealId, ...rest } = f; return scaleItem(rest, x); })); }}>+ Add</button>
+                    <button className="plusbtn" aria-label={`Add ${histTitle(h.items)}`} onClick={() => { stage(h.items.map((f) => { const { id, at, u, mealId, ...rest } = f; return scaleItem(rest, x); })); }}>+</button>
                   </div>
                 );
               })}
@@ -4730,6 +4735,14 @@ function Shell({ children, theme, top }) {
         .dot { width:7px; height:7px; border-radius:50%; }
         .fooditem { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:12px 16px; border-top:1px solid rgba(255,255,255,.06); font-size:14px; }
         .fright { display:flex; align-items:center; gap:6px; }
+        .histcard { display:flex; align-items:center; gap:10px; padding:12px 14px; border-radius:14px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08); }
+        .histwhen { font-size:12px; opacity:.65; }
+        .histcard .histname { font-size:15px; font-weight:700; white-space:normal; margin:2px 0 6px; }
+        .histmacros { display:flex; flex-wrap:wrap; gap:4px 12px; font-size:13px; align-items:center; }
+        .histmacros .mP { color:#F87171; } .histmacros .mC { color:#22D3EE; } .histmacros .mF { color:#FBBF24; }
+        .histcard .grade { margin-right:0; }
+        .plusbtn { flex:none; width:40px; height:40px; border-radius:50%; border:0; background:#2F8CFF; color:#fff; font-size:26px; line-height:1; font-weight:500; cursor:pointer; }
+        .plusbtn:active { transform:scale(.92); }
         .histrow { display:grid; grid-template-columns:1fr auto auto; gap:10px; align-items:center; width:100%; text-align:left;
           background:none; border:none; border-top:1px solid rgba(255,255,255,.07); padding:13px 16px; font:inherit; font-size:13.5px; color:#F1F5F9; cursor:pointer; }
         .histrow:first-child { border-top:none; }
