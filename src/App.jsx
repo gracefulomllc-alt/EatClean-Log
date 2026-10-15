@@ -639,7 +639,7 @@ export default function CutLog() {
   }, [data?.fast?.start]);
   const [tab, setTab] = useState("now");
   const [logView, setLogView] = useState("mine");
-  const openCrew = () => { setLogView("group"); setTab("log"); window.scrollTo?.(0, 0); };
+  const openCrew = (m) => { window.__crewMode = typeof m === "string" ? m : null; setLogView("group"); setTab("log"); window.scrollTo?.(0, 0); };
   const [viewDay, setViewDay] = useState(dayKey());
   const [saveErr, setSaveErr] = useState(false);
   const first = useRef(true);
@@ -719,8 +719,8 @@ export default function CutLog() {
   return (
     <Shell theme={THEME} top={PRO ? <ProTop onSettings={() => setTab("setup")} settingsOn={tab === "setup"} /> : null}>
       {saveErr && <div className="glass pad alert">That change didn’t save. Back up from Setup before closing.</div>}
-      <TabHeader tab={tab} title={(TABS.find((t) => t[0] === tab) || [])[1]} dayId={viewDay} setDayId={setViewDay} onSettings={() => setTab("setup")}
-        sub={{ now: "Your day at a glance", plan: "Ideas for what to eat", out: "Best picks when you're on the road", coach: "Ask anything about your food", weight: "Your weight and progress", log: "Everything you've logged, and your friends", setup: "Your profile and options" }[tab]} />
+      <TabHeader tab={tab} title={tab === "log" ? "History and friends" : (TABS.find((t) => t[0] === tab) || [])[1]} dayId={viewDay} setDayId={setViewDay} onSettings={() => setTab("setup")}
+        sub={{ now: "Your day at a glance", plan: "Ideas for what to eat", out: "Best picks when you're on the road", coach: "Ask anything about your food", weight: "Your weight and progress", log: "Your past days, your friends and your group", setup: "Your profile and options" }[tab]} />
       {(tab === "weight" || tab === "log") && <ProgressSwitch tab={tab} setTab={setTab} />}
       <PopHost />
       <div key={tab} className="fadein">
@@ -1157,30 +1157,11 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
 
       {isToday && <NextUp data={data} left={left} proteinLeft={targets.protein - t.p} dayId={dayId} updateDay={updateDay} />}
 
-      <div className="glass pad">
-        <div className="chips">
-          {Object.entries(TAGS).map(([k, v]) => (
-            <button key={k} className={day.tags.includes(k) ? "chip on" : "chip"}
-              onClick={() => updateDay(dayId, (d) => ({ ...d, tags: d.tags.includes(k) ? d.tags.filter((x) => x !== k) : [...d.tags, k] }))}>{v.label}</button>
-          ))}
-        </div>
-        <div className="chips">
-          <button className={day.rest === "rest" ? "chip on" : "chip"} onClick={() => updateDay(dayId, (d) => ({ ...d, rest: d.rest === "rest" ? "" : "rest" }))}>{H("Timeout", "Rest day")}</button>
-          <button className={data.recovery?.on ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, recovery: d.recovery?.on ? { on: false, u: Date.now() } : { on: true, since: dayId, u: Date.now() } }))}>{H("Injury report", "Hurt / recovering")}</button>
-        </div>
-        {data.recovery?.on && <p className="cue">{H("Injury report: you're on the bench, not out of the season.", "")} Recovery mode is on. No activity calories get earned, protein stays high to help healing, and your step goal is halved. A rest day, stretching, or an easy walk still counts toward your score. Nothing is penalized. See a professional if it doesn't improve.</p>}
-        <p className="dim tiny">{day.tags.length ? `Protein up to ${targets.protein}g, ${targets.earned} calories back. Use sparingly — earned calories are the easiest place to overshoot.` : "Tag a workout or a job-site day to move your protein target and budget."}</p>
-        {fast && day.tags.some((x) => x === "lift" || x === "ball") && (
-          <p className="cue">Trained fasted. Get protein in within two hours of breaking this — that decides whether what comes off is fat or muscle.</p>
-        )}
-        {fast && hours >= 16 && <p className="cue">Past 16h on water, headaches and cramps are sodium. A pinch of salt handles it.</p>}
-        {fast && targets.protein - t.p > 0 && <p className="cue">{Math.round(targets.protein - t.p)}g of protein still to go. Front-load it when you break.</p>}
-      </div>
-
       {(() => {
         const ts = day.foods.map((f) => f.at).filter(Boolean);
         if (ts.length < 2) return null;
         const a = Math.min(...ts), b = Math.max(...ts), mins = (b - a) / 60000;
+        if (mins < 5) return null;
         return <p className="dim tiny center" style={{ marginBottom: 8 }}>Eating window {prettyTime(a)} – {prettyTime(b)} · {Math.floor(mins / 60)}h {Math.round(mins % 60)}m</p>;
       })()}
 
@@ -1265,6 +1246,27 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
       })()}
 
       <SectionBar title="Activity and daily check" sub="Lifts, steps, sleep and your score" right={day.steps ? `${Number(day.steps).toLocaleString()} steps` : ""} />
+      <div className="glass pad">
+        <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>What did you do today?</div>
+        <div className="chips">
+          {Object.entries(TAGS).map(([k, v]) => (
+            <button key={k} className={day.tags.includes(k) ? "chip on" : "chip"}
+              onClick={() => updateDay(dayId, (d) => ({ ...d, tags: d.tags.includes(k) ? d.tags.filter((x) => x !== k) : [...d.tags, k] }))}>{v.label}</button>
+          ))}
+        </div>
+        <div className="chips">
+          <button className={day.rest === "rest" ? "chip on" : "chip"} onClick={() => updateDay(dayId, (d) => ({ ...d, rest: d.rest === "rest" ? "" : "rest" }))}>{H("Timeout", "Rest day")}</button>
+          <button className={data.recovery?.on ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, recovery: d.recovery?.on ? { on: false, u: Date.now() } : { on: true, since: dayId, u: Date.now() } }))}>{H("Injury report", "Hurt / recovering")}</button>
+        </div>
+        {data.recovery?.on && <p className="cue">{H("Injury report: you're on the bench, not out of the season.", "")} Recovery mode is on. No activity calories get earned, protein stays high to help healing, and your step goal is halved. A rest day, stretching, or an easy walk still counts toward your score. Nothing is penalized. See a professional if it doesn't improve.</p>}
+        <p className="dim tiny">{day.tags.length ? `Protein up to ${targets.protein}g, ${targets.earned} calories back. Use sparingly — earned calories are the easiest place to overshoot.` : "Tap what you did today. A workout or job-site day raises your protein target and earns a few calories back."}</p>
+        {fast && day.tags.some((x) => x === "lift" || x === "ball") && (
+          <p className="cue">Trained fasted. Get protein in within two hours of breaking this — that decides whether what comes off is fat or muscle.</p>
+        )}
+        {fast && hours >= 16 && <p className="cue">Past 16h on water, headaches and cramps are sodium. A pinch of salt handles it.</p>}
+        {fast && targets.protein - t.p > 0 && <p className="cue">{Math.round(targets.protein - t.p)}g of protein still to go. Front-load it when you break.</p>}
+      </div>
+
       <LiftLog {...{ data, setData, dayId, day, updateDay }} />
 
       <ScoreCard {...{ data, dayId, day, targets, updateDay }} />
@@ -1558,7 +1560,7 @@ function SharingToggles({ scopes, onChange }) {
       {rows.map(([k, l]) => (
         <div key={k} className="row small">
           <span>{l}</span>
-          <input type="checkbox" checked={!!scopes[k]} onChange={(e) => onChange({ ...scopes, [k]: e.target.checked })} />
+          <input type="checkbox" style={{ width: 22, height: 22, flex: "none", margin: 0 }} checked={!!scopes[k]} onChange={(e) => onChange({ ...scopes, [k]: e.target.checked })} />
         </div>
       ))}
       <p className="dim tiny">Starts as everything. Lab results and points are never shared. The standings only use what you share here. You can change this any time, and anything you switch off stops being sent.</p>
@@ -1616,7 +1618,7 @@ function CrewCard({ data, onOpen }) {
     <div className="glass pad stack">
       <div className="row"><h2>{H("Your crew", "Friends")}</h2></div>
       <p className="small">Add friends to see their day, cheer them on and compete on the weekly board.</p>
-      <div className="rowbtns"><button className="btn solid" onClick={onOpen}>Start a group</button><button className="btn ghost" onClick={onOpen}>I have a code</button></div>
+      <div className="rowbtns"><button className="btn solid" onClick={() => onOpen("create")}>Start a group</button><button className="btn ghost" onClick={() => onOpen("join")}>I have an invite code</button></div>
     </div>
   );
   const members = board?.members || [];
@@ -1800,7 +1802,7 @@ function GroupBoard({ g, data, setData }) {
 
 function GroupsView({ data, setData }) {
   const groups = data.groups || [];
-  const [modeRaw, setMode] = useState(null);
+  const [modeRaw, setMode] = useState(() => { const m = window.__crewMode; window.__crewMode = null; return m || null; });
   const mode = modeRaw ?? (groups.length ? null : "choose");   // no groups (first visit, or just left one) -> start screen
   const [gname, setGname] = useState("");
   const [me, setMe] = useState(data.profile?.name || "");
@@ -3309,7 +3311,7 @@ Respond with ONLY JSON:
       {showList && <Shopping data={data} setData={setData} />}
 
       <button className="btn ghost wide" onClick={() => setShowLabs(!showLabs)}>
-        {showLabs ? "Hide lab work" : `Lab work${labs.length ? ` (${labs.length})` : ""}`}</button>
+        {showLabs ? "Hide lab results" : `Lab results (blood work)${labs.length ? ` (${labs.length})` : ""}`}</button>
       {showLabs && <Labs data={data} setData={setData} />}
     </>
   );
@@ -4104,7 +4106,7 @@ function Coach({ data, setData, targets, adaptive }) {
     <>
       <div className="glass pad stack">
         <div className="row"><h2>Coach</h2>{msgs.length > 0 && <button className="chip" onClick={() => setData((d) => ({ ...d, coach: [] }))}>Clear</button>}</div>
-        <p className="dim tiny">Sees today's log, your fast, water, the last 7 days and your recipes — not your lab values. Runs on Gemini.</p>
+        <p className="dim tiny">Sees today's log, your fast, water, the last 7 days and your recipes — not your lab values.</p>
       </div>
       {msgs.length === 0 && (
         <div className="chips">{quick.map((q) => <button key={q} className="chip" onClick={() => send(q)}>{q}</button>)}</div>
@@ -4555,9 +4557,9 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
       <FastingPanel data={data} setData={setData} />
       <AlertsPanel data={data} setData={setData} />
       <div className="glass pad">
-        <div className="row"><span className="dim">Maintenance {useAdaptive ? "(measured)" : "(formula)"}</span><strong className="mono">{t.tdee.toLocaleString()}</strong></div>
-        <div className="row"><span className="dim">Rest-day budget</span><strong className="mono">{t.base.toLocaleString()}</strong></div>
-        <div className="row"><span className="dim">Rest-day protein</span><strong className="mono">{t.protein}g</strong></div>
+        <div className="row"><span className="dim">Calories to stay the same weight {useAdaptive ? "(measured)" : "(estimate)"}</span><strong className="mono">{t.tdee.toLocaleString()}</strong></div>
+        <div className="row"><span className="dim">Calories on a rest day</span><strong className="mono">{t.base.toLocaleString()}</strong></div>
+        <div className="row"><span className="dim">Protein on a rest day</span><strong className="mono">{t.protein}g</strong></div>
         {t.clamped && <p className="alert">Budget is held at the floor. Add movement instead of cutting lower.</p>}
       </div>
       <ProfileForm initial={data.profile} title="Your profile" cta="Save" onSave={onSave} />
