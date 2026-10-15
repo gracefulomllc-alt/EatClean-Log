@@ -26,7 +26,7 @@ const args = {
 
 let failed = 0;
 for (const f of readdirSync("tests").filter((x) => /\.test\.(c?js|mjs)$/.test(x)).sort()) {
-  const r = spawnSync("node", [join("tests", f), ...(args[f] || [])], { encoding: "utf8" });
+  const r = spawnSync("node", [join("tests", f), ...(args[f] || [])], { encoding: "utf8", env: { ...process.env, TZ: "America/Denver" } });   // pinned: the CI machine runs in UTC
   const out = (r.stdout || "") + (r.stderr || "");
   const bad = r.status !== 0 || /\bFAIL\b/.test(out) || /\b[1-9]\d* bad\b/.test(out);
   if (bad) failed++;
