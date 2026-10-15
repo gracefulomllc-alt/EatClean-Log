@@ -3043,7 +3043,7 @@ function Plan({ data, setData, targets, day, updateDay, dayId, setDayId }) {
   const [showList, setShowList] = useState(false);
   const [craving, setCraving] = useState("");
   const [slot, setSlot] = useState(guessMeal());
-  const [mode, setMode] = useState("today");
+  const [mode, setMode] = useState("build");
 
   const eaten = day.foods.reduce((a, f) => ({ cal: a.cal + f.calories, p: a.p + f.protein }), { cal: 0, p: 0 });
   const remainCal = targets.calories - eaten.cal;
@@ -3156,9 +3156,10 @@ Respond with ONLY JSON:
   return (
     <>
       <div className="chips">
-        {[["today", "Meal ideas"], ["build", "Build my own"], ["week", "Week plan"]].map(([k, l]) => (
+        {[["build", "Build my own"], ["today", "Meal ideas"], ["week", "Week"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
       </div>
+      {mode === "build" && <SectionBar title="Build my own meal" sub="Add your ingredients one at a time, then log the whole meal" />}
       {mode === "build" && <LogMeal data={data} setData={setData} dayId={today} budget={targets.calories} budgetLeft={remainCal} onDone={() => setMode("today")}
         commit={(items, grade) => {
           const mealId = crypto.randomUUID();
@@ -3168,13 +3169,18 @@ Respond with ONLY JSON:
         }} />}
       {mode === "week" && <WeekPlan data={data} setData={setData} onLog={logToday} onOpenList={() => setShowList(true)} />}
       {mode === "today" && (<>
-      <div className="glass pad stack">
-        <div className="row"><h2>What sounds good?</h2>
-          <span className="dim tiny">{remainCal.toLocaleString()} cal · {Math.max(0, Math.round(remainP))}g left</span></div>
-        <div className="chips">{MEALS.map((s) => (
+      <SectionBar title="Meal ideas" sub="The coach and the built-in list suggest meals that fit what you have left today" right={`${remainCal.toLocaleString()} cal left`} />
+      <div className="steps">
+      <div className="stepbox">
+        <div className="steptitle"><span className="stepnum">1</span>Which meal is it for?</div>
+        <div className="chips" style={{ marginBottom: 0 }}>{MEALS.map((s) => (
           <button key={s} className={slot === s ? "chip on" : "chip"} onClick={() => setSlot(s)}>{s}</button>))}</div>
-        <p className="dim small">1. Pick the meal. 2. Type what sounds good, like chicken. 3. Press Eat this on one you like.</p>
-        <div className="chips" style={{ flexWrap: "nowrap", overflowX: "auto", paddingBottom: 4 }}>
+        <p className="dim tiny">{remainCal.toLocaleString()} calories and {Math.max(0, Math.round(remainP))}g protein left today.</p>
+      </div>
+
+      <div className="stepbox">
+        <div className="steptitle"><span className="stepnum">2</span>What sounds good?</div>
+        <div className="chips" style={{ flexWrap: "nowrap", overflowX: "auto", paddingBottom: 4, marginBottom: 0 }}>
           <button className={!tagFilter ? "chip on" : "chip"} style={{ flex: "none" }} onClick={() => setTagFilter("")}>All</button>
           {TAG_FILTERS.map((t) => <button key={t} className={tagFilter === t ? "chip on" : "chip"} style={{ flex: "none", whiteSpace: "nowrap" }} onClick={() => setTagFilter(tagFilter === t ? "" : t)}>{t}</button>)}
         </div>
@@ -3185,6 +3191,8 @@ Respond with ONLY JSON:
         {err && <p className="alert">{err}</p>}
       </div>
 
+      <div className="stepbox">
+        <div className="steptitle"><span className="stepnum">3</span>Pick one and press Eat this</div>
       <div className="glass fadein">
         <div className="mealhead">
           <span className="dot" style={{ background: MEAL_COLOR[slot], boxShadow: `0 0 8px ${MEAL_COLOR[slot]}` }} />
@@ -3210,6 +3218,8 @@ Respond with ONLY JSON:
           {menu.items.map((m) => dishCard(m))}
         </div>
       )}
+      </div>
+      </div>
       </>)}
 
       <button className="btn ghost wide" onClick={() => setShowList(!showList)}>
