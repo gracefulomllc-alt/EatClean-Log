@@ -2,7 +2,7 @@ import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
 import { roadPicks, ROAD_CHAINS, modsFor, applyMods, modLabel } from "./fastFood.js";
 import { gradeFood, gradeTone } from "./grade.js";
 import { decodeFrame } from "./barcode.js";
-import { MORE_FOODS, COMMON_NAMES } from "./ingredients.js";
+import { MORE_FOODS, COMMON_NAMES, ingredientClass, isAddon } from "./ingredients.js";
 import { scaleIngredient, tagsFor, TAG_FILTERS, swapsFor, applySwaps } from "./mealTools.js";
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
@@ -2274,8 +2274,9 @@ function GradeBadge({ food, items, share }) {
   const sum = list.reduce((a, f) => ({ calories: a.calories + (+f.calories || 0), protein: a.protein + (+f.protein || 0), carbs: a.carbs + (+f.carbs || 0), fat: a.fat + (+f.fat || 0) }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
   if (sum.calories <= 0) return null;
   // The processing class comes from the food names; weighted by calories when several foods are graded together.
-  const cls = list.reduce((a, f) => a + guessClass(f.name) * (+f.calories || 0), 0) / sum.calories;
-  const g = gradeFood(sum, cls < 1.5 ? 1 : cls > 2.4 ? 3 : 2, { ...GRADE_CTX, share });
+  const classOf = (f) => ingredientClass(f.baseName || f.name, (n) => FOODS.some((x) => x.n === n)) ?? guessClass(f.name);
+  const cls = list.reduce((a, f) => a + classOf(f) * (+f.calories || 0), 0) / sum.calories;
+  const g = gradeFood(sum, cls < 1.5 ? 1 : cls > 2.4 ? 3 : 2, { ...GRADE_CTX, share, addon: list.every((f) => isAddon(f.baseName || f.name)) });
   const tone = gradeTone(g.letter);
   return (
     <span className="gradewrap" ref={ref} style={{ "--g": tone }}>

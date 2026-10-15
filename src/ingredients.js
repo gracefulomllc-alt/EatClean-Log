@@ -103,3 +103,18 @@ export const MORE_FOODS = [
 
 // What shows in the dropdown before you type anything.
 export const COMMON_NAMES = ["Eggs", "Egg whites", "Chicken breast, cooked", "White rice, cooked", "Oats, dry", "Onion", "Spinach, raw", "Bell pepper", "Greek yogurt, nonfat", "Banana", "Bread", "Avocado"];
+
+// How processed each ingredient is, for grading: 1 whole food (the default for anything in the list), 2 mixed, 3 heavily processed.
+const MIXED = new Set(["Bread", "Whole wheat bread", "Flour tortilla", "Corn tortilla", "English muffin", "Bagel", "Granola", "Rice cakes", "Popcorn, popped", "Pasta, cooked",
+  "Cheddar cheese", "Mozzarella, part skim", "Parmesan", "Feta", "Cream cheese", "Sour cream", "Butter", "Olive oil", "Coconut oil", "Peanut butter", "Almond butter",
+  "Whey protein powder", "Hummus", "Salsa", "Marinara sauce", "Mustard", "Soy sauce", "Mayonnaise", "Ketchup", "Jam", "Honey", "Maple syrup", "Sugar",
+  "Ham, deli", "Turkey breast, deli", "Orange juice", "Apple juice", "Milk, 2%", "Milk, skim", "Almond milk, unsweetened"]);
+const ADDON = new Set(["Olive oil", "Coconut oil", "Butter", "Mayonnaise", "Ketchup", "Mustard", "Soy sauce", "BBQ sauce", "Ranch dressing", "Salsa", "Marinara sauce", "Honey", "Sugar", "Maple syrup", "Jam", "Cream cheese", "Sour cream"]);
+const PROCESSED = new Set(["Bacon, cooked", "Turkey bacon, cooked", "Beef jerky", "Ranch dressing", "BBQ sauce", "Dark chocolate", "Soda", "Beer", "Sports drink"]);
+export function ingredientClass(name, known) {
+  const n = String(name || "").replace(/,\s*[\d./]+\s*[^,]*$/, "").trim();   // "Eggs, 2 eggs" -> "Eggs"
+  if (PROCESSED.has(n)) return 3;
+  if (MIXED.has(n)) return 2;
+  return known(n) ? 1 : null;
+}
+export const isAddon = (name) => ADDON.has(String(name || "").replace(/,\s*[\d./]+\s*[^,]*$/, "").trim());
