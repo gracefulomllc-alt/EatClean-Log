@@ -1927,11 +1927,13 @@ function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
   const [grade, setGrade] = useState(null);
   const [x, setX] = useState(1);
   const [mealName, setMealName] = useState("");
+  const [editId, setEditId] = useState(null);
   const [all, setAll] = useState(false);
   const [round, setRound] = useState(0);   // changes after each add so the builder starts clean
   const [mode, setMode] = useState("weigh");   // stays on the same way of adding between items
   const hist = useMemo(() => mealHistory(data.days, slot), [data.days, slot]);
   const shown = all ? hist.slice(0, 30) : hist.slice(0, 5);
+  const leave = () => { if (!tray.length || window.confirm("Throw away the ingredients you added?")) onDone(); };
   const stage = (items, g) => { setTray((t) => [...t, ...items.map((i) => ({ ...i, id: crypto.randomUUID() }))]); if (g) setGrade(g); };
   const sum = tray.reduce((a, f) => ({ cal: a.cal + (+f.calories || 0), p: a.p + (+f.protein || 0) }), { cal: 0, p: 0 });
   return (
@@ -1972,7 +1974,7 @@ function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
         </div>
         <div className="substep">
           <div className="subhead">Add something new</div>
-          <AddFood key={round} bare mode0={mode} onMode={setMode} meal={slot} setMeal={setSlot} budget={budget} budgetLeft={budgetLeft} onCancel={onDone}
+          <AddFood key={round} bare mode0={mode} onMode={setMode} meal={slot} setMeal={setSlot} budget={budget} budgetLeft={budgetLeft} onCancel={leave}
             calib={data.calib || []} recipes={data.recipes || []} setData={setData}
             onCalib={(n) => setData((d) => ({ ...d, calib: [n, ...(d.calib || [])].slice(0, 12) }))}
             onAdd={(items, g) => { stage(items, g); setRound((r) => r + 1); }} />
@@ -1981,20 +1983,40 @@ function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
 
       <div className="stepbox">
         <div className="steptitle"><span className="stepnum">3</span>Your meal: review and log</div>
-        {tray.length === 0 ? <p className="dim tiny">Nothing added yet. Add ingredients above, one at a time, and they build your meal here.</p> : (
+        {tray.length === 0 ? <p className="dim tiny">Nothing added yet. Add your ingredients above, one at a time. When you have them all, press Log this meal.</p> : (
           <>
-            {tray.map((f) => (
-              <div key={f.id} className="row small trayrow"><span>{f.name}</span>
-                <span className="fright"><span className="mono">{Math.round(f.calories)}</span>
-                  <button className="icon" title="Remove" onClick={() => setTray((t) => t.filter((y) => y.id !== f.id))}><X size={15} /></button></span></div>
-            ))}
+            {tray.map((f) => {
+              const canEdit = Array.isArray(f.per) && f.per.length === 4 && +f.qty > 0;
+              const open = editId === f.id && canEdit;
+              const st = f.unit === "g" ? 10 : f.unit === "oz" ? 0.5 : f.qty >= 2 ? 1 : 0.5;
+              const setQty = (q) => { q = Math.max(0, Math.round(q * 100) / 100); setTray((t) => t.map((y) => y.id !== f.id ? y : ({ ...y, qty: q,
+                name: `${y.baseName || y.name}, ${fmtQty(q, y.unit)}${y.raw ? " raw" : ""}`,
+                calories: Math.round(y.per[0] * q), protein: +(y.per[1] * q).toFixed(1), carbs: +(y.per[2] * q).toFixed(1), fat: +(y.per[3] * q).toFixed(1) }))); };
+              return (
+                <div key={f.id} className="trayitem">
+                  <div className="row small trayrow">
+                    <span className={canEdit ? "tapable" : ""} style={{ flex: 1 }} onClick={() => canEdit && setEditId(open ? null : f.id)}>{f.name}{canEdit && <span className="dim tiny"> · tap to change</span>}</span>
+                    <span className="fright"><span className="mono">{Math.round(f.calories)}</span>
+                      <button className="icon" title="Remove" onClick={() => setTray((t) => t.filter((y) => y.id !== f.id))}><X size={15} /></button></span>
+                  </div>
+                  {open && (
+                    <div className="stepper" style={{ marginBottom: 8 }}>
+                      <button className="stepbtn" aria-label={`Less ${f.baseName || ""}`} onClick={() => setQty(f.qty - st)}>−</button>
+                      <input type="number" inputMode="decimal" value={f.qty} aria-label="Edit amount" onChange={(e) => setQty(+e.target.value || 0)} />
+                      <span className="dim small">{f.unit}</span>
+                      <button className="stepbtn" aria-label={`More ${f.baseName || ""}`} onClick={() => setQty(f.qty + st)}>+</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
             <input placeholder="Name this meal (optional), like My usual breakfast" value={mealName} maxLength={50} onChange={(e) => setMealName(e.target.value)} aria-label="Meal name" />
             <div className="row"><strong>{slot}: {Math.round(sum.cal)} cal · {Math.round(sum.p)}g protein</strong><GradeBadge items={tray} /></div>
           </>
         )}
         <div className="rowbtns">
-          <button className="btn ghost wide" onClick={onDone}>Cancel</button>
-          <button className="btn solid wide" disabled={!tray.length} onClick={() => { commit(tray.map((f) => ({ ...f, meal: slot, ...(mealName.trim() ? { mealName: mealName.trim() } : {}) })), grade); onDone(); }}>Log {slot.toLowerCase()}</button>
+          <button className="btn ghost wide" onClick={leave}>Cancel</button>
+          <button className="btn solid wide" disabled={!tray.length} onClick={() => { commit(tray.map((f) => ({ ...f, meal: slot, ...(mealName.trim() ? { mealName: mealName.trim() } : {}) })), grade); onDone(); }}>Log this meal</button>
         </div>
       </div>
     </div>
