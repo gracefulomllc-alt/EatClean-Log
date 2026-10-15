@@ -113,7 +113,7 @@ const b64ToBytes = (b64) => {
 
 // "6oz", "250g", "2 servings", "1 scoop"
 const fmtQty = (q, unit) => (unit === "g" || unit === "oz") ? `${q}${unit}`
-  : unit === "serving" ? `${q} serving${+q === 1 ? "" : "s"}` : `${q} ${unit}`;
+  : unit === "serving" ? `${q} serving${+q === 1 ? "" : "s"}` : `${q} ${unit}${+q === 1 || /s$/.test(unit) ? "" : "s"}`;
 
 /* ---------- progress photos: kept in this browser, and on your server if sync is on ---------- */
 const photoDb = (() => {
@@ -1918,6 +1918,7 @@ function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
   const [x, setX] = useState(1);
   const [all, setAll] = useState(false);
   const [round, setRound] = useState(0);   // changes after each add so the builder starts clean
+  const [mode, setMode] = useState("meal");   // stays on the same way of adding between items
   const hist = useMemo(() => mealHistory(data.days, slot), [data.days, slot]);
   const shown = all ? hist.slice(0, 30) : hist.slice(0, 5);
   const stage = (items, g) => { setTray((t) => [...t, ...items.map((i) => ({ ...i, id: crypto.randomUUID() }))]); if (g) setGrade(g); };
@@ -1959,7 +1960,7 @@ function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
         </div>
         <div className="substep">
           <div className="subhead">Add something new</div>
-          <AddFood key={round} bare meal={slot} setMeal={setSlot} budget={budget} budgetLeft={budgetLeft} onCancel={onDone}
+          <AddFood key={round} bare mode0={mode} onMode={setMode} meal={slot} setMeal={setSlot} budget={budget} budgetLeft={budgetLeft} onCancel={onDone}
             calib={data.calib || []} recipes={data.recipes || []} setData={setData}
             onCalib={(n) => setData((d) => ({ ...d, calib: [n, ...(d.calib || [])].slice(0, 12) }))}
             onAdd={(items, g) => { stage(items, g); setRound((r) => r + 1); }} />
@@ -1987,14 +1988,15 @@ function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
   );
 }
 
-function AddFood({ onAdd, onCancel, calib, onCalib, recipes, setData, budget, budgetLeft, meal: mealIn, setMeal: setMealIn, bare }) {
-  const [mode, setMode] = useState("meal");
+function AddFood({ onAdd, onCancel, calib, onCalib, recipes, setData, budget, budgetLeft, meal: mealIn, setMeal: setMealIn, bare, mode0, onMode }) {
+  const [mode, setModeRaw] = useState(mode0 || "meal");
+  const setMode = (k) => { setModeRaw(k); onMode && onMode(k); };
   const [mealOwn, setMealOwn] = useState(guessMeal());
   const meal = mealIn ?? mealOwn, setMeal = setMealIn ?? setMealOwn;
   return (
     <div className={bare ? "stack fadein" : "glass pad stack fadein"}>
       <div className="chips">
-        {[["meal", "Meal"], ["scan", "Scan"], ["weigh", "Weigh"], ["label", "Label"], ["recipe", "Recipe"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
+        {[["meal", "Meal"], ["scan", "Scan"], ["weigh", "Ingredient"], ["label", "Label"], ["recipe", "Recipe"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
       </div>
       {mode === "meal" && <MealBuilder meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} calib={calib} onCalib={onCalib} budget={budget} budgetLeft={budgetLeft} />}
@@ -2231,7 +2233,9 @@ function MealBuilder({ meal, setMeal, onAdd, onCancel, calib, onCalib, budget, b
   const [err, setErr] = useState("");
   const noop = () => {};
 
-  const addItems = (its) => { setItems((x) => [...x, ...its]); setAdding(null); setGrade(null); };
+  const [addKey, setAddKey] = useState(0);
+  // Ingredient mode stays open and clears, so you can add the next ingredient straight away.
+  const addItems = (its) => { setItems((x) => [...x, ...its]); setGrade(null); setAddKey((k) => k + 1); setAdding((a) => (a === "weigh" ? a : null)); };
   const removeItem = (i) => { setItems((x) => x.filter((_, n) => n !== i)); setGrade(null); };
   const tot = sumMacros(items);
 
@@ -2276,10 +2280,10 @@ Respond with ONLY JSON: {"classes":[one number 1-3 per item, in order],"tip":"on
       {adding ? (
         <div className="subpanel stack">
           <div className="chips">
-            {[["scan", "Scan"], ["weigh", "Weigh"], ["label", "Label"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
+            {[["scan", "Scan"], ["weigh", "Ingredient"], ["label", "Label"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
               <button key={k} className={adding === k ? "chip on" : "chip"} onClick={() => setAdding(k)}>{l}</button>))}
           </div>
-          {adding === "weigh" && <WeighIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
+          {adding === "weigh" && <WeighIt key={addKey} meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
           {adding === "scan" && <ScanIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
           {adding === "label" && <LabelIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
           {adding === "photo" && <SnapIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} calib={calib} onCalib={onCalib} />}
@@ -2424,7 +2428,7 @@ function RecipeBuilder({ initial, onDone }) {
       {adding ? (
         <div className="subpanel stack">
           <div className="chips">
-            {[["weigh", "Weigh"], ["label", "Label"], ["desc", "Describe"]].map(([k, l]) => (
+            {[["weigh", "Ingredient"], ["label", "Label"], ["desc", "Describe"]].map(([k, l]) => (
               <button key={k} className={adding === k ? "chip on" : "chip"} onClick={() => setAdding(k)}>{l}</button>))}
           </div>
           <p className="dim tiny">Weigh ingredients before they go in. For meat, pick a raw USDA entry or tick "Weighed raw". Don't forget the oil.</p>
@@ -2686,7 +2690,18 @@ function WeighIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Add to meal"
   const [remote, setRemote] = useState([]); const [searching, setSearching] = useState(false); const [searchErr, setSearchErr] = useState("");
   const [bc, setBc] = useState(""); const [note, setNote] = useState(""); const [scanning, setScanning] = useState(false);
 
-  const local = q.trim() && !pick ? FOODS.filter((f) => f.n.toLowerCase().includes(q.trim().toLowerCase())).slice(0, 5) : [];
+  // The dropdown fills as you type ("egg" -> Eggs ...) and shows common foods before you type anything.
+  const local = (() => {
+    if (pick) return [];
+    const t = q.trim().toLowerCase();
+    if (!t) return FOODS.slice(0, 8);
+    const starts = FOODS.filter((f) => f.n.toLowerCase().startsWith(t) || f.n.toLowerCase().split(/[ ,]+/).some((w) => w.startsWith(t)));
+    return [...starts, ...FOODS.filter((f) => !starts.includes(f) && f.n.toLowerCase().includes(t))].slice(0, 7);
+  })();
+  const perLine = (f) => (f.s ? `${Math.round((f.m[0] * f.s.g) / 100)} cal per ${f.s.label}` : `${Math.round(f.m[0])} cal per 100 g`);
+  const UNIT_DEF = { s: ["1", 1, 0, 12, 0.5], g: ["100", 10, 0, 600, 5], oz: ["4", 0.5, 0, 24, 0.5] };   // start, step, min, max, slider step
+  const setU = (u) => { setUnit(u); setAmt(UNIT_DEF[u][0]); };
+  const bump = (dir) => { const st = UNIT_DEF[unit][1]; setAmt(String(Math.max(0, Math.round(((+amt || 0) + dir * st) * 100) / 100))); };
 
   // USDA lookup, debounced, only once the query is worth sending
   useEffect(() => {
@@ -2705,7 +2720,7 @@ function WeighIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Add to meal"
     return () => clearTimeout(t);
   }, [q, pick]);
 
-  const take = (f, src) => { setPick({ n: f.n || f.name, m: f.m, s: f.s, r: f.r, src }); setQ(f.n || f.name); setUnit(f.s ? "s" : "g"); setRaw(false); setNote(""); };
+  const take = (f, src) => { setPick({ n: f.n || f.name, m: f.m, s: f.s, r: f.r, src }); setQ(f.n || f.name); const u = f.s ? "s" : "g"; setUnit(u); setAmt(UNIT_DEF[u][0]); setRaw(false); setNote(""); };
 
   const scanCode = async (codeIn) => {
     const codeStr = String(codeIn || bc).trim();
@@ -2725,49 +2740,57 @@ function WeighIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Add to meal"
 
   return (
     <>
-      <input autoFocus placeholder="chicken breast, rice, whey…" value={q}
+      <input autoFocus placeholder="Type an ingredient: egg, rice, chicken…" value={q} aria-label="Ingredient"
         onChange={(e) => { setQ(e.target.value); setPick(null); }} />
 
+      {!pick && (
+        <div className="dropdown" role="listbox">
+          <div className="dd-head">{q.trim() ? "Matches" : "Common foods"}</div>
+          {local.map((f) => (
+            <button key={f.n} className="dd-row" role="option" onClick={() => take(f, "Table")}>
+              <span>{f.n}</span><span className="dim tiny">{perLine(f)}</span>
+            </button>
+          ))}
+          {searching && <div className="dim tiny dd-note">Searching USDA…</div>}
+          {remote.map((f, i) => (
+            <button key={`u${i}`} className="dd-row" role="option" onClick={() => take(f, "USDA")}>
+              <span>{f.name}</span><span className="dim tiny">{Math.round(f.m[0])} cal per 100 g · USDA</span>
+            </button>
+          ))}
+          {searchErr && <div className="alert dd-note">{searchErr}</div>}
+          {q.trim().length >= 3 && !searching && !searchErr && !local.length && !remote.length && <div className="dim tiny dd-note">Nothing found. Try a simpler word, or use Scan, Photo or Describe.</div>}
+        </div>
+      )}
+
       {!pick && !scanning && (
-        <>
-          <button className="btn ghost wide" onClick={() => setScanning(true)}>Scan a barcode</button>
-          <div className="row gap">
-            <input placeholder="Or type the number" value={bc} inputMode="numeric"
-              onChange={(e) => setBc(e.target.value)} onKeyDown={(e) => e.key === "Enter" && scan()} />
-            <button className="btn ghost" onClick={scan} disabled={!bc.trim()}>Look up</button>
-          </div>
-        </>
+        <div className="row gap">
+          <button className="btn ghost" onClick={() => setScanning(true)}>Scan a barcode</button>
+          <input placeholder="or type its number" value={bc} inputMode="numeric"
+            onChange={(e) => setBc(e.target.value)} onKeyDown={(e) => e.key === "Enter" && scan()} />
+          {bc.trim() && <button className="btn ghost" onClick={scan}>Look up</button>}
+        </div>
       )}
       {scanning && <Scanner onClose={() => setScanning(false)}
         onCode={(code) => { setScanning(false); setBc(code); setTimeout(() => scanCode(code), 0); }} />}
       {note && <p className="dim tiny">{note}</p>}
 
-      {local.map((f) => (
-        <button key={f.n} className="listbtn" onClick={() => take(f, "Table")}>
-          {f.n}<span className="badge good" style={{ marginLeft: 8 }}>quick</span>
-        </button>
-      ))}
-      {searching && <p className="dim tiny">Searching USDA…</p>}
-      {remote.map((f, i) => (
-        <button key={`u${i}`} className="listbtn" onClick={() => take(f, "USDA")}>
-          {f.name}<span className="badge" style={{ marginLeft: 8 }}>USDA</span>
-        </button>
-      ))}
-      {searchErr && !pick && <p className="alert">{searchErr}</p>}
-      {q.trim().length >= 3 && !pick && !searching && !searchErr && !local.length && !remote.length &&
-        <p className="dim tiny">Nothing found. Try the barcode, a photo, or describe it.</p>}
-
       {pick && (
         <>
-          <p className="dim tiny">{pick.m[0]} cal per 100g · {pick.src === "USDA" ? "USDA lab data" : pick.src === "Label" ? "off the package label" : "built-in table"}</p>
-          <div className="row gap">
-            <input autoFocus type="number" inputMode="decimal" placeholder="Amount" value={amt} onChange={(e) => setAmt(e.target.value)} />
-            <div className="chips">
-              <button className={unit === "g" ? "chip on" : "chip"} onClick={() => setUnit("g")}>g</button>
-              <button className={unit === "oz" ? "chip on" : "chip"} onClick={() => setUnit("oz")}>oz</button>
-              {pick.s && <button className={unit === "s" ? "chip on" : "chip"} onClick={() => setUnit("s")}>{pick.s.label}</button>}
-            </div>
+          <div className="row"><strong>{pick.n}</strong><button className="chip" onClick={() => { setPick(null); setQ(""); }}>Change</button></div>
+          <p className="dim tiny">{pick.m[0]} cal per 100 g · {pick.src === "USDA" ? "USDA lab data" : pick.src === "Label" ? "off the package label" : "built-in table"}</p>
+          <label style={{ margin: 0 }}>How much?</label>
+          <div className="stepper">
+            <button className="stepbtn" aria-label="Less" onClick={() => bump(-1)}>−</button>
+            <input type="number" inputMode="decimal" value={amt} onChange={(e) => setAmt(e.target.value)} aria-label="Amount" />
+            <button className="stepbtn" aria-label="More" onClick={() => bump(1)}>+</button>
           </div>
+          <div className="chips" style={{ marginBottom: 0 }}>
+            {pick.s && <button className={unit === "s" ? "chip on" : "chip"} onClick={() => setU("s")}>{pick.s.label}s</button>}
+            <button className={unit === "g" ? "chip on" : "chip"} onClick={() => setU("g")}>grams</button>
+            <button className={unit === "oz" ? "chip on" : "chip"} onClick={() => setU("oz")}>ounces</button>
+          </div>
+          <input type="range" className="slide" min={UNIT_DEF[unit][2]} max={UNIT_DEF[unit][3]} step={UNIT_DEF[unit][4]} value={Math.min(+amt || 0, UNIT_DEF[unit][3])}
+            onChange={(e) => setAmt(e.target.value)} aria-label="Amount slider" />
           {pick.r && <button className={raw ? "listbtn on" : "listbtn"} onClick={() => setRaw(!raw)}>{raw ? "✓ " : ""}Weighed raw (−25% for cooking loss)</button>}
           <div className="quad">
             {[["calories", m[0]], ["protein", m[1]], ["carbs", m[2]], ["fat", m[3]]].map(([l, v], i) => (
@@ -4768,6 +4791,16 @@ function Shell({ children, theme, top }) {
         .sectitle { font-size:20px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; line-height:1.1; }
         .secsub { font-size:12.5px; opacity:.7; margin-top:3px; }
         .secright { font-size:15px; font-weight:700; white-space:nowrap; }
+        .dropdown { border:1px solid rgba(255,255,255,.14); border-radius:12px; background:rgba(255,255,255,.04); overflow:hidden; max-height:290px; overflow-y:auto; }
+        .dd-head { font-size:11.5px; letter-spacing:.08em; text-transform:uppercase; opacity:.6; padding:8px 12px 4px; }
+        .dd-row { display:flex; justify-content:space-between; align-items:center; gap:10px; width:100%; text-align:left; padding:11px 12px; background:none; border:0; border-top:1px solid rgba(255,255,255,.07); color:inherit; font:inherit; font-size:14.5px; cursor:pointer; }
+        .dd-row:active, .dd-row:hover { background:rgba(255,255,255,.08); }
+        .dd-note { padding:8px 12px; }
+        .stepper { display:flex; align-items:center; gap:10px; }
+        .stepper input { text-align:center; font-size:20px; font-weight:700; flex:1; min-width:0; }
+        .stepbtn { flex:none; width:46px; height:46px; border-radius:12px; border:1px solid rgba(255,255,255,.18); background:rgba(255,255,255,.06); color:inherit; font-size:26px; cursor:pointer; }
+        .stepbtn:active { transform:scale(.94); }
+        .slide { width:100%; accent-color:#E11D48; height:32px; }
         .steps { display:flex; flex-direction:column; gap:12px; }
         .stepbox { background:rgba(255,255,255,.035); border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:14px; display:flex; flex-direction:column; gap:10px; }
         .steptitle { display:flex; align-items:center; gap:10px; font-weight:700; font-size:16px; }
