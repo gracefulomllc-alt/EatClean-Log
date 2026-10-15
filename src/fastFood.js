@@ -207,3 +207,52 @@ export function applyMods(m, ids) {
   return out;
 }
 export const modLabel = (id) => (MODS.find((x) => x.id === id) || {}).label || id;
+
+// ---- finding a restaurant: search with nicknames, your most visited, and the usual popular places ----
+export const POPULAR_CHAINS = ["McDonald's", "Chick-fil-A", "Chipotle", "Subway", "Starbucks", "Taco Bell", "Wendy's", "Panera", "Raising Cane's", "Jimmy John's"];
+const ALIASES = {
+  "McDonald's": ["mcdonalds", "mcd", "mickey ds", "mickey d"], "Chick-fil-A": ["chickfila", "chick fil a", "cfa"], "Burger King": ["bk"],
+  "Jimmy John's": ["jimmy johns", "jj", "jjs"], "Jersey Mike's": ["jersey mikes", "jm"], "Domino's": ["dominos", "pizza"], "Wendy's": ["wendys"],
+  "Raising Cane's": ["canes", "raising canes"], "Taco Bell": ["tacobell"], "Panda Express": ["panda", "chinese"], "Starbucks": ["sbux", "coffee"],
+  "Gas station or store": ["gas", "convenience", "store", "7 eleven", "7eleven", "caseys", "kwik trip", "maverik", "circle k", "love's", "loves", "pilot", "truck stop"],
+  "Subway": ["subs", "sub"], "Pizza Hut": ["pizza", "pizzahut"], "Five Guys": ["5 guys", "fiveguys"], "Whataburger": ["whata"], "Chipotle": ["chipolte", "burrito", "mexican"],
+  "Qdoba": ["mexican", "burrito"], "Popeyes": ["popeye", "chicken"], "KFC": ["kentucky", "chicken"], "Panera": ["panera bread"],
+};
+export const normName = (s) => String(s || "").toLowerCase().replace(/['’]/g, "").replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+
+// Best matches first: starts with the typed text, then a word that starts with it, then anywhere in the name or a nickname.
+export function searchChains(query, limit = 6) {
+  const q = normName(query);
+  if (!q) return [];
+  const scored = ROAD_CHAINS.map((chain) => {
+    const names = [normName(chain), ...(ALIASES[chain] || []).map(normName)];
+    let best = 0;
+    for (const [i, n] of names.entries()) {
+      const w = i === 0 ? 1 : 0.9;
+      if (n === q) best = Math.max(best, 5 * w);
+      else if (n.startsWith(q)) best = Math.max(best, 4 * w);
+      else if (n.split(" ").some((x) => x.startsWith(q))) best = Math.max(best, 3 * w);
+      else if (n.includes(q)) best = Math.max(best, 2 * w);
+    }
+    return { chain, best };
+  }).filter((x) => x.best > 0);
+  return scored.sort((a, b) => b.best - a.best || ROAD_CHAINS.indexOf(a.chain) - ROAD_CHAINS.indexOf(b.chain)).slice(0, limit).map((x) => x.chain);
+}
+
+// Orders logged from here end in "(Chain)". Count how often each place shows up in your history.
+export function visitCounts(days) {
+  const counts = {};
+  for (const d of Object.values(days || {})) for (const f of d?.foods || []) {
+    const m = /\(([^()]+)\)\s*$/.exec(String(f?.name || ""));
+    if (m && ROAD_CHAINS.includes(m[1])) counts[m[1]] = (counts[m[1]] || 0) + 1;
+  }
+  return counts;
+}
+
+// mine: the places you order from most. popular: the usual favorites you haven't used yet. rest: everything else, in list order.
+export function chainGroups(counts) {
+  const mine = Object.entries(counts || {}).sort((a, b) => b[1] - a[1] || ROAD_CHAINS.indexOf(a[0]) - ROAD_CHAINS.indexOf(b[0])).slice(0, 5).map(([c]) => c);
+  const popular = POPULAR_CHAINS.filter((c) => ROAD_CHAINS.includes(c) && !mine.includes(c));
+  const rest = ROAD_CHAINS.filter((c) => !mine.includes(c) && !popular.includes(c));
+  return { mine, popular, rest };
+}

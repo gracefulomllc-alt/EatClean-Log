@@ -1,5 +1,5 @@
 import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
-import { roadPicks, ROAD_CHAINS, modsFor, applyMods, modLabel } from "./fastFood.js";
+import { roadPicks, ROAD_CHAINS, searchChains, visitCounts, chainGroups, modsFor, applyMods, modLabel } from "./fastFood.js";
 import { gradeFood, gradeTone, letterFor } from "./grade.js";
 import { buildStatBook, RANGES } from "./statbook.js";
 import { applyWatch } from "./watch.js";
@@ -680,6 +680,7 @@ export default function CutLog() {
   }, [data?.fast?.start]);
   const [tab, setTab] = useState("now");
   const [logView, setLogView] = useState("mine");
+  useEffect(() => { window.scrollTo?.(0, 0); }, [tab]);
   const openCrew = (m) => { window.__crewMode = typeof m === "string" ? m : null; setLogView("group"); setTab("log"); window.scrollTo?.(0, 0); };
   const [viewDay, setViewDay] = useState(dayKey());
   const [saveErr, setSaveErr] = useState(false);
@@ -2458,7 +2459,7 @@ Respond with ONLY JSON: {"classes":[one number 1-3 per item, in order],"tip":"on
             {[["scan", "Scan"], ["weigh", "Ingredient"], ["label", "Label"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
               <button key={k} className={adding === k ? "chip on" : "chip"} onClick={() => setAdding(k)}>{l}</button>))}
           </div>
-          {adding === "weigh" && <WeighIt key={addKey} meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
+          {adding === "weigh" && <WeighIt key={addKey} focus={addKey > 0} meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
           {adding === "scan" && <ScanIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
           {adding === "label" && <LabelIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} />}
           {adding === "photo" && <SnapIt meal={meal} setMeal={noop} hideMeal cta="Add to meal" onAdd={addItems} onCancel={() => setAdding(null)} calib={calib} onCalib={onCalib} />}
@@ -2859,7 +2860,7 @@ The macro numbers are PER SERVING, exactly as the panel states them.` }]);
   );
 }
 
-function WeighIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Add to meal" }) {
+function WeighIt({ meal, setMeal, onAdd, onCancel, hideMeal, focus = false, cta = "Add to meal" }) {
   const [q, setQ] = useState(""); const [pick, setPick] = useState(null);
   const [amt, setAmt] = useState(""); const [unit, setUnit] = useState("g"); const [raw, setRaw] = useState(false);
   const [remote, setRemote] = useState([]); const [searching, setSearching] = useState(false); const [searchErr, setSearchErr] = useState("");
@@ -2915,7 +2916,7 @@ function WeighIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Add to meal"
 
   return (
     <>
-      <input autoFocus placeholder="Type an ingredient: egg, rice, chicken…" value={q} aria-label="Ingredient"
+      <input autoFocus={focus} placeholder="Type an ingredient: egg, rice, chicken…" value={q} aria-label="Ingredient"
         onChange={(e) => { setQ(e.target.value); setPick(null); }} />
 
       {!pick && (
@@ -3387,6 +3388,12 @@ function RoadTab({ data, setData, targets, day, updateDay, dayId, setDayId }) {
   const [saved, setSaved] = useState({});
   const [ai, setAi] = useState(false);
   const orders = data.orders || [];
+  const [q, setQ] = useState("");
+  const [qOpen, setQOpen] = useState(false);
+  const visits = useMemo(() => visitCounts(data.days), [data.days]);
+  const groups = chainGroups(visits);
+  const found = searchChains(q, 6);
+  const pickChain = (c) => { setChain(c); setQ(c); setQOpen(false); setMore(false); };
   const logToday = (item) => { updateDay(today, (d) => ({ ...d, foods: [...d.foods, { id: crypto.randomUUID(), at: stampFor(today), u: Date.now(), ...item }] })); pop(item); };
   const picks = roadPicks(slot, remainCal, remainP, data.profile, chain, more ? 40 : 8, sort);
   const hasMore = !more && roadPicks(slot, remainCal, remainP, data.profile, chain, 40, sort).length > 8;
@@ -3400,10 +3407,29 @@ function RoadTab({ data, setData, targets, day, updateDay, dayId, setDayId }) {
         <label>Sort by</label>
         <div className="chips">{[["", "Best match"], ["protein", "Most protein"], ["calories", "Fewest calories"], ["ratio", "Best protein per calorie"]].map(([k, l]) => (
           <button key={k} className={sort === k ? "chip on" : "chip"} onClick={() => { setSort(k); setMore(false); }}>{l}</button>))}</div>
-        <label>Only show one place <span className="dim tiny">(swipe for more)</span></label>
+        <label>Where are you going?</label>
+        <div style={{ position: "relative" }}>
+          <input type="search" value={q} placeholder="Search restaurants (Subway, Chipotle, gas station…)" autoComplete="off" enterKeyHint="search"
+            onFocus={() => setQOpen(true)} onBlur={() => setTimeout(() => setQOpen(false), 150)} onChange={(e) => { setQ(e.target.value); setQOpen(true); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && found[0]) pickChain(found[0]); }} />
+          {qOpen && (
+            <div className="dropdown" style={{ marginTop: 6 }}>
+              {q.trim() ? (found.length ? found.map((c) => <button key={c} className="dd-row" onMouseDown={(e) => e.preventDefault()} onClick={() => pickChain(c)}><span>{c}</span>{visits[c] ? <span className="dim tiny">{visits[c]} visit{visits[c] > 1 ? "s" : ""}</span> : null}</button>)
+                : <div className="dim small" style={{ padding: 12 }}>Not in our list yet. Try "Gas station or store" for a quick-stop pick, or use "Ask the coach for a custom order" below.</div>)
+              : <>
+                {groups.mine.length > 0 && <div className="dim tiny" style={{ padding: "8px 12px 2px" }}>Your most visited</div>}
+                {groups.mine.map((c) => <button key={c} className="dd-row" onMouseDown={(e) => e.preventDefault()} onClick={() => pickChain(c)}><span>{c}</span><span className="dim tiny">{visits[c]} visit{visits[c] > 1 ? "s" : ""}</span></button>)}
+                <div className="dim tiny" style={{ padding: "8px 12px 2px" }}>Popular</div>
+                {groups.popular.map((c) => <button key={c} className="dd-row" onMouseDown={(e) => e.preventDefault()} onClick={() => pickChain(c)}><span>{c}</span></button>)}
+              </>}
+            </div>
+          )}
+        </div>
+        {chain && <div className="row"><span className="small">Showing only <b>{chain}</b></span><button className="chip" onClick={() => { setChain(""); setQ(""); setMore(false); }}>Show all places</button></div>}
+        <label>Or browse by place <span className="dim tiny">(swipe for more)</span></label>
         <div className="chips" style={{ flexWrap: "nowrap", overflowX: "auto", paddingBottom: 6, WebkitOverflowScrolling: "touch" }}>
-          <button className={!chain ? "chip on" : "chip"} style={{ flex: "none" }} onClick={() => { setChain(""); setMore(false); }}>All</button>
-          {ROAD_CHAINS.map((c) => <button key={c} style={{ flex: "none", whiteSpace: "nowrap" }} className={chain === c ? "chip on" : "chip"} onClick={() => { setChain(chain === c ? "" : c); setMore(false); }}>{c}</button>)}
+          <button className={!chain ? "chip on" : "chip"} style={{ flex: "none" }} onClick={() => { setChain(""); setQ(""); setMore(false); }}>All</button>
+          {ROAD_CHAINS.map((c) => <button key={c} style={{ flex: "none", whiteSpace: "nowrap" }} className={chain === c ? "chip on" : "chip"} onClick={() => { setChain(chain === c ? "" : c); setQ(chain === c ? "" : c); setMore(false); }}>{c}</button>)}
         </div>
         {chain && <a className="btn ghost wide" style={{ textAlign: "center", textDecoration: "none" }} href={mapsUrl(chain)} target="_blank" rel="noreferrer">Open the nearest {chain === "Gas station or store" ? "gas station" : chain} in Maps</a>}
       </div>
