@@ -3,6 +3,7 @@ import { roadPicks, ROAD_CHAINS, modsFor, applyMods, modLabel } from "./fastFood
 import { gradeFood, gradeTone, letterFor } from "./grade.js";
 import { buildStatBook, RANGES } from "./statbook.js";
 import { applyWatch } from "./watch.js";
+import { cyclePhase } from "./cycle.js";
 import { KINDS as WK, FOCUS as WFOCUS, EFFORT as WEFFORT, DURATIONS as WDUR, newSession, netCal, sessionExtra, kindsOf, describeSession } from "./training.js";
 import { decodeFrame } from "./barcode.js";
 import { MORE_FOODS, COMMON_NAMES, ingredientClass, isAddon } from "./ingredients.js";
@@ -421,6 +422,16 @@ const PALETTES = {
     meal: { Breakfast: "#4C8DFF", Lunch: "#22C55E", Dinner: "#A78BFA", Snack: "#FFC72C" },
     stages: ["#5A5E6B", "#4C8DFF", "#38BDF8", "#22C55E", "#FFC72C", "#FB923C", "#F58426", "#E5384F"],
   },
+  bloom: {
+    cal: "#C4A1FF", protein: "#7EE7C1", carbs: "#F4A6D7", fat: "#FFD27A", bad: "#FF7A9A",
+    water: "#9DB8FF", warn: "#FFD27A", idle: "#4A3F66",
+    track: "#2A2140", tickOff: "#4A3F66", dimText: "#B5A9D1", faint: "#6A5C8C",
+    grid: "#2A2140", axis: "#B5A9D1",
+    tip: { fontSize: 12, borderRadius: 14, border: "1px solid #3B2E5C", background: "#1B1430", color: "#F5F0FF" },
+    cap: "round", glow: false, ringFade: 0.6,
+    meal: { Breakfast: "#C4A1FF", Lunch: "#7EE7C1", Dinner: "#F4A6D7", Snack: "#FFD27A" },
+    stages: ["#6A5C8C", "#9DB8FF", "#C4A1FF", "#7EE7C1", "#B8F28A", "#FFD27A", "#FFA97A", "#FF7A9A"],
+  },
   modern: {
     cal: "#818CF8", protein: "#34D399", carbs: "#22D3EE", fat: "#FBBF24", bad: "#FB7185",
     water: "#38BDF8", warn: "#FBBF24", idle: "#475569",
@@ -553,9 +564,9 @@ export default function CutLog() {
   const [locked, setLocked] = useState(null);
   const [welcomed, setWelcomed] = useState(() => { try { return localStorage.getItem("cutlog:welcomed") === "1"; } catch { return true; } });
   const th = data?.theme === "retro" ? "court" : data?.theme;   // the old Desktop '95 look is gone; those logs land on hardwood
-  PRO = !th || th === "pro";                      // the default look: ESPN layout in NBA colors
+  PRO = !th || th === "pro" || th === "bloom";    // the default look: ESPN layout in NBA colors (Lavender shares the layout)
   COURT = th === "court";                          // basketball language (Court, Plays, box score) only on Hardwood
-  THEME = PRO ? "pro" : COURT ? "arena" : ["modern", "arena"].includes(th) ? th : "glass";
+  THEME = th === "bloom" ? "bloom" : PRO ? "pro" : COURT ? "arena" : ["modern", "arena"].includes(th) ? th : "glass";
   TEAM = data?.team || "Lakers";
   FOOD_RULES = avoidNote(data?.profile);
   const [sync, setSync] = useState({ state: localStorage.getItem("cutlog:sync") ? "idle" : "off" });
@@ -741,7 +752,7 @@ export default function CutLog() {
   if (!data.profile) return <Shell theme={THEME}>
     <JoinSync onJoin={joinSync} />
     <ProfileForm wizard
-      initial={BLANK_PROFILE}
+      initial={BLANK_PROFILE} look={data.theme || "pro"} onLook={(k) => setData((d) => ({ ...d, theme: k }))}
       title="Let's build your plan" cta="Start"
       onSave={(profile) => setData((d) => ({ ...d, profile }))} /></Shell>;
 
@@ -1091,6 +1102,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
     <>
       {isToday && !PRO && <GamesPanel />}
       {isToday && <CrewCard data={data} onOpen={openCrew} />}
+      {data.cycle?.on && data.cycle.start && data.profile?.sex === "female" && <CycleCard cycle={data.cycle} dayId={dayId} />}
       {(fastOn || (!fastEnabled && !fast && isToday && fastGate(data.profile).ok)) && <SectionBar title="Fasting" sub={fast && fastOn ? `${st?.name || "Fasting"} · next: ${nx?.name || "keep going"}` : "Your fasting clock"} right={fast && fastOn ? fmtHM(now - fast.start) : ""} />}
       {fastOn && fast && (() => {
         const cs = fastConfirmState(fast.start, fast.confirmedAt, now);
@@ -4474,6 +4486,53 @@ function AdaptivePanel({ adaptive, on, onToggle }) {
 }
 
 /* ---------- setup panels: sync, install, alerts ---------- */
+/* ---------- optional cycle notes (off by default): general tips from where she is in her cycle ---------- */
+function CycleCard({ cycle, dayId }) {
+  const [open, setOpen] = useState(false);
+  const ph = cyclePhase(cycle?.start, dayId, cycle?.len);
+  if (!ph) return null;
+  return (
+    <div className="glass pad stack">
+      <div className="row" role="button" tabIndex={0} aria-expanded={open} onClick={() => setOpen(!open)} style={{ cursor: "pointer" }}>
+        <h2>Cycle notes</h2>
+        <span className="dim tiny">Day {ph.day} of about {ph.len} · {ph.name} {open ? "▴" : "▾"}</span>
+      </div>
+      {open && (
+        <div className="fadein stack" style={{ gap: 6 }}>
+          <ul className="small" style={{ paddingLeft: 18, margin: 0 }}>{ph.tips.map((t, i) => <li key={i}>{t}</li>)}</ul>
+          {ph.late && <p className="small">Your last period date is a few cycles old. Update it in Settings to keep this accurate.</p>}
+          <p className="dim tiny">General guidance and estimates only, every body is different. It never changes your calorie or protein targets. See a doctor if your cycle is very irregular or painful.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CyclePanel({ data, setData }) {
+  const c = data.cycle || { on: false, start: "", len: 28 };
+  const set = (patch) => setData((d) => ({ ...d, cycle: { ...(d.cycle || { on: false, start: "", len: 28 }), ...patch, u: Date.now() } }));
+  return (
+    <div className="glass pad stack">
+      <h2>Cycle notes</h2>
+      <p className="dim small">Optional. Adds a small card on Today with general food and training tips for where you are in your cycle. It stays in your own log, it is never shared with a group, and it never changes your calorie or protein targets.</p>
+      <div className="chips">
+        <button className={c.on ? "chip on" : "chip"} onClick={() => set({ on: true })}>On</button>
+        <button className={!c.on ? "chip on" : "chip"} onClick={() => set({ on: false })}>Off</button>
+      </div>
+      {c.on && (
+        <>
+          <div><label>First day of your last period</label>
+            <input type="date" max={dayKey()} value={c.start || ""} onChange={(e) => set({ start: e.target.value })} /></div>
+          <div><label>Usual cycle length (days)</label>
+            <div className="chips">{[26, 28, 30, 32].map((n) => <button key={n} className={+c.len === n ? "chip on" : "chip"} onClick={() => set({ len: n })}>{n}</button>)}
+              <input className="mini" type="number" inputMode="numeric" min="21" max="40" aria-label="Cycle length" value={c.len} onChange={(e) => set({ len: e.target.value === "" ? "" : Math.max(0, Math.min(60, +e.target.value)) })} style={{ width: 76 }} /></div></div>
+          {!c.start && <p className="small">Pick the date to see your notes on Today.</p>}
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ---------- watch and phone sync: set up once, then steps, sleep and workouts show up on their own ---------- */
 function WatchPanel({ pullWatch }) {
   const code = localStorage.getItem("cutlog:sync");
@@ -4779,7 +4838,7 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
       <div className="glass pad stack">
         <h2>Look</h2>
         <div className="chips">
-          {[["pro", "Pro"], ["court", "Hardwood"], ["modern", "Modern"], ["arena", "Scoreboard"], ["glass", "Glass"]].map(([k, l]) => (
+          {[["pro", "Pro"], ["bloom", "Lavender"], ["court", "Hardwood"], ["modern", "Modern"], ["arena", "Scoreboard"], ["glass", "Glass"]].map(([k, l]) => (
             <button key={k} className={(data.theme === "retro" ? "court" : data.theme || "pro") === k ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, theme: k }))}>{l}</button>))}
         </div>
         <p className="dim tiny">Switches the whole app. Nothing about your data changes.</p>
@@ -4795,6 +4854,7 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
       <AdaptivePanel adaptive={adaptive} on={data.useAdaptive !== false} onToggle={(v) => setData((d) => ({ ...d, useAdaptive: v }))} />
       <SyncPanel {...{ sync, syncNow, startSync, joinSync, leaveSync }} />
       <WatchPanel pullWatch={pullWatch} />
+      {data.profile?.sex === "female" && <CyclePanel data={data} setData={setData} />}
       <InstallPanel />
       <FastingPanel data={data} setData={setData} />
       <AlertsPanel data={data} setData={setData} />
@@ -4861,7 +4921,7 @@ const lifestyleNote = (p) => {
   return bits.length || h ? `About their life: ${bits.join(", ")}.${h}` : "";
 };
 
-function ProfileForm({ initial, title, cta, intro, onSave, wizard }) {
+function ProfileForm({ initial, title, cta, intro, onSave, wizard, look, onLook }) {
   const [p, setP] = useState(() => ({ ...BLANK_PROFILE, ...initial, waterCustom: initial?.waterCustom ?? (!wizard && initial?.waterOz != null) }));
   const [step, setStep] = useState(0);
   const set = (k, v) => setP((x) => ({ ...x, [k]: v }));
@@ -4920,6 +4980,10 @@ function ProfileForm({ initial, title, cta, intro, onSave, wizard }) {
           <button key={x} className={p.sex === x ? "chip on" : "chip"} onClick={() => set("sex", x)}>{x === "male" ? "Male" : "Female"}</button>))}</div>
         <div><label>How old are you?</label><input type="number" inputMode="numeric" value={p.age} onChange={(e) => set("age", e.target.value)} /></div>
         {p.age !== "" && !ageOk && <p className="alert">Enter an age from 13 to 100.</p>}
+        {onLook && <>
+          {q("Pick a look", "Changes the colors of the whole app. You can switch any time in Settings.")}
+          <div className="chips">{[["pro", "Classic"], ["bloom", "Lavender"]].map(([k, l]) => <button key={k} className={(look || "pro") === k ? "chip on" : "chip"} onClick={() => onLook(k)}>{l}</button>)}</div>
+        </>}
       </>) },
     body: { title: "Your body", need: () => bodyOk, body: (
       <>
@@ -5060,7 +5124,7 @@ function ProfileForm({ initial, title, cta, intro, onSave, wizard }) {
 
 /* ---------- shell ---------- */
 function Shell({ children, theme, top }) {
-  const cls = theme === "pro" ? "app pro" : theme === "modern" ? "app modern" : theme === "arena" ? (COURT ? "app arena court" : "app arena") : "app";
+  const cls = theme === "bloom" ? "app pro bloom" : theme === "pro" ? "app pro" : theme === "modern" ? "app modern" : theme === "arena" ? (COURT ? "app arena court" : "app arena") : "app";
   const cue = theme === "arena" ? teamCue(TEAM) : null;
   const style = cue ? { "--pri": cue.primary, "--sec": cue.secondary, "--pri-btn": cue.button, "--pri-ink": cue.ink,
     "--sec-btn": cue.chipBg, "--sec-ink": cue.chipInk } : undefined;
@@ -5525,6 +5589,35 @@ function Shell({ children, theme, top }) {
         .chips { justify-content:center; }
         .rowbtns { justify-content:center; }
         .steptitle { justify-content:center; text-align:center; }
+
+        /* Lavender look: the same layout in plum and lavender, softer and rounder */
+        .app.bloom { background:#140F1E; color:#F5F0FF; --nbablue:#B388FF; --nbadeep:#4B2E83; --nbared:#9B5DE5; }
+        .app.bloom .glass { background:#1E1730; border:1px solid #34294D; border-radius:16px; }
+        .app.bloom .mealhead { background:#251C3B; border-bottom:1px solid #34294D; }
+        .app.bloom .dim { color:#B5A9D1; }
+        .app.bloom .btn, .app.bloom .chip, .app.bloom .listbtn { background:#261D3D; color:#F5F0FF; border:1px solid #3B2E5C; border-radius:14px; }
+        .app.bloom .chip { border-radius:999px; }
+        .app.bloom .btn.ghost { border-color:#4A3A73; }
+        .app.bloom .btn.solid, .app.bloom .btn.accent { background:#7B3FC4; border-color:#7B3FC4; color:#fff; }
+        .app.bloom .chip.on, .app.bloom .listbtn.on { background:#9B5DE5; border-color:#9B5DE5; color:#fff; }
+        .app.bloom input, .app.bloom textarea, .app.bloom select { background:#160F25; border:1px solid #3B2E5C; border-radius:12px; color:#F5F0FF; }
+        .app.bloom input:focus, .app.bloom textarea:focus { border-color:#B388FF; box-shadow:0 0 0 2px rgba(179,136,255,.35); }
+        .app.bloom .track, .app.bloom .fuel { background:#2A2140; }
+        .app.bloom .fooditem, .app.bloom .histrow, .app.bloom .stagerow, .app.bloom .boxscore td { border-top-color:#2A2140; }
+        .app.bloom .gradebox, .app.bloom .subpanel { background:#160F25; border-color:#34294D; border-radius:12px; }
+        .app.bloom .bubble { background:#251C3B; } .app.bloom .bubble.me { background:#4B2E83; }
+        .app.bloom .probar { background:#140F1E; border-bottom:2px solid #9B5DE5; }
+        .app.bloom .prologo b { color:#C4A1FF; }
+        .app.bloom .tophead { background:rgba(20,15,30,.94); }
+        .app.bloom .proscores { background:#140F1E; }
+        .app.bloom .gamespanel .gcard { background:#1E1730; border-color:#34294D; border-radius:12px; }
+        .app.bloom .dock { background:#140F1E; border-top:1px solid #34294D; }
+        .app.bloom .dockbtn { color:#9A8DBA; }
+        .app.bloom .dockbtn.on { color:#fff; border-top-color:#C4A1FF; }
+        .app.bloom .dockbtn.on svg { color:#C4A1FF; }
+        .app.bloom .secbar { background:linear-gradient(180deg, rgba(155,93,229,.22), rgba(155,93,229,.05)); border-top-color:#B388FF; }
+        .app.bloom .sess, .app.bloom .histcard { background:#251C3B; border-color:#34294D; }
+        .app.bloom .progear { color:#9A8DBA; }
 `}</style>
       {top}
       {children}

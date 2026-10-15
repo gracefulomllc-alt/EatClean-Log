@@ -1,0 +1,18 @@
+import { cycleDay, cyclePhase } from "../src/cycle.js";
+let ok = 0, bad = 0; const t = (c, m) => { c ? ok++ : (bad++, console.log("FAIL", m)); };
+t(cycleDay("2026-10-01", "2026-10-01").day === 1, "start day is day 1");
+t(cycleDay("2026-10-01", "2026-10-28").day === 28, "day 28 of 28");
+t(cycleDay("2026-10-01", "2026-10-29").day === 1, "wraps to day 1 after one length");
+t(cycleDay("2026-10-01", "2026-09-30") === null, "dates before the start give nothing");
+t(cycleDay("nope", "2026-10-01") === null, "bad date gives nothing");
+t(cycleDay("2026-10-01", "2026-10-30", 5).len === 21 && cycleDay("2026-10-01", "2026-10-30", 99).len === 40, "length clamped 21 to 40");
+const p = (n, len) => cyclePhase("2026-10-01", `2026-10-${String(n).padStart(2, "0")}`, len);
+t(p(1).key === "period" && p(5).key === "period", "days 1 to 5 are the period");
+t(p(6).key === "follicular" && p(12).key === "follicular", "building phase after the period");
+t(p(13).key === "ovulation" && p(15).key === "ovulation", "peak window around day 14 of 28");
+t(p(16).key === "luteal" && p(28).key === "luteal", "pre-period phase last");
+t(cyclePhase("2026-10-01", "2026-10-15", 35).key === "follicular" && cyclePhase("2026-10-01", "2026-10-21", 35).key === "ovulation", "a longer cycle shifts the peak window later");
+t(p(10).daysToNext === 19, "days until the next period");
+t(cyclePhase("2026-01-01", "2026-10-14").late === true && p(3).late === false, "flags when the date is old enough to update");
+t(Object.values({ a: p(2), b: p(8), c: p(14), d: p(20) }).every((x) => x.tips.length >= 2), "every phase has tips");
+console.log(bad ? `${bad} failed` : `cycle ok (${ok})`); process.exit(bad ? 1 : 0);
