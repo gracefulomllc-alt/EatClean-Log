@@ -1172,18 +1172,17 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
         </div>
       )}
 
-      {open ? <AddFood budget={targets.calories} budgetLeft={left} onCancel={() => setOpen(false)} calib={data.calib || []} recipes={data.recipes || []} setData={setData}
-        onCalib={(n) => setData((d) => ({ ...d, calib: [n, ...(d.calib || [])].slice(0, 12) }))}
-        onAdd={(items, grade) => {
+      {open ? <LogMeal data={data} setData={setData} dayId={dayId} budget={targets.calories} budgetLeft={left} onDone={() => setOpen(false)}
+        commit={(items, grade) => {
           // A shared mealId groups these items so a grade (if any) can attach to the right ones,
           // even for a one-item "meal" — grading a single food should still show its verdict.
           const mealId = crypto.randomUUID();
           updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, ...items.map((i) => ({ at: stampFor(dayId), ...i, mealId, u: Date.now() }))],
             grades: grade ? { ...(d.grades || {}), [mealId]: { ...grade, at: Date.now() } } : d.grades }));
-          setOpen(false);
+          pop({ calories: items.reduce((a, f) => a + (+f.calories || 0), 0), protein: items.reduce((a, f) => a + (+f.protein || 0), 0) });
         }} />
         : <button className="btn solid wide big" onClick={() => setOpen(true)}><Plus size={18} /> {H("Log a play", "Add a meal")}</button>}
-      {!open && <p className="dim small center" style={{ marginTop: -4, marginBottom: 10 }}>Press the button after you eat. Type the food, snap a photo, or scan a barcode.</p>}
+      {!open && <p className="dim small center" style={{ marginTop: -4, marginBottom: 10 }}>Press the button after you eat. Pick the meal, add your food (or tap one you've eaten before), then log it.</p>}
 
       {(() => {
         const goal = data.profile.waterOz || 100, have = +day.water || 0;
@@ -1876,11 +1875,104 @@ function JoinSync({ onJoin }) {
 }
 
 /* ---------- add food ---------- */
-function AddFood({ onAdd, onCancel, calib, onCalib, recipes, setData, budget, budgetLeft }) {
-  const [mode, setMode] = useState("meal");
-  const [meal, setMeal] = useState(guessMeal());
+/* ---------- logging a meal, in clear steps: 1 which meal, 2 add what you ate (or eat it again), 3 review and log ---------- */
+// Everything you've logged, grouped back into meals, most-eaten first, so a regular meal is one tap.
+function mealHistory(days, slot) {
+  const seen = new Map();
+  for (const k of Object.keys(days || {}).sort().reverse()) {
+    const foods = days[k]?.foods || [];
+    const groups = new Map();
+    foods.forEach((f) => { const g = f.mealId || f.id; (groups.get(g) || groups.set(g, []).get(g)).push(f); });
+    for (const items of groups.values()) {
+      const meal = items[0].meal;
+      const sig = meal + "|" + items.map((f) => String(f.name).toLowerCase()).sort().join("+");
+      const cur = seen.get(sig);
+      if (cur) cur.count++;
+      else seen.set(sig, { sig, meal, count: 1, last: k, items });
+    }
+  }
+  return [...seen.values()].sort((a, b) => (b.meal === slot) - (a.meal === slot) || b.count - a.count || (a.last < b.last ? 1 : -1));
+}
+const scaleItem = (f, x) => x === 1 ? f : ({ ...f, name: `${f.name} (${x}x)`, calories: Math.round(f.calories * x), protein: +(f.protein * x).toFixed(1), carbs: +(f.carbs * x).toFixed(1), fat: +(f.fat * x).toFixed(1), ...(f.qty ? { qty: +(f.qty * x).toFixed(2) } : {}) });
+const histTitle = (items) => items.length === 1 ? items[0].name : `${items[0].name.replace(/,.*$/, "")} + ${items.length - 1} more`;
+
+function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
+  const [slot, setSlot] = useState(guessMeal());
+  const [tray, setTray] = useState([]);
+  const [grade, setGrade] = useState(null);
+  const [x, setX] = useState(1);
+  const [all, setAll] = useState(false);
+  const [round, setRound] = useState(0);   // changes after each add so the builder starts clean
+  const hist = useMemo(() => mealHistory(data.days, slot), [data.days, slot]);
+  const shown = all ? hist.slice(0, 30) : hist.slice(0, 5);
+  const stage = (items, g) => { setTray((t) => [...t, ...items.map((i) => ({ ...i, id: crypto.randomUUID() }))]); if (g) setGrade(g); };
+  const sum = tray.reduce((a, f) => ({ cal: a.cal + (+f.calories || 0), p: a.p + (+f.protein || 0) }), { cal: 0, p: 0 });
   return (
-    <div className="glass pad stack fadein">
+    <div className="steps fadein">
+      <div className="stepbox">
+        <div className="steptitle"><span className="stepnum">1</span>Which meal is this?</div>
+        <div className="chips" style={{ marginBottom: 0 }}>{MEALS.map((m) => <button key={m} className={slot === m ? "chip on" : "chip"} onClick={() => setSlot(m)}>{m}</button>)}</div>
+      </div>
+
+      <div className="stepbox">
+        <div className="steptitle"><span className="stepnum">2</span>Add what you ate</div>
+        <div className="substep">
+          <div className="subhead">Eat it again <span className="dim tiny">from your history</span></div>
+          {hist.length === 0 ? <p className="dim tiny">Your meals will show up here after you log them, so a regular meal takes one tap.</p> : (
+            <>
+              <div className="row small"><span className="dim">Portion</span>
+                <div className="chips" style={{ marginBottom: 0 }}>{[0.5, 1, 1.5, 2].map((v) => <button key={v} className={x === v ? "chip on" : "chip"} onClick={() => setX(v)}>{v}x</button>)}</div></div>
+              {shown.map((h) => {
+                const cal = Math.round(h.items.reduce((a, f) => a + f.calories, 0) * x), pr = Math.round(h.items.reduce((a, f) => a + f.protein, 0) * x);
+                return (
+                  <div key={h.sig} className="histrow">
+                    <div className="histinfo"><div className="histname">{histTitle(h.items)}</div>
+                      <div className="dim tiny">{h.meal} · {cal} cal · {pr}g protein · eaten {h.count}x</div></div>
+                    <GradeBadge items={h.items.map((f) => scaleItem(f, x))} />
+                    <button className="btn solid mini" onClick={() => { stage(h.items.map((f) => { const { id, at, u, mealId, ...rest } = f; return scaleItem(rest, x); })); }}>+ Add</button>
+                  </div>
+                );
+              })}
+              {hist.length > 5 && <button className="chip" onClick={() => setAll(!all)}>{all ? "Show fewer" : `Show more (${Math.min(30, hist.length) - 5})`}</button>}
+            </>
+          )}
+        </div>
+        <div className="substep">
+          <div className="subhead">Add something new</div>
+          <AddFood key={round} bare meal={slot} setMeal={setSlot} budget={budget} budgetLeft={budgetLeft} onCancel={onDone}
+            calib={data.calib || []} recipes={data.recipes || []} setData={setData}
+            onCalib={(n) => setData((d) => ({ ...d, calib: [n, ...(d.calib || [])].slice(0, 12) }))}
+            onAdd={(items, g) => { stage(items, g); setRound((r) => r + 1); }} />
+        </div>
+      </div>
+
+      <div className="stepbox">
+        <div className="steptitle"><span className="stepnum">3</span>Review and log</div>
+        {tray.length === 0 ? <p className="dim tiny">Nothing added yet. Pick something in step 2 and it shows up here.</p> : (
+          <>
+            {tray.map((f) => (
+              <div key={f.id} className="row small trayrow"><span>{f.name}</span>
+                <span className="fright"><span className="mono">{Math.round(f.calories)}</span>
+                  <button className="icon" title="Remove" onClick={() => setTray((t) => t.filter((y) => y.id !== f.id))}><X size={15} /></button></span></div>
+            ))}
+            <div className="row"><strong>{slot}: {Math.round(sum.cal)} cal · {Math.round(sum.p)}g protein</strong><GradeBadge items={tray} /></div>
+          </>
+        )}
+        <div className="rowbtns">
+          <button className="btn ghost wide" onClick={onDone}>Cancel</button>
+          <button className="btn solid wide" disabled={!tray.length} onClick={() => { commit(tray.map((f) => ({ ...f, meal: slot })), grade); onDone(); }}>Log {slot.toLowerCase()}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AddFood({ onAdd, onCancel, calib, onCalib, recipes, setData, budget, budgetLeft, meal: mealIn, setMeal: setMealIn, bare }) {
+  const [mode, setMode] = useState("meal");
+  const [mealOwn, setMealOwn] = useState(guessMeal());
+  const meal = mealIn ?? mealOwn, setMeal = setMealIn ?? setMealOwn;
+  return (
+    <div className={bare ? "stack fadein" : "glass pad stack fadein"}>
       <div className="chips">
         {[["meal", "Meal"], ["scan", "Scan"], ["weigh", "Weigh"], ["label", "Label"], ["recipe", "Recipe"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
@@ -2187,7 +2279,7 @@ Respond with ONLY JSON: {"classes":[one number 1-3 per item, in order],"tip":"on
       <div className="rowbtns">
         <button className="btn ghost wide" onClick={onCancel}>Cancel</button>
         <button className="btn solid wide" disabled={!items.length} onClick={() => onAdd(items, grade)}>
-          Log {items.length ? `${items.length} item${items.length > 1 ? "s" : ""}` : "meal"}
+          Add {items.length ? `${items.length} item${items.length > 1 ? "s" : ""}` : "items"} to this meal
         </button>
       </div>
     </>
@@ -2244,7 +2336,7 @@ function Recipes({ recipes, setData, meal, setMeal, onAdd, onCancel }) {
           <button className="btn solid wide" disabled={!n} onClick={() => onAdd([{
             id: crypto.randomUUID(), meal, name: `${pick.name}, ${fmtQty(amt, unit)}`,
             baseName: pick.name, unit, qty: n, per: per.map((v) => +v.toFixed(4)),
-            calories: Math.round(m[0]), protein: +m[1].toFixed(1), carbs: +m[2].toFixed(1), fat: +m[3].toFixed(1) }])}>Log</button>
+            calories: Math.round(m[0]), protein: +m[1].toFixed(1), carbs: +m[2].toFixed(1), fat: +m[3].toFixed(1) }])}>Add to meal</button>
         </div>
       </>
     );
@@ -2343,7 +2435,7 @@ function RecipeBuilder({ initial, onDone }) {
 }
 
 const MealPick = ({ meal, setMeal }) => (
-  <div className="chips">{MEALS.map((m) => <button key={m} className={meal === m ? "chip on" : "chip"} onClick={() => setMeal(m)}>{m}</button>)}</div>
+  <div className="chips mealpick">{MEALS.map((m) => <button key={m} className={meal === m ? "chip on" : "chip"} onClick={() => setMeal(m)}>{m}</button>)}</div>
 );
 
 function Scanner({ onCode, onClose }) {
@@ -2404,7 +2496,7 @@ function Scanner({ onCode, onClose }) {
 }
 
 // Scan the barcode on a package and pull its nutrition: per serving when the package says, plus fiber, sugar and sodium.
-function ScanIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Log" }) {
+function ScanIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Add to meal" }) {
   const [scanning, setScanning] = useState(true);
   const [food, setFood] = useState(null);
   const [note, setNote] = useState("");
@@ -2479,7 +2571,7 @@ function ScanIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Log" }) {
   );
 }
 
-function LabelIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Log" }) {
+function LabelIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Add to meal" }) {
   const [img, setImg] = useState(null);
   const [busy, setBusy] = useState(false);
   const [panel, setPanel] = useState(null);
@@ -2568,7 +2660,7 @@ The macro numbers are PER SERVING, exactly as the panel states them.` }]);
   );
 }
 
-function WeighIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Log" }) {
+function WeighIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Add to meal" }) {
   const [q, setQ] = useState(""); const [pick, setPick] = useState(null);
   const [amt, setAmt] = useState(""); const [unit, setUnit] = useState("g"); const [raw, setRaw] = useState(false);
   const [remote, setRemote] = useState([]); const [searching, setSearching] = useState(false); const [searchErr, setSearchErr] = useState("");
@@ -2813,13 +2905,13 @@ Respond with ONLY JSON:
       {err && <p className="alert">{err}</p>}
       <div className="rowbtns">
         <button className="btn ghost wide" onClick={onCancel}>Cancel</button>
-        <button className="btn solid wide" disabled={!items?.length} onClick={logIt}>Log {items?.length || ""}</button>
+        <button className="btn solid wide" disabled={!items?.length} onClick={logIt}>Add {items?.length || ""} to this meal</button>
       </div>
     </>
   );
 }
 
-function DescribeIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Log" }) {
+function DescribeIt({ meal, setMeal, onAdd, onCancel, hideMeal, cta = "Add to meal" }) {
   const [desc, setDesc] = useState("");
   const [v, setV] = useState({ calories: "", protein: "", carbs: "", fat: "" });
   const [busy, setBusy] = useState(false); const [err, setErr] = useState("");
@@ -4643,6 +4735,19 @@ function Shell({ children, theme, top }) {
         .scanwrap .shot { width:100%; display:block; max-height:300px; object-fit:cover; }
         .scanline { position:absolute; left:8%; right:8%; top:50%; height:2px; background:#EF4444; box-shadow:0 0 10px #EF4444; animation:scanpulse 1.4s ease-in-out infinite; }
         @keyframes scanpulse { 0%,100% { opacity:.35; } 50% { opacity:1; } }
+        .steps { display:flex; flex-direction:column; gap:12px; }
+        .stepbox { background:rgba(255,255,255,.035); border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:14px; display:flex; flex-direction:column; gap:10px; }
+        .steptitle { display:flex; align-items:center; gap:10px; font-weight:700; font-size:16px; }
+        .stepnum { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:50%; background:#E11D48; color:#fff; font-size:14px; font-weight:800; flex:none; }
+        .substep { border-top:1px solid rgba(255,255,255,.1); padding-top:10px; display:flex; flex-direction:column; gap:8px; }
+        .subhead { font-weight:700; font-size:13px; letter-spacing:.04em; text-transform:uppercase; opacity:.85; }
+        .histrow { display:flex; align-items:center; gap:8px; padding:8px 0; border-bottom:1px solid rgba(255,255,255,.07); }
+        .histinfo { flex:1; min-width:0; }
+        .histname { font-size:14.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .histrow .grade { margin-right:0; }
+        .btn.mini { padding:7px 12px; font-size:13px; flex:none; }
+        .trayrow { padding:4px 0; }
+        .stepbox .mealpick { display:none; }
         .grade { font:700 12px/1 'Inter',ui-sans-serif,system-ui,sans-serif; min-width:30px; padding:5px 6px; margin-right:8px; border-radius:7px; color:var(--g); background:color-mix(in srgb, var(--g) 14%, transparent); border:1px solid color-mix(in srgb, var(--g) 55%, transparent); cursor:pointer; text-align:center; }
         .mealhead .grade { margin-right:4px; }
         .gradebox { margin:8px 16px 12px; padding:11px 14px; border-radius:12px; background:rgba(163,230,53,.08); border:1px solid rgba(163,230,53,.3); }
