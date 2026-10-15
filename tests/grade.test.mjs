@@ -8,4 +8,9 @@ t(gradeFood({ calories: 300, protein: 4, carbs: 35, fat: 16 }, 3, c).score < 60,
 const rank = ["F", "D-", "D", "D+", "C-", "C", "C+", "B-", "B", "B+", "A-", "A", "A+"];
 t(rank.indexOf(gradeFood({ calories: 900, protein: 50, carbs: 60, fat: 30 }, 1, c).letter) < rank.indexOf(gradeFood({ calories: 500, protein: 50, carbs: 40, fat: 12 }, 1, c).letter), "oversized portion grades lower");
 t(["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-", "F"].includes(letterFor(0)) && letterFor(97) === "A+" && letterFor(59) === "F" && letterFor(60) === "D-", "letter cutoffs");
+const gx = gradeFood({ calories: 520, protein: 52, carbs: 48, fat: 10 }, 1, c);
+t(gx.parts.length === 4 && gx.parts.reduce((a, p) => a + p.pts, 0) === gx.score && gx.parts.every((p) => p.note.length > 10), "breakdown adds up to the score and explains each part");
+const gy = gradeFood({ calories: 1100, protein: 35, carbs: 110, fat: 55 }, 3, c);
+t(gy.tip.length > 10 && /processed|fat|protein|Big/i.test(gy.why), "a low grade comes with a reason and a way to move up");
+t(gx.tip === "", "an A+ needs no tip");
 console.log(`${ok} ok ${bad} bad`); process.exit(bad ? 1 : 0);

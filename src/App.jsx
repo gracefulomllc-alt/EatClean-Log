@@ -5,6 +5,7 @@ import { decodeFrame } from "./barcode.js";
 import { MORE_FOODS, COMMON_NAMES } from "./ingredients.js";
 import { scaleIngredient, tagsFor, TAG_FILTERS, swapsFor, applySwaps } from "./mealTools.js";
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { SPC_GAMES, SPC_URL } from "./spcSchedule.js";
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, ReferenceLine, CartesianGrid } from "recharts";
 import { Timer, Scale, Users, CalendarDays, Settings as Cog, Plus, X, Star, ChevronLeft, ChevronRight, ChefHat, MessageCircle, Dribbble, Utensils } from "lucide-react";
@@ -2250,14 +2251,54 @@ function TierBox({ grade }) {
 }
 /* ---------- school grades: every food and meal gets an A+ to F automatically ---------- */
 function GradeBadge({ food, items, share }) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState(null);
+  const ref = useRef(null), dropRef = useRef(null);
+  // The box is drawn on top of the page (not inside the card), so no card can clip it. It sits right under the grade.
+  const place = () => {
+    const r = ref.current?.getBoundingClientRect(); if (!r) return;
+    const w = Math.min(320, window.innerWidth - 24);
+    setPos({ top: r.bottom + 6, left: Math.max(12, Math.min(r.right - w, window.innerWidth - w - 12)), width: w });
+  };
+  useEffect(() => {
+    if (!open) return;
+    place();
+    const off = (e) => { if (!ref.current?.contains(e.target) && !dropRef.current?.contains(e.target)) setOpen(false); };
+    const close = () => setOpen(false);
+    document.addEventListener("pointerdown", off);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", close);
+    return () => { document.removeEventListener("pointerdown", off); window.removeEventListener("scroll", close, true); window.removeEventListener("resize", close); };
+  }, [open]);
   const list = items || [food];
   const sum = list.reduce((a, f) => ({ calories: a.calories + (+f.calories || 0), protein: a.protein + (+f.protein || 0), carbs: a.carbs + (+f.carbs || 0), fat: a.fat + (+f.fat || 0) }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
   if (sum.calories <= 0) return null;
   // The processing class comes from the food names; weighted by calories when several foods are graded together.
   const cls = list.reduce((a, f) => a + guessClass(f.name) * (+f.calories || 0), 0) / sum.calories;
   const g = gradeFood(sum, cls < 1.5 ? 1 : cls > 2.4 ? 3 : 2, { ...GRADE_CTX, share });
-  return <button className="grade" style={{ "--g": gradeTone(g.letter) }} title={g.why} aria-label={`Grade ${g.letter}. ${g.why}`}
-    onClick={(e) => { e.stopPropagation(); try { window.dispatchEvent(new CustomEvent("cutlog:pop", { detail: `${g.letter} · ${g.why}` })); } catch { /* fine */ } }}>{g.letter}</button>;
+  const tone = gradeTone(g.letter);
+  return (
+    <span className="gradewrap" ref={ref} style={{ "--g": tone }}>
+      <button className={open ? "grade open" : "grade"} aria-expanded={open} aria-label={`Grade ${g.letter}. Tap to see why.`}
+        onClick={(e) => { e.stopPropagation(); setOpen(!open); }}>{g.letter}<span className="gcaret">{open ? "▴" : "▾"}</span></button>
+      {open && pos && createPortal(
+        <div className="gradedrop" ref={dropRef} style={{ "--g": tone, top: pos.top, left: pos.left, width: pos.width }} role="region" aria-label="Why this grade" onClick={(e) => e.stopPropagation()}>
+          <div className="gd-head"><strong>{g.letter}</strong><span>{g.score} out of 100</span></div>
+          {g.parts.map((p) => {
+            const f = p.pts / p.max;
+            return (
+              <div key={p.key} className="gd-row">
+                <div className="gd-line"><span>{f >= 0.85 ? "✓" : f >= 0.5 ? "~" : "✗"} {p.label}</span><span className="mono">{p.pts}/{p.max}</span></div>
+                <div className="gd-bar"><div style={{ width: `${Math.round(f * 100)}%`, background: f >= 0.85 ? "#22C55E" : f >= 0.5 ? "#EAB308" : "#EF4444" }} /></div>
+                <div className="gd-note">{p.note}</div>
+              </div>
+            );
+          })}
+          {g.tip && <div className="gd-tip"><strong>To move up:</strong> {g.tip}</div>}
+          <div className="gd-foot">Graded on protein, how whole the food is, portion size and fat balance, against your daily goal.</div>
+        </div>, document.body)}
+    </span>
+  );
 }
 
 function MealBuilder({ meal, setMeal, onAdd, onCancel, calib, onCalib, budget, budgetLeft }) {
@@ -4866,6 +4907,20 @@ function Shell({ children, theme, top }) {
         .btn.mini { padding:7px 12px; font-size:13px; flex:none; }
         .trayrow { padding:4px 0; }
         .stepbox .mealpick { display:none; }
+        .gradewrap { position:relative; display:inline-block; flex:none; }
+        .gradewrap .grade { margin-right:8px; }
+        .grade .gcaret { font-size:9px; margin-left:3px; opacity:.8; }
+        .grade.open { background:color-mix(in srgb, var(--g) 30%, transparent); }
+        .gradedrop { position:fixed; z-index:200; color:#F3F4F6; font-family:'Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; line-height:1.3; box-sizing:border-box; max-height:70vh; overflow-y:auto; padding:12px 14px; border-radius:12px; background:#15171C; border:1px solid color-mix(in srgb, var(--g) 60%, #333); box-shadow:0 10px 30px rgba(0,0,0,.55); text-align:left; font-weight:400; white-space:normal; cursor:default; }
+        .gd-head { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:8px; }
+        .gd-head strong { font-size:26px; color:var(--g); }
+        .gd-row { margin-bottom:9px; }
+        .gd-line { display:flex; justify-content:space-between; font-size:13px; font-weight:600; }
+        .gd-bar { height:5px; border-radius:99px; background:rgba(255,255,255,.1); margin:4px 0; overflow:hidden; }
+        .gd-bar > div { height:100%; border-radius:99px; }
+        .gd-note { font-size:12.5px; opacity:.78; line-height:1.35; }
+        .gd-tip { font-size:13px; padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--g) 14%, transparent); margin-top:4px; }
+        .gd-foot { font-size:11px; opacity:.5; margin-top:8px; }
         .grade { font:700 12px/1 'Inter',ui-sans-serif,system-ui,sans-serif; min-width:30px; padding:5px 6px; margin-right:8px; border-radius:7px; color:var(--g); background:color-mix(in srgb, var(--g) 14%, transparent); border:1px solid color-mix(in srgb, var(--g) 55%, transparent); cursor:pointer; text-align:center; }
         .mealhead .grade { margin-right:4px; }
         .gradebox { margin:8px 16px 12px; padding:11px 14px; border-radius:12px; background:rgba(163,230,53,.08); border:1px solid rgba(163,230,53,.3); }
