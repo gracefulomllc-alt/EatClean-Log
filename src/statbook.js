@@ -88,6 +88,9 @@ export function buildStatBook({ days, endKey, n, targetsFor, scoreFn, gradeMeals
     stepsAvg: avg(steps), stepsBest: max(steps), sleepAvg: avg(sleep), sleepBest: max(sleep),
     activeDays: inDays.filter((x) => (x.d.workouts || []).length || (x.d.lifts || []).length || (x.d.tags || []).length).length,
     restDays: inDays.filter((x) => x.d.rest).length,
+    workouts: inDays.reduce((a, x) => a + (x.d.sessions || []).length, 0),
+    workoutMin: inDays.reduce((a, x) => a + (x.d.sessions || []).reduce((b, s2) => b + (+s2.min || 0), 0), 0),
+    focus: inDays.reduce((a, x) => { (x.d.sessions || []).forEach((s2) => { if (s2.focus) a[s2.focus] = (a[s2.focus] || 0) + 1; }); return a; }, {}),
     fasts: fin.length, fastAvg: avg(fh), fastLongest: max(fh),
   };
 

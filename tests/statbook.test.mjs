@@ -25,6 +25,9 @@ t(a.grades.count === 5 && a.grades.tier1 === 2 && Math.round(a.grades.avg) === M
 t(a.body.weightStart === 200 && a.body.weightNow === 198 && a.body.weightChange === -2 && a.body.waistChange === -1, "weight and waist change inside the window");
 t(a.habits.waterAvg === 75 && a.habits.waterDays === 1 && a.habits.stepsAvg === 8000 && a.habits.sleepAvg === 7 && a.habits.activeDays === 1, "habits");
 t(a.top[0].name === "Chicken" && a.top[0].count === 2 && a.top.find((x) => x.name === "Eggs").count === 2, "most-eaten foods merge quantities: " + JSON.stringify(a.top[0]));
+const dd = { ...days, "2026-10-13": { foods: [f("Eggs", 70, 6)], sessions: [{ id: "1", kind: "lift", focus: "upper", min: 60 }, { id: "2", kind: "lift", focus: "lower", min: 45 }, { id: "3", kind: "ball", focus: "sport", min: 30 }] } };
+const w = buildStatBook({ days: dd, endKey: "2026-10-14", n: 7, targetsFor, scoreFn, gradeMeals });
+t(w.habits.workouts === 3 && w.habits.workoutMin === 135 && w.habits.focus.upper === 1 && w.habits.focus.lower === 1 && w.habits.focus.sport === 1, "workouts, minutes and body-part split");
 const all = sb(null);
 t(all.logged === 4 && all.body.weightStart === 210 && all.body.weightChange === -12, "all time reaches back to the first day");
 t(sb(30).logged === 3, "30 days leaves out the August day");

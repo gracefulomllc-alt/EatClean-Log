@@ -2,6 +2,8 @@ import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
 import { roadPicks, ROAD_CHAINS, modsFor, applyMods, modLabel } from "./fastFood.js";
 import { gradeFood, gradeTone, letterFor } from "./grade.js";
 import { buildStatBook, RANGES } from "./statbook.js";
+import { applyWatch } from "./watch.js";
+import { KINDS as WK, FOCUS as WFOCUS, EFFORT as WEFFORT, DURATIONS as WDUR, newSession, netCal, sessionExtra, kindsOf, describeSession } from "./training.js";
 import { decodeFrame } from "./barcode.js";
 import { MORE_FOODS, COMMON_NAMES, ingredientClass, isAddon } from "./ingredients.js";
 import { scaleIngredient, tagsFor, TAG_FILTERS, swapsFor, applySwaps } from "./mealTools.js";
@@ -58,6 +60,7 @@ function mergeData(a, b) {
       if (!grades[gk] || (gv.at || 0) >= (grades[gk].at || 0)) grades[gk] = gv;
     }
     days[k] = { ...base, foods: byKey(da?.foods, db?.foods, (f) => f.id, "food:"), grades };
+    if ((da?.sessions || []).length || (db?.sessions || []).length) days[k].sessions = byKey(da?.sessions, db?.sessions, (x) => x.id, "sess:");
     if ((da?.lifts || []).length || (db?.lifts || []).length) days[k].lifts = byKey(da?.lifts, db?.lifts, (l) => l.id, "lift:");
   }
   const top = newer(a, b);
@@ -257,7 +260,8 @@ function estimateTdee(days, formulaTdee, today = dayKey()) {
 }
 
 // recovering: injury or recovery mode. No activity calories get "earned" and protein stays high to support healing.
-function computeTargets(p, tags = [], tdeeOverride = null, recovering = false) {
+// extra: { earned, protein } from logged workouts with details (see training.js). Without it, the quick tags decide.
+function computeTargets(p, tags = [], tdeeOverride = null, recovering = false, extra = null) {
   const bmr = 10 * (p.weight * 0.4536) + 6.25 * (p.heightIn * 2.54) - 5 * p.age + (p.sex === "male" ? 5 : -161);
   const tdee = tdeeOverride || bmr * ACTIVITY[p.activity].mult;
   // Under 18 there is no calorie cut. Growing bodies and sports need the fuel, so the budget is
@@ -268,9 +272,9 @@ function computeTargets(p, tags = [], tdeeOverride = null, recovering = false) {
   // The recommendation is the starting point. People can nudge it up or down (calAdjust), within reason.
   const adj = minor ? 0 : Math.max(-600, Math.min(600, Math.round(+p.calAdjust || 0)));
   const base = minor ? Math.round(raw / 10) * 10 : Math.max(adj ? 1000 : floor, Math.round((raw + adj) / 10) * 10);
-  const earned = recovering ? 0 : Math.min(500, tags.reduce((a, t) => a + (TAGS[t]?.cal || 0), 0));
+  const earned = recovering ? 0 : extra ? extra.earned : Math.min(500, tags.reduce((a, t) => a + (TAGS[t]?.cal || 0), 0));
   const calories = base + earned;
-  const protein = Math.max(30, (minor ? 0 : Math.max(-60, Math.min(80, Math.round(+p.proteinAdjust || 0)))) + Math.round((minor ? Math.min(p.weight, p.goalWeight || p.weight) * 0.75 : p.goalWeight) * (minor ? 1 : (recovering || tags.some((t) => TAGS[t]?.hard) ? 1.0 : 0.8))));
+  const protein = Math.max(30, (minor ? 0 : Math.max(-60, Math.min(80, Math.round(+p.proteinAdjust || 0)))) + Math.round((minor ? Math.min(p.weight, p.goalWeight || p.weight) * 0.75 : p.goalWeight) * (minor ? 1 : recovering ? 1.0 : extra ? 0.8 + 0.2 * Math.min(1, (extra.protein || 0) / 30) : tags.some((t) => TAGS[t]?.hard) ? 1.0 : 0.8)));
   const fat = Math.round((calories * 0.27) / 9);
   const carbs = Math.max(0, Math.round((calories - protein * 4 - fat * 9) / 4));
   return { bmr: Math.round(bmr), tdee: Math.round(tdee), base, earned, calories, protein, fat, carbs,
@@ -438,7 +442,7 @@ const H = (court, plain) => plain;   // plain words everywhere; the basketball i
 const QTR = { Breakfast: "Q1", Lunch: "Q2", Dinner: "Q3", Snack: "OT" };
 const C = new Proxy({}, { get: (_, k) => PALETTES[THEME][k] });
 const MEAL_COLOR = new Proxy({}, { get: (_, k) => PALETTES[THEME].meal[k] });
-const blankDay = () => ({ foods: [], steps: "", weight: "", tags: [], sleep: "", workouts: [] });
+const blankDay = () => ({ foods: [], steps: "", weight: "", tags: [], sleep: "", workouts: [], sessions: [] });
 const guessMeal = () => { const h = new Date().getHours(); return h < 10 ? "Breakfast" : h < 15 ? "Lunch" : h < 21 ? "Dinner" : "Snack"; };
 const reduced = () => typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
@@ -622,6 +626,31 @@ export default function CutLog() {
     return () => { document.removeEventListener("visibilitychange", onVis); clearInterval(t); };
   }, [syncNow]);
 
+  // Steps, sleep and workouts a watch or phone sent to the sync address. Pulled when you open the app and every few minutes.
+  const pullWatch = useCallback(async () => {
+    const code = localStorage.getItem("cutlog:sync");
+    if (!code || !dataRef.current) return { ok: false, why: "Turn on sync first." };
+    try {
+      const r = await fetch("/api/health?days=10", { headers: { "x-sync-code": code } });
+      if (!r.ok) { let why = ""; try { why = (await r.json()).error; } catch { /* plain text */ } return { ok: false, why: why || "The sync address didn't answer." }; }
+      const { records } = await r.json();
+      let counts = { steps: 0, sessions: 0, sleep: 0 };
+      setData((d) => { if (!d) return d; const res = applyWatch(d.days, records, d.deleted || {}); counts = res; return res.changed ? { ...d, days: res.days, u: Date.now() } : d; });
+      const info = { at: Date.now(), n: records.length };
+      try { localStorage.setItem("cutlog:watch", JSON.stringify(info)); } catch { /* fine */ }
+      window.dispatchEvent(new CustomEvent("cutlog:watch", { detail: info }));
+      return { ok: true, n: records.length };
+    } catch { return { ok: false, why: "Couldn't reach the sync address. Check your connection." }; }
+  }, [setData]);
+  useEffect(() => {
+    if (!data) return;
+    const go = () => document.visibilityState === "visible" && pullWatch();
+    go();
+    document.addEventListener("visibilitychange", go);
+    const t = setInterval(go, 300000);
+    return () => { document.removeEventListener("visibilitychange", go); clearInterval(t); };
+  }, [!!data, pullWatch]);
+
   // Tell the alert server when you last logged, so reminders stay quiet if you already did
   const lastLog = useMemo(() => {
     let m = 0;
@@ -676,13 +705,14 @@ export default function CutLog() {
   // Once there are ~3 weeks of weigh-ins and logged days, your real results replace the formula.
   const adaptive = useMemo(() => (data?.profile ? estimateTdee(data.days, computeTargets(data.profile, []).tdee) : null), [data?.days, data?.profile]);
   const useAdaptive = data?.useAdaptive !== false && !!adaptive?.ready;
-  const targets = useMemo(() => (data?.profile ? computeTargets(data.profile, day.tags, useAdaptive ? adaptive.tdee : null, !!data?.recovery?.on) : null),
-    [data?.profile, day.tags, useAdaptive, adaptive, data?.recovery?.on]);
+  const targets = useMemo(() => (data?.profile ? computeTargets(data.profile, day.tags, useAdaptive ? adaptive.tdee : null, !!data?.recovery?.on, sessionExtra(day.sessions, data.profile.weight, !!data?.recovery?.on)) : null),
+    [data?.profile, day.tags, day.sessions, useAdaptive, adaptive, data?.recovery?.on]);
   // Publish what this person chose to share with each group: after a change, and every 5 minutes as a heartbeat.
   const todayKey = dayKey();
   const todayTags = data?.days?.[todayKey]?.tags;
-  const todayTargets = useMemo(() => (data?.profile ? computeTargets(data.profile, todayTags || [], useAdaptive ? adaptive.tdee : null, !!data?.recovery?.on) : null),
-    [data?.profile, todayTags, useAdaptive, adaptive, data?.recovery?.on]);
+  const todaySessions = data?.days?.[todayKey]?.sessions;
+  const todayTargets = useMemo(() => (data?.profile ? computeTargets(data.profile, todayTags || [], useAdaptive ? adaptive.tdee : null, !!data?.recovery?.on, sessionExtra(todaySessions, data.profile.weight, !!data?.recovery?.on)) : null),
+    [data?.profile, todayTags, todaySessions, useAdaptive, adaptive, data?.recovery?.on]);
   const usual = useMemo(() => {
     const n = new Map();
     Object.values(data?.days || {}).forEach((d) => (d.foods || []).forEach((f) => { if (f.baseName) n.set(f.baseName, (n.get(f.baseName) || 0) + 1); }));
@@ -732,7 +762,7 @@ export default function CutLog() {
         {tab === "coach" && <Coach data={data} setData={setData} targets={targets} adaptive={adaptive} />}
         {tab === "log" && <LogTab view={logView} setView={setLogView} data={data} setData={setData} onPick={(k) => { setViewDay(k); setTab("now"); }} />}
         {tab === "setup" && <Settings data={data} setData={setData} onSave={(p) => setData((d) => ({ ...d, profile: p }))} adaptive={adaptive} useAdaptive={useAdaptive}
-          sync={sync} syncNow={syncNow} startSync={startSync} joinSync={joinSync} leaveSync={leaveSync} />}
+          sync={sync} syncNow={syncNow} startSync={startSync} joinSync={joinSync} leaveSync={leaveSync} pullWatch={pullWatch} />}
       </div>
       <nav className="dock">
         {TABS.filter((t) => t[0] !== "log" && t[0] !== "setup").map(([id, label, Icon]) => (
@@ -1263,19 +1293,13 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
 
       <SectionBar title="Activity and daily check" sub="Lifts, steps, sleep and your score" right={day.steps ? `${Number(day.steps).toLocaleString()} steps` : ""} />
       <div className="glass pad">
-        <div className="small" style={{ fontWeight: 600, marginBottom: 6 }}>What did you do today?</div>
-        <div className="chips">
-          {Object.entries(TAGS).map(([k, v]) => (
-            <button key={k} className={day.tags.includes(k) ? "chip on" : "chip"}
-              onClick={() => updateDay(dayId, (d) => ({ ...d, tags: d.tags.includes(k) ? d.tags.filter((x) => x !== k) : [...d.tags, k] }))}>{v.label}</button>
-          ))}
-        </div>
+        <WorkoutLog day={day} dayId={dayId} updateDay={updateDay} setData={setData} weight={data.profile.weight} recovering={!!data.recovery?.on} proteinBonus={Math.max(0, targets.protein - computeTargets(data.profile, [], null, !!data.recovery?.on, { earned: 0, protein: 0 }).protein)} />
         <div className="chips">
           <button className={day.rest === "rest" ? "chip on" : "chip"} onClick={() => updateDay(dayId, (d) => ({ ...d, rest: d.rest === "rest" ? "" : "rest" }))}>{H("Timeout", "Rest day")}</button>
           <button className={data.recovery?.on ? "chip on" : "chip"} onClick={() => setData((d) => ({ ...d, recovery: d.recovery?.on ? { on: false, u: Date.now() } : { on: true, since: dayId, u: Date.now() } }))}>{H("Injury report", "Hurt / recovering")}</button>
         </div>
         {data.recovery?.on && <p className="cue">{H("Injury report: you're on the bench, not out of the season.", "")} Recovery mode is on. No activity calories get earned, protein stays high to help healing, and your step goal is halved. A rest day, stretching, or an easy walk still counts toward your score. Nothing is penalized. See a professional if it doesn't improve.</p>}
-        <p className="dim tiny">{day.tags.length ? `Protein up to ${targets.protein}g, ${targets.earned} calories back. Use sparingly — earned calories are the easiest place to overshoot.` : "Tap what you did today. A workout or job-site day raises your protein target and earns a few calories back."}</p>
+        <p className="dim tiny">{(day.sessions || []).length || day.tags.length ? `Today's protein target ${targets.protein}g and ${targets.earned} extra calories earned. Use the extra calories sparingly, they are the easiest place to overshoot.` : "Add a workout and the app adds protein and a few calories back to today's targets."}</p>
         {fast && day.tags.some((x) => x === "lift" || x === "ball") && (
           <p className="cue">Trained fasted. Get protein in within two hours of breaking this — that decides whether what comes off is fat or muscle.</p>
         )}
@@ -1402,7 +1426,7 @@ function ChallengePanel({ data, setData }) {
   const prof = { ...data.profile, recovering: !!data.recovery?.on };
   const today = dayKey();
   const ch = data.challenge || null;
-  const st = ch ? challengeStatus(ch, data.days, (day) => computeTargets(data.profile, day?.tags || [], null, false), prof, today) : null;
+  const st = ch ? challengeStatus(ch, data.days, (day) => computeTargets(data.profile, day?.tags || [], null, false, sessionExtra(day?.sessions, data.profile.weight)), prof, today) : null;
   const start = (id) => setData((d) => ({ ...d, challenge: { id, start: dayKey(), u: Date.now() }, u: Date.now() }));
   const archive = () => setData((d) => ({ ...d, history: st?.finished ? [...(d.history || []), { id: crypto.randomUUID(), challenge: st.def.name, start: ch.start, hits: st.hits, badge: st.badge, u: Date.now() }] : d.history || [], challenge: null, u: Date.now() }));
   return (
@@ -2180,7 +2204,7 @@ function dayScore(day, targets, profile = {}) {
   const tCal = +targets?.calories || 0, tProt = +targets?.protein || 0;
   const stepGoal = (+profile.stepGoal || 6000) / (profile.recovering ? 2 : 1);
   const water = +d.water || 0, waterGoal = +profile.waterOz || 100;
-  const moved = !!d.rest || (d.tags || []).length > 0 || (d.workouts || []).length > 0 || (d.lifts || []).length > 0 || (+d.steps || 0) >= stepGoal;
+  const moved = !!d.rest || (d.tags || []).length > 0 || (d.workouts || []).length > 0 || (d.sessions || []).length > 0 || (d.lifts || []).length > 0 || (+d.steps || 0) >= stepGoal;
   const parts = [
     { key: "meals", label: "Logged your meals", pts: meals >= 2 ? 20 : meals === 1 ? 10 : 0, hint: "Log at least two meals" },
     { key: "cal", label: "Inside your calorie range", pts: meals >= 2 && tCal > 0 && cal >= tCal * 0.9 && cal <= tCal * 1.1 ? 20 : 0, hint: "Land within 10% of your budget" },
@@ -3961,6 +3985,57 @@ function Progress({ data, setData }) {
   );
 }
 
+/* ---------- workouts: what you did, which part of the body, how long, how hard ---------- */
+function WorkoutLog({ day, dayId, updateDay, setData, weight, recovering, proteinBonus }) {
+  const sessions = day.sessions || [];
+  const [open, setOpen] = useState(null);
+  const setSessions = (fn) => updateDay(dayId, (d) => {
+    const next = fn(d.sessions || []);
+    return { ...d, sessions: next, tags: [...new Set([...(d.tags || []).filter((t) => !WK[t]), ...kindsOf(next)])] };
+  });
+  const add = (kind) => { const s = newSession(kind); setSessions((l) => [...l, s]); setOpen(s.id); };
+  const edit = (id, patch) => setSessions((l) => l.map((x) => (x.id === id ? { ...x, ...patch, u: Date.now() } : x)));
+  const remove = (id) => { setData((d) => { const left = (d.days[dayId]?.sessions || []).filter((x) => x.id !== id); return { ...d, deleted: tombstone(d, "sess:" + id), days: { ...d.days, [dayId]: { ...(d.days[dayId] || blankDay()), sessions: left, tags: [...new Set([...(d.days[dayId]?.tags || []).filter((t) => !WK[t]), ...kindsOf(left)])], u: Date.now() } } }; }); setOpen(null); };
+  const ex = sessionExtra(sessions, weight, recovering);
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      <div className="small" style={{ fontWeight: 600 }}>What did you do today?</div>
+      <div className="dim tiny" style={{ marginTop: -4 }}>Tap a workout to add it, then say which part of the body, how long and how hard.</div>
+      <div className="chips">{Object.entries(WK).map(([k, v]) => <button key={k} className="chip" onClick={() => add(k)}>+ {v.label}</button>)}</div>
+      {(day.tags || []).filter((t) => WK[t] && !sessions.some((x) => x.kind === t)).map((t) => (
+        <div key={t} className="sess row"><div><div className="sessname">{WK[t].label}</div><div className="dim tiny">Quick tag, no details yet</div></div>
+          <button className="chip" onClick={() => add(t)}>Add details</button></div>))}
+      {sessions.map((s) => {
+        const k = WK[s.kind]; const isOpen = open === s.id;
+        return (
+          <div key={s.id} className="sess">
+            <div className="row sesshead" role="button" tabIndex={0} aria-expanded={isOpen} onClick={() => setOpen(isOpen ? null : s.id)}>
+              <div><div className="sessname">{describeSession(s)}{s.src === "watch" && <span className="tagpill" style={{ marginLeft: 6 }}>Watch</span>}</div>
+                <div className="dim tiny">About {netCal(s, weight)} calories above resting{+s.dist ? ` · ${s.dist} mi` : ""} · tap to {isOpen ? "close" : "edit"}</div></div>
+              <button className="icon" aria-label="Remove workout" onClick={(e) => { e.stopPropagation(); remove(s.id); }}><X size={15} /></button>
+            </div>
+            {isOpen && (
+              <div className="stack fadein" style={{ gap: 10, marginTop: 8 }}>
+                {k.focus.length > 1 && <div><label>Which part of the body</label>
+                  <div className="chips">{k.focus.map((f) => <button key={f} className={s.focus === f ? "chip on" : "chip"} onClick={() => edit(s.id, { focus: f })}>{WFOCUS[f]}</button>)}</div></div>}
+                <div><label>How long (minutes)</label>
+                  <div className="chips">{WDUR.map((m) => <button key={m} className={+s.min === m ? "chip on" : "chip"} onClick={() => edit(s.id, { min: m })}>{m}</button>)}
+                    <input className="mini" type="number" inputMode="numeric" min="1" max="600" aria-label="Minutes" value={s.min} onChange={(e) => edit(s.id, { min: e.target.value === "" ? "" : Math.max(0, Math.min(600, +e.target.value)) })} style={{ width: 76 }} /></div></div>
+                <div><label>How hard was it</label>
+                  <div className="chips">{WEFFORT.map((e) => <button key={e.n} className={+s.effort === e.n ? "chip on" : "chip"} onClick={() => edit(s.id, { effort: e.n })}>{e.label}</button>)}</div>
+                  <div className="dim tiny">{WEFFORT.find((e) => e.n === +s.effort)?.hint}</div></div>
+                {(s.kind === "cardio" || s.kind === "walk" || s.kind === "ball") && <div className="row wideinput"><label style={{ margin: 0 }}>Distance (miles, optional)</label>
+                  <input className="mini" type="number" step="0.1" inputMode="decimal" placeholder="—" value={s.dist} onChange={(e) => edit(s.id, { dist: e.target.value })} /></div>}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {ex && <p className="small">{recovering ? "Recovery mode is on, so no extra calories or protein are added today." : <>This adds <strong>+{ex.earned} calories</strong>{proteinBonus > 0 ? <> and <strong>+{proteinBonus}g protein</strong></> : null} to today. That's about half of what the workouts burned, capped at 500. Steps are already counted in your daily budget.</>}</p>}
+    </div>
+  );
+}
+
 /* ---------- Stat Book: a box score of what you've done over 7, 15, 30, 60 days or all time ---------- */
 function StatBook({ data }) {
   const [range, setRange] = useState(() => { try { return localStorage.getItem("cutlog:statrange") || "30"; } catch { return "30"; } });
@@ -3969,7 +4044,7 @@ function StatBook({ data }) {
   const prof = { ...data.profile, recovering: !!data.recovery?.on };
   const sb = useMemo(() => buildStatBook({
     days: data.days, endKey: dayKey(), n: r.n, fasts: data.fasts || [], waterGoal: data.profile?.waterOz || 100,
-    targetsFor: (day) => computeTargets(data.profile, day?.tags || [], null, false),
+    targetsFor: (day) => computeTargets(data.profile, day?.tags || [], null, false, sessionExtra(day?.sessions, data.profile.weight)),
     scoreFn: (day, t) => dayScore(day, t, prof),
     onTrack: ON_TRACK,
     gradeMeals: (day) => MEALS.map((m) => { const g = gradeItems((day.foods || []).filter((f) => f.meal === m), m === "Snack" ? 0.15 : 0.4); return g ? { score: g.score, letter: g.letter } : null; }).filter(Boolean),
@@ -4001,6 +4076,7 @@ function StatBook({ data }) {
     ["Water (oz)", n0(sb.habits.waterAvg), n0(sb.habits.waterBest), sb.habits.waterAvg == null ? "" : `Reached your water goal on ${sb.habits.waterDays} days.`],
     ["Steps", n0(sb.habits.stepsAvg), n0(sb.habits.stepsBest)],
     ["Sleep (h)", n0(sb.habits.sleepAvg, 1), n0(sb.habits.sleepBest, 1)],
+    ["Workouts", String(sb.habits.workouts), sb.habits.workoutMin ? `${Math.round(sb.habits.workoutMin / 60 * 10) / 10} h` : "", sb.habits.workouts ? `Total time ${sb.habits.workoutMin} min. ${["upper", "lower", "full", "core", "cardio", "sport"].filter((k) => sb.habits.focus[k]).map((k) => `${WFOCUS[k]} ${sb.habits.focus[k]}`).join(", ") || "Add a body part to each workout to see the split"}.`: ""],
     ["Active days", String(sb.habits.activeDays), "", "Days with a workout, a tag like Lifted or Job site, or a logged lift."],
     ["Rest days", String(sb.habits.restDays)],
     ["Fasts finished", String(sb.habits.fasts), sb.habits.fastLongest == null ? "" : `${n0(sb.habits.fastLongest, 1)} h`, sb.habits.fastAvg == null ? "" : `Average ${n0(sb.habits.fastAvg, 1)} hours.`],
@@ -4398,6 +4474,70 @@ function AdaptivePanel({ adaptive, on, onToggle }) {
 }
 
 /* ---------- setup panels: sync, install, alerts ---------- */
+/* ---------- watch and phone sync: set up once, then steps, sleep and workouts show up on their own ---------- */
+function WatchPanel({ pullWatch }) {
+  const code = localStorage.getItem("cutlog:sync");
+  const url = `${location.origin}/api/health`;
+  const [phone, setPhone] = useState(() => (/iPhone|iPad|Macintosh/.test(navigator.userAgent) ? "ios" : "android"));
+  const [info, setInfo] = useState(() => { try { return JSON.parse(localStorage.getItem("cutlog:watch")) || null; } catch { return null; } });
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState("");
+  useEffect(() => { const on = (e) => setInfo(e.detail); window.addEventListener("cutlog:watch", on); return () => window.removeEventListener("cutlog:watch", on); }, []);
+  const copy = async (k, v) => { try { await navigator.clipboard.writeText(v); setCopied(k); setTimeout(() => setCopied(""), 1500); } catch { setMsg("Couldn't copy. Press and hold the text to copy it."); } };
+  const check = async () => { setBusy(true); setMsg(""); const r = await pullWatch(); setMsg(r.ok ? (r.n ? `Got ${r.n} records from your watch or phone. Look at Steps and Sleep on Today.` : "Connected, but nothing has arrived yet. Run your phone's sync and try again.") : r.why); setBusy(false); };
+  const sample = '{\n  "date": "' + dayKey() + '",\n  "steps": 8200,\n  "sleep_hours": 7.4,\n  "workouts": [{ "type": "Basketball", "minutes": 50 }]\n}';
+  const Row = ({ k, label, value }) => (
+    <div className="stack" style={{ gap: 4 }}>
+      <label style={{ margin: 0 }}>{label}</label>
+      <div className="row gap"><input readOnly value={value} onFocus={(e) => e.target.select()} aria-label={label} /><button className="btn ghost" onClick={() => copy(k, value)}>{copied === k ? "Copied" : "Copy"}</button></div>
+    </div>
+  );
+  return (
+    <div className="glass pad stack">
+      <h2>Watch and phone sync</h2>
+      <p className="dim small">Send your steps, sleep and workouts from your watch to this app. Set it up once. After that they show up on Today by themselves, and workouts come in with the length filled in so you can add the body part and how hard it was.</p>
+      {!code ? <p className="alert">Turn on sync above first. Your sync code is what keeps your watch data private and tied to you.</p> : (
+        <>
+          <div className="chips">
+            <button className={phone === "android" ? "chip on" : "chip"} onClick={() => setPhone("android")}>Android (Samsung, Pixel, Garmin, Fitbit)</button>
+            <button className={phone === "ios" ? "chip on" : "chip"} onClick={() => setPhone("ios")}>iPhone and Apple Watch</button>
+          </div>
+          <Row k="url" label="Web address to send to" value={url} />
+          <Row k="hname" label="Header name" value="x-sync-code" />
+          <Row k="hval" label="Header value (your sync code, keep it private)" value={code} />
+          {phone === "android" ? (
+            <ol className="small" style={{ paddingLeft: 18 }}>
+              <li>Make sure your watch app writes to <strong>Health Connect</strong>. Samsung Health, Fitbit and Garmin Connect can. In Samsung Health: Settings, then Health Connect, then allow steps, sleep and exercise.</li>
+              <li>On your phone, install a free app that posts Health Connect data to a web address. One that works this way is <strong>Health Connect Webhook</strong> (search for it in the Play Store).</li>
+              <li>In that app, allow it to read steps, sleep, exercise and distance.</li>
+              <li>Add a webhook. Paste the web address above. Add a header with the name and value above.</li>
+              <li>Turn on automatic sync in that app, then come back here and press <strong>Check now</strong>.</li>
+            </ol>
+          ) : (
+            <>
+              <p className="small">Apple only lets an app read Health data while your phone is unlocked, so this runs from the Shortcuts app and works best a couple of times a day.</p>
+              <ol className="small" style={{ paddingLeft: 18 }}>
+                <li>Open the <strong>Shortcuts</strong> app and make a new shortcut called "Send to D1 Reload".</li>
+                <li>Add <strong>Find Health Samples</strong> for Steps today, then <strong>Calculate Statistics</strong> (Sum) on them. Do the same for Sleep if you want it.</li>
+                <li>Add <strong>Get Contents of URL</strong>. Set the URL to the web address above, Method to POST, add a header with the name and value above, and set the Request Body to JSON with the fields below (date as yyyy-MM-dd, steps from your sum).</li>
+                <li>Under <strong>Automation</strong>, run it at 12 pm and 8 pm. It may ask you to tap Run when your phone is unlocked.</li>
+                <li>Press Check now below. For workouts on iPhone, the quickest way is still to add them in the app.</li>
+              </ol>
+              <label style={{ margin: 0 }}>The JSON the Shortcut sends</label>
+              <textarea readOnly rows={6} value={sample} onFocus={(e) => e.target.select()} />
+            </>
+          )}
+          <button className="btn accent wide" disabled={busy} onClick={check}>{busy ? "Checking…" : "Check now"}</button>
+          {msg && <p className="small">{msg}</p>}
+          <p className="dim tiny">{info ? `Last checked ${new Date(info.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}. ${info.n} records on file from the last 10 days.` : "Not checked yet."} The app checks when you open it and every few minutes.</p>
+          <p className="dim tiny">Your steps are added to the day, never lowered. Sleep only fills an empty box. A workout you delete stays deleted. Steps are already part of your daily calorie budget, so they don't add calories.</p>
+        </>
+      )}
+    </div>
+  );
+}
+
 function SyncPanel({ sync, syncNow, startSync, joinSync, leaveSync }) {
   const code = localStorage.getItem("cutlog:sync");
   const [joinCode, setJoinCode] = useState("");
@@ -4629,7 +4769,7 @@ function FastingPanel({ data, setData }) {
   );
 }
 
-function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, leaveSync, adaptive, useAdaptive }) {
+function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, leaveSync, pullWatch, adaptive, useAdaptive }) {
   const [copied, setCopied] = useState(false);
   const [paste, setPaste] = useState("");
   const [msg, setMsg] = useState("");
@@ -4654,6 +4794,7 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
       </div>
       <AdaptivePanel adaptive={adaptive} on={data.useAdaptive !== false} onToggle={(v) => setData((d) => ({ ...d, useAdaptive: v }))} />
       <SyncPanel {...{ sync, syncNow, startSync, joinSync, leaveSync }} />
+      <WatchPanel pullWatch={pullWatch} />
       <InstallPanel />
       <FastingPanel data={data} setData={setData} />
       <AlertsPanel data={data} setData={setData} />
@@ -5002,6 +5143,9 @@ function Shell({ children, theme, top }) {
         .boxscore td:first-child { padding-right:10px; }
         .boxscore tr.bs-head th { padding:14px 0 4px; font-size:12px; opacity:1; color:${C.cal}; text-align:left; border-top:none; }
         .boxscore tr.bs-head:first-child th { padding-top:4px; }
+        .sess { padding:10px 12px; border-radius:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08); }
+        .sesshead { cursor:pointer; align-items:flex-start; }
+        .sessname { font-weight:700; font-size:15px; }
         .histcard { display:flex; align-items:center; gap:10px; padding:12px 14px; border-radius:14px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08); }
         .histwhen { font-size:12px; opacity:.65; }
         .histcard .histname { font-size:15px; font-weight:700; white-space:normal; margin:2px 0 6px; }
