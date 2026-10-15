@@ -4340,6 +4340,11 @@ function Coach({ data, setData, targets, adaptive }) {
   const endRef = useRef(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [msgs.length, busy]);
 
+  const [sure, setSure] = useState(false);
+  const newChat = () => {
+    if (!sure) { setSure(true); setTimeout(() => setSure(false), 3000); return; }
+    setData((d) => ({ ...d, coach: [] })); setText(""); setErr(""); setSure(false);
+  };
   const send = async (raw) => {
     const q = String(raw ?? text).trim();
     if (!q || busy) return;
@@ -4365,7 +4370,7 @@ function Coach({ data, setData, targets, adaptive }) {
   return (
     <>
       <div className="glass pad stack">
-        <div className="row"><h2>Coach</h2>{msgs.length > 0 && <button className="chip" onClick={() => setData((d) => ({ ...d, coach: [] }))}>Clear</button>}</div>
+        <div className="row"><h2>Coach</h2>{msgs.length > 0 && <button className="btn ghost" onClick={newChat}>{sure ? "Tap again to clear" : "Clear chat"}</button>}</div>
         <p className="dim tiny">Sees today's log, your fast, water, the last 7 days and your recipes — not your lab values.</p>
       </div>
       {msgs.length === 0 && (
@@ -4377,6 +4382,7 @@ function Coach({ data, setData, targets, adaptive }) {
         <div ref={endRef} />
       </div>
       {err && <p className="alert">{err}</p>}
+      {msgs.length > 0 && <button className="btn ghost wide" onClick={newChat}>{sure ? "Tap again to clear the whole chat" : "Clear chat and start over"}</button>}
       <div className="glass pad row gap composer">
         <textarea rows={2} placeholder="Ask anything about your food today…" value={text}
           onChange={(e) => setText(e.target.value)}
