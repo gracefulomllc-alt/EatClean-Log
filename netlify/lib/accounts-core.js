@@ -1,0 +1,86 @@
+import { keyFor } from "./codekey.js";
+
+// Name + 4-digit code logins. Each account points at a normal sync code, so everything else
+// (sync, watch data, photos) works exactly as before. The sync code never leaves the server
+// until the right PIN is entered. The first account created is the admin and can reset PINs.
+// A PIN has only 10,000 possibilities and the name list is public, so guessing is slowed down:
+// after MAX_TRIES wrong tries in a row a name waits WAIT_MS. Normal fumbles never reach it.
+export const MAX_TRIES = 10;
+export const WAIT_MS = 2 * 60 * 1000;
+export const MAX_ACCOUNTS = 200;
+
+const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+export const hashPin = async (pin, salt) => hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`cutlog-pin:${salt}:${pin}`)));
+const cleanName = (n) => String(n || "").replace(/\s+/g, " ").trim().slice(0, 24);
+const sameName = (a, b) => a.toLowerCase() === b.toLowerCase();
+const okPin = (p) => /^\d{4}$/.test(String(p || ""));
+const bad = (status, msg) => ({ status, body: { error: msg } });
+const pub = (a) => ({ id: a.id, name: a.name, admin: !!a.admin });
+
+export async function handle(store, body, { now = Date.now(), newId = () => crypto.randomUUID(), newCode = () => hex(crypto.getRandomValues(new Uint8Array(8))).toUpperCase() } = {}) {
+  const roster = JSON.parse((await store.get("roster")) || '{"accounts":[]}');
+  const save = () => store.set("roster", JSON.stringify(roster));
+  const find = (id) => roster.accounts.find((a) => a.id === id);
+
+  // Checks the PIN and the wait. Returns an error response, or null when the PIN is right.
+  const check = async (a, pin) => {
+    if (!a) return bad(404, "That name isn't on the list anymore.");
+    if (a.until && a.until > now) return bad(429, `Too many wrong codes. Try again in ${Math.ceil((a.until - now) / 60000)} minute(s).`);
+    if (!okPin(pin) || (await hashPin(pin, a.salt)) !== a.hash) {
+      a.fails = (a.fails || 0) + 1;
+      if (a.fails >= MAX_TRIES) { a.until = now + WAIT_MS; a.fails = 0; }
+      await save();
+      return bad(401, "That code isn't right.");
+    }
+    if (a.fails || a.until) { a.fails = 0; a.until = 0; await save(); }
+    return null;
+  };
+
+  if (body.op === "list") {
+    const admin = roster.accounts.find((a) => a.admin);
+    return { status: 200, body: { names: roster.accounts.map((a) => ({ id: a.id, name: a.name })).sort((x, y) => x.name.localeCompare(y.name)), admin: admin ? admin.name : null } };
+  }
+
+  if (body.op === "create") {
+    const name = cleanName(body.name);
+    if (name.length < 2) return bad(400, "Type a name with at least 2 letters.");
+    if (!okPin(body.pin)) return bad(400, "The code is 4 numbers.");
+    if (roster.accounts.some((a) => sameName(a.name, name))) return bad(409, "That name is taken. Pick it from the list, or add your last initial.");
+    if (roster.accounts.length >= MAX_ACCOUNTS) return bad(409, "This app is full.");
+    let code = newCode();
+    if (body.code) { if (!(await keyFor(body.code))) return bad(400, "That sync code isn't valid."); code = String(body.code).toUpperCase().replace(/[^A-Z0-9]/g, ""); }
+    const salt = newId();
+    const a = { id: newId(), name, salt, hash: await hashPin(body.pin, salt), code, admin: roster.accounts.length === 0, fails: 0, until: 0, at: now };
+    roster.accounts.push(a);
+    await save();
+    return { status: 200, body: { ...pub(a), code } };
+  }
+
+  if (body.op === "login") {
+    const a = find(body.id), err = await check(a, body.pin);
+    return err || { status: 200, body: { ...pub(a), code: a.code } };
+  }
+
+  if (body.op === "setpin") {
+    const a = find(body.id), err = await check(a, body.pin);
+    if (err) return err;
+    if (!okPin(body.newPin)) return bad(400, "The new code is 4 numbers.");
+    a.salt = newId(); a.hash = await hashPin(body.newPin, a.salt);
+    await save();
+    return { status: 200, body: { ok: true } };
+  }
+
+  if (body.op === "reset") {
+    const boss = find(body.adminId), err = await check(boss, body.adminPin);
+    if (err) return err;
+    if (!boss.admin) return bad(403, "Only the admin can reset a code.");
+    const a = find(body.id);
+    if (!a) return bad(404, "That name isn't on the list anymore.");
+    if (!okPin(body.newPin)) return bad(400, "The new code is 4 numbers.");
+    a.salt = newId(); a.hash = await hashPin(body.newPin, a.salt); a.fails = 0; a.until = 0;
+    await save();
+    return { status: 200, body: { ok: true } };
+  }
+
+  return bad(400, "Unknown op");
+}

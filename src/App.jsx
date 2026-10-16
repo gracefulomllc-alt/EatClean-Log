@@ -93,6 +93,9 @@ async function api(path, payload) {
   return r.json();
 }
 const syncApi = (p) => api("/api/sync", p);
+const accountApi = (p) => api("/api/accounts", p);
+const readAcct = () => { try { return JSON.parse(localStorage.getItem("cutlog:acct") || "null"); } catch { return null; } };
+const writeAcct = (a) => { try { localStorage.setItem("cutlog:acct", JSON.stringify({ id: a.id, name: a.name, admin: !!a.admin })); } catch { /* private mode */ } };
 const pushApi = (p) => api("/api/push", p);
 const groupsApi = (p) => api("/api/groups", p);
 // A backup is something people paste into chats and notes. Group logins (member token, invite
@@ -579,8 +582,9 @@ export default function CutLog() {
 
   const syncNow = useCallback(async () => {
     const code = localStorage.getItem("cutlog:sync");
-    if (!code || syncBusy.current || !dataRef.current) return;
+    if (!code || syncBusy.current || !dataRef.current) return false;
     syncBusy.current = true;
+    let worked = false;
     setSync((x) => ({ ...x, state: "syncing" }));
     try {
       const remote = (await syncApi({ op: "get", code })).data;
@@ -589,10 +593,12 @@ export default function CutLog() {
       if (remote) setRawData((cur) => { const m = mergeData(cur, remote); return JSON.stringify(m) === JSON.stringify(cur) ? cur : m; });
       await syncApi({ op: "put", code, data: remote ? mergeData(dataRef.current, remote) : dataRef.current });
       setSync({ state: "ok", at: Date.now() });
+      worked = true;
     } catch (e) {
       setSync({ state: "error", at: Date.now(), err: String(e.message || e).slice(0, 160) });
     }
     syncBusy.current = false;
+    return worked;
   }, []);
 
   const startSync = useCallback(async () => {
@@ -617,6 +623,31 @@ export default function CutLog() {
     localStorage.removeItem("cutlog:sync");
     setSync({ state: "off" });
   }, []);
+
+  // Name + 4-digit code. The account holds a normal sync code, so signing in is "join that sync log".
+  const [acct, setAcct] = useState(readAcct);
+  const [skipLogin, setSkipLogin] = useState(() => { try { return localStorage.getItem("cutlog:nologin") === "1"; } catch { return false; } });
+  const finishLogin = useCallback(async (r, fresh) => {
+    const code = normCode(r.code);
+    localStorage.setItem("cutlog:sync", code);
+    writeAcct(r); setAcct(readAcct());
+    if (fresh) { setSync({ state: "idle" }); await syncNow(); return; }
+    const remote = (await syncApi({ op: "get", code })).data;
+    if (remote) setRawData((cur) => mergeData(cur, remote));
+    setSync({ state: remote ? "ok" : "idle", at: Date.now() });
+    if (!remote) await syncNow();
+  }, [syncNow]);
+  const signIn = useCallback(async (id, pin) => finishLogin(await accountApi({ op: "login", id, pin }), false), [finishLogin]);
+  const createAccount = useCallback(async (name, pin) => {
+    const had = normCode(localStorage.getItem("cutlog:sync"));   // already syncing? keep that log and attach the name to it
+    const r = await accountApi({ op: "create", name, pin, ...(had ? { code: had } : {}) });
+    await finishLogin(r, true);
+  }, [finishLogin]);
+  const signOut = useCallback(async () => {
+    if (localStorage.getItem("cutlog:sync") && !(await syncNow())) throw new Error("Couldn't save your latest changes to the cloud, so nothing was cleared. Check your connection and try again.");
+    try { Object.keys(localStorage).filter((k) => k.startsWith("cutlog:") && k !== "cutlog:code").forEach((k) => localStorage.removeItem(k)); } catch { /* fine */ }
+    location.reload();
+  }, [syncNow]);
 
   // The strip above the app (phone status bar, page edges) matches the theme too
   useEffect(() => {
@@ -748,6 +779,8 @@ export default function CutLog() {
 
   if (locked) return <Shell theme={THEME}><Gate onOk={() => setLocked(false)} /></Shell>;
   if (!data) return <Shell theme={THEME}><div className="glass pad center"><p className="dim">Waking up…</p></div></Shell>;
+  if (!data.profile && !acct && !skipLogin && !localStorage.getItem("cutlog:sync")) return <Shell theme={THEME}>
+    <LoginScreen onSignIn={signIn} onCreate={createAccount} onSkip={() => { try { localStorage.setItem("cutlog:nologin", "1"); } catch { /* fine */ } setSkipLogin(true); }} /></Shell>;
   if (!data.profile && !welcomed) return <Shell theme={THEME}>
     <Welcome onDone={() => { try { localStorage.setItem("cutlog:welcomed", "1"); } catch { /* fine */ } setWelcomed(true); }} />
   </Shell>;
@@ -775,7 +808,7 @@ export default function CutLog() {
         {tab === "coach" && <Coach data={data} setData={setData} targets={targets} adaptive={adaptive} />}
         {tab === "log" && <LogTab view={logView} setView={setLogView} data={data} setData={setData} onPick={(k) => { setViewDay(k); setTab("now"); }} />}
         {tab === "setup" && <Settings data={data} setData={setData} onSave={(p) => setData((d) => ({ ...d, profile: p }))} adaptive={adaptive} useAdaptive={useAdaptive}
-          sync={sync} syncNow={syncNow} startSync={startSync} joinSync={joinSync} leaveSync={leaveSync} pullWatch={pullWatch} />}
+          sync={sync} syncNow={syncNow} startSync={startSync} joinSync={joinSync} leaveSync={leaveSync} pullWatch={pullWatch} acct={acct} createAccount={createAccount} signOut={signOut} />}
       </div>
       <nav className="dock">
         {TABS.filter((t) => t[0] !== "log" && t[0] !== "setup").map(([id, label, Icon]) => (
@@ -1969,6 +2002,106 @@ function EditFood({ food, onSave, onDelete, onClose }) {
 }
 
 /* ---------- join an existing log from a new device ---------- */
+/* ---------- name + 4-digit code login ---------- */
+const PinBox = ({ value, onChange, onEnter, label = "4-digit code", autoFocus }) => (
+  <input type="password" inputMode="numeric" pattern="[0-9]*" maxLength={4} autoComplete="off" aria-label={label} placeholder={label} value={value} autoFocus={autoFocus}
+    onChange={(e) => onChange(e.target.value.replace(/\D/g, "").slice(0, 4))} onKeyDown={(e) => e.key === "Enter" && onEnter?.()} style={{ textAlign: "center", letterSpacing: "0.4em" }} />
+);
+
+function LoginScreen({ onSignIn, onCreate, onSkip }) {
+  const [list, setList] = useState(null);   // { names, admin } or "error"
+  const [who, setWho] = useState("");        // an account id, or "new"
+  const [name, setName] = useState("");
+  const [pin, setPin] = useState("");
+  const [pin2, setPin2] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  useEffect(() => { accountApi({ op: "list" }).then(setList).catch(() => setList("error")); }, []);
+  const names = list && list !== "error" ? list.names : [];
+  const isNew = who === "new" || (list && list !== "error" && !names.length);
+  const go = async () => {
+    setBusy(true); setErr("");
+    try {
+      if (isNew) { if (pin !== pin2) throw new Error("The two codes don't match."); await onCreate(name, pin); }
+      else await onSignIn(who, pin);
+    } catch (e) { setErr(String(e.message || e)); setPin(""); setPin2(""); }
+    setBusy(false);
+  };
+  const ready = isNew ? name.trim().length >= 2 && pin.length === 4 && pin2.length === 4 : !!who && pin.length === 4;
+  return (
+    <div className="glass pad stack">
+      <h2>Who's this?</h2>
+      {list === null && <p className="dim small">Loading names…</p>}
+      {list === "error" && <p className="alert small">Couldn't reach the app's server. Check your connection, or continue below on this device only.</p>}
+      {list && list !== "error" && <>
+        <p className="dim small">{names.length ? "Pick your name and enter your 4-digit code. It works on any phone or computer." : `You're the first one in. Add your name and pick a 4-digit code. You'll be the admin, who can reset anyone's code.`}</p>
+        {names.length > 0 && (
+          <select value={who} onChange={(e) => { setWho(e.target.value); setErr(""); setPin(""); }} aria-label="Your name">
+            <option value="">Pick your name…</option>
+            {names.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}
+            <option value="new">+ I'm new, add my name</option>
+          </select>)}
+        {isNew && <input placeholder="Your first name" value={name} maxLength={24} onChange={(e) => setName(e.target.value)} autoCapitalize="words" />}
+        {(who || isNew) && <PinBox value={pin} onChange={setPin} onEnter={isNew ? undefined : go} label={isNew ? "Pick a 4-digit code" : "Your 4-digit code"} />}
+        {isNew && <PinBox value={pin2} onChange={setPin2} onEnter={go} label="Type the code again" />}
+        {(who || isNew) && <button className="btn accent wide" disabled={busy || !ready} onClick={go}>{busy ? "One moment…" : isNew ? "Add me and start" : "Sign in"}</button>}
+        {err && <p className="alert small">{err}</p>}
+        {!isNew && list.admin && <p className="dim tiny">Forgot your code? Ask {list.admin} to reset it.</p>}
+      </>}
+      <button className="btn ghost wide" onClick={onSkip}>Skip. Use this device only</button>
+    </div>
+  );
+}
+
+function AccountPanel({ acct, createAccount, signOut }) {
+  const [name, setName] = useState("");
+  const [pin, setPin] = useState("");
+  const [oldPin, setOldPin] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [list, setList] = useState([]);
+  const [target, setTarget] = useState("");
+  const [adminPin, setAdminPin] = useState("");
+  const [resetPin, setResetPin] = useState("");
+  const [sure, setSure] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);   // { ok, text }
+  useEffect(() => { if (acct?.admin) accountApi({ op: "list" }).then((r) => setList(r.names.filter((n) => n.id !== acct.id))).catch(() => {}); }, [acct?.id, acct?.admin]);
+  const run = async (fn, okText) => { setBusy(true); setMsg(null); try { await fn(); setMsg(okText ? { ok: true, text: okText } : null); } catch (e) { setMsg({ ok: false, text: String(e.message || e) }); } setBusy(false); };
+
+  if (!acct) return (
+    <div className="glass pad stack">
+      <h2>Your name and code</h2>
+      <p className="dim small">Add a name and a 4-digit code. Then you can sign in on any phone or computer by picking your name. Your log stays as it is.</p>
+      <input placeholder="Your first name" value={name} maxLength={24} onChange={(e) => setName(e.target.value)} autoCapitalize="words" />
+      <PinBox value={pin} onChange={setPin} label="Pick a 4-digit code" />
+      <button className="btn accent wide" disabled={busy || name.trim().length < 2 || pin.length !== 4} onClick={() => run(async () => { await createAccount(name, pin); }, "Done. You can now sign in anywhere with your name and code.")}>{busy ? "Setting up…" : "Save my name and code"}</button>
+      {msg && <p className={msg.ok ? "dim small" : "alert small"}>{msg.text}</p>}
+    </div>);
+
+  return (
+    <div className="glass pad stack">
+      <h2>Signed in as {acct.name}{acct.admin ? " (admin)" : ""}</h2>
+      <p className="dim small">On another phone or computer, pick your name and enter your 4-digit code.</p>
+      <label>Change my code</label>
+      <div className="row gap"><PinBox value={oldPin} onChange={setOldPin} label="Current code" /><PinBox value={newPin} onChange={setNewPin} label="New code" /></div>
+      <button className="btn ghost wide" disabled={busy || oldPin.length !== 4 || newPin.length !== 4}
+        onClick={() => run(async () => { await accountApi({ op: "setpin", id: acct.id, pin: oldPin, newPin }); setOldPin(""); setNewPin(""); }, "Your code was changed.")}>Change code</button>
+      {acct.admin && list.length > 0 && <>
+        <label>Reset someone's code <span className="dim tiny">(admin)</span></label>
+        <select value={target} onChange={(e) => setTarget(e.target.value)} aria-label="Whose code">
+          <option value="">Pick a name…</option>{list.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}</select>
+        <div className="row gap"><PinBox value={adminPin} onChange={setAdminPin} label="Your code" /><PinBox value={resetPin} onChange={setResetPin} label="Their new code" /></div>
+        <button className="btn ghost wide" disabled={busy || !target || adminPin.length !== 4 || resetPin.length !== 4}
+          onClick={() => run(async () => { await accountApi({ op: "reset", adminId: acct.id, adminPin, id: target, newPin: resetPin }); setAdminPin(""); setResetPin(""); setTarget(""); }, "Their code was reset. Tell them the new one.")}>Reset their code</button>
+      </>}
+      {msg && <p className={msg.ok ? "dim small" : "alert small"}>{msg.text}</p>}
+      <button className="btn ghost wide" disabled={busy} onClick={() => { if (!sure) { setSure(true); setTimeout(() => setSure(false), 4000); return; } run(signOut); }}>
+        {sure ? "Tap again: save, sign out and clear this device" : "Sign out and clear this device"}</button>
+      <p className="dim tiny">Use this on a shared phone or computer. Your log stays safe in the cloud under your name.</p>
+    </div>
+  );
+}
+
 function JoinSync({ onJoin }) {
   const [open, setOpen] = useState(false);
   const [code, setCode] = useState("");
@@ -4905,7 +5038,7 @@ function FastingPanel({ data, setData }) {
   );
 }
 
-function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, leaveSync, pullWatch, adaptive, useAdaptive }) {
+function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, leaveSync, pullWatch, adaptive, useAdaptive, acct, createAccount, signOut }) {
   const [copied, setCopied] = useState(false);
   const [paste, setPaste] = useState("");
   const [msg, setMsg] = useState("");
@@ -4929,6 +5062,7 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
         )}
       </div>
       <AdaptivePanel adaptive={adaptive} on={data.useAdaptive !== false} onToggle={(v) => setData((d) => ({ ...d, useAdaptive: v }))} />
+      <AccountPanel acct={acct} createAccount={createAccount} signOut={signOut} />
       <SyncPanel {...{ sync, syncNow, startSync, joinSync, leaveSync }} />
       <WatchPanel pullWatch={pullWatch} />
       {data.profile?.sex === "female" && <CyclePanel data={data} setData={setData} />}
