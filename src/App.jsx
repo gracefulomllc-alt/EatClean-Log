@@ -2,6 +2,7 @@ import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
 import { roadPicks, ROAD_CHAINS, searchChains, visitCounts, chainGroups, modsFor, applyMods, modLabel } from "./fastFood.js";
 import { gradeFood, gradeTone, letterFor } from "./grade.js";
 import { labFocus, parseLabReport, mergeNewLabs } from "./labs.js";
+import { FRUITS, fruitMacros, fruitStep, fruitStart } from "./fruit.js";
 import { buildStatBook, RANGES } from "./statbook.js";
 import { applyWatch } from "./watch.js";
 import { cyclePhase } from "./cycle.js";
@@ -1105,6 +1106,38 @@ function SectionBar({ title, sub, right, id }) {
   );
 }
 
+// A banner you can tap to fold away. Remembers open or closed on this device, so each person keeps the page the way they like it.
+function Fold({ id, title, sub, right, defaultOpen = true, children }) {
+  const key = "cutlog:fold:" + id;
+  const [open, setOpen] = useState(() => { try { const v = localStorage.getItem(key); return v === null ? defaultOpen : v === "1"; } catch { return defaultOpen; } });
+  const toggle = () => { const n = !open; setOpen(n); try { localStorage.setItem(key, n ? "1" : "0"); } catch { /* fine */ } };
+  return (
+    <section className="fold">
+      <button type="button" className="secbar foldhead" aria-expanded={open} onClick={toggle}>
+        <div><div className="sectitle">{title}</div>{sub && <div className="secsub">{sub}</div>}</div>
+        <div className="secright mono">{right ? `${right} ` : ""}<span className="chev" aria-hidden="true">▾</span> <span className="foldhint">{open ? "Tap to close" : "Tap to open"}</span></div>
+      </button>
+      {open && <div className="foldbody">{children}</div>}
+    </section>
+  );
+}
+
+// One plain sentence saying what to do right now.
+function NextStep({ data, day, left, proteinLeft }) {
+  const goal = data.profile?.waterOz || 100, water = +day.water || 0, n = day.foods.length;
+  const hr = new Date().getHours();
+  let head, body;
+  if (!n) { head = hr < 11 ? "Log your breakfast" : "Log your first meal"; body = "Tap Add a meal below, pick the meal, add what you ate, then log it."; }
+  else if (left < 0) { head = "You're over your budget today"; body = "No more food needed. Water and a walk are the best move. Tomorrow is a fresh start."; }
+  else if (proteinLeft > 25 && left > 150) { head = `Get about ${Math.round(proteinLeft)}g more protein`; body = `You have ${Math.round(left).toLocaleString()} calories left. See What to eat next below.`; }
+  else if (water < goal * 0.5) { head = "Drink some water"; body = `You're at ${water} of ${goal} oz. Use the Water buttons below.`; }
+  else { head = "You're on track"; body = "Keep going. Log what you eat as you eat it."; }
+  return (
+    <div className="glass pad center nextstep"><div className="dim tiny" style={{ letterSpacing: ".1em", textTransform: "uppercase" }}>Your next step</div>
+      <div className="midnum" style={{ margin: "4px 0" }}>{head}</div><p className="dim small">{body}</p></div>
+  );
+}
+
 function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew, goTab }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -1136,10 +1169,11 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
 
   return (
     <>
+      {isToday && <NextStep data={data} day={day} left={left} proteinLeft={targets.protein - t.p} />}
       {isToday && !PRO && <GamesPanel />}
       {isToday && <CrewCard data={data} onOpen={openCrew} />}
       {data.cycle?.on && data.cycle.start && data.profile?.sex === "female" && <CycleCard cycle={data.cycle} dayId={dayId} />}
-      {(fastOn || (!fastEnabled && !fast && isToday && fastGate(data.profile).ok)) && <SectionBar title="Fasting" sub={fast && fastOn ? `${st?.name || "Fasting"} · next: ${nx?.name || "keep going"}` : "Your fasting clock"} right={fast && fastOn ? fmtHM(now - fast.start) : ""} />}
+      {(fastOn || (!fastEnabled && !fast && isToday && fastGate(data.profile).ok)) && <Fold id="fasting" title="Fasting" sub={fast && fastOn ? `${st?.name || "Fasting"} · next: ${nx?.name || "keep going"}` : "Your fasting clock"} right={fast && fastOn ? fmtHM(now - fast.start) : ""}>
       {fastOn && fast && (() => {
         const cs = fastConfirmState(fast.start, fast.confirmedAt, now);
         if (cs.state !== "due" && cs.state !== "unconfirmed") return null;
@@ -1225,6 +1259,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
           <p className="dim tiny pad">Rough averages. Your own switchover depends on your last meal, your training, and how depleted you already were.</p>
         </div>
       )}
+      </Fold>}
 
       <SectionBar title="Food" sub={`${t.cal.toLocaleString()} of ${targets.calories.toLocaleString()} calories`} right={`${Math.abs(Math.round(left)).toLocaleString()} ${left < 0 ? "over" : "left"}`} />
       <div className="glass pad">
@@ -1259,6 +1294,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
         return <p className="dim tiny center" style={{ marginBottom: 8 }}>Eating window {prettyTime(a)} – {prettyTime(b)} · {Math.floor(mins / 60)}h {Math.round(mins % 60)}m</p>;
       })()}
 
+      <Fold id="meals" title="What you've eaten" sub="Every meal logged for this day" right={`${day.foods.length} item${day.foods.length === 1 ? "" : "s"}`}>
       <div className="glass">
         {day.foods.length === 0 ? <p className="dim center pad">{H("Empty box score. Get on the board.", "Nothing logged yet. Press Add a meal below to start.")}</p> :
           MEALS.filter((m) => day.foods.some((f) => f.meal === m)).map((m) => (
@@ -1295,6 +1331,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
             </div>
           ))}
       </div>
+      </Fold>
 
       {data.favorites.length > 0 && (
         <div className="chips">
@@ -1324,7 +1361,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
         const goal = data.profile.waterOz || 100, have = +day.water || 0;
         return (
           <>
-          <SectionBar title="Water" sub="Press a button each time you drink" right={`${have} / ${goal} oz`} />
+          <Fold id="water" title="Water" sub="Press a button each time you drink" right={`${have} / ${goal} oz`}>
           <div className="glass pad">
             <div className="row"><label style={{ margin: 0 }}>Water</label>
               <span className="mono" style={{ color: have >= goal ? C.water : undefined }}>{have} / {goal} oz</span></div>
@@ -1335,11 +1372,12 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
               <button className="chip" disabled={!have} onClick={() => updateDay(dayId, (d) => ({ ...d, water: Math.max(0, (+d.water || 0) - 8) }))}>−8</button>
             </div>
           </div>
+          </Fold>
           </>
         );
       })()}
 
-      <SectionBar title="Activity and daily check" sub="Lifts, steps, sleep and your score" right={day.steps ? `${Number(day.steps).toLocaleString()} steps` : ""} />
+      <Fold id="activity" title="Activity and daily check" sub="Workouts, lifts, steps, sleep and your score" defaultOpen={false} right={day.steps ? `${Number(day.steps).toLocaleString()} steps` : ""}>
       <div className="glass pad">
         <WorkoutLog day={day} dayId={dayId} updateDay={updateDay} setData={setData} weight={data.profile.weight} recovering={!!data.recovery?.on} proteinBonus={Math.max(0, targets.protein - computeTargets(data.profile, [], null, !!data.recovery?.on, { earned: 0, protein: 0 }).protein)} />
         <div className="chips">
@@ -1369,6 +1407,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
         {(day.workouts || []).map((w, i) => <div key={i} className="dim tiny">{w.name} · {Math.round(w.minutes)} min</div>)}
         {day.sleep && +day.sleep < 6 && <p className="cue">Under six hours. Short sleep pushes appetite up hard — if today is a fight, that's why, not willpower.</p>}
       </div>
+      </Fold>
     </>
   );
 }
@@ -2163,10 +2202,22 @@ function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
   const hist = useMemo(() => mealHistory(data.days, slot), [data.days, slot]);
   const shown = all ? hist.slice(0, 30) : hist.slice(0, 5);
   const leave = () => { if (!tray.length || window.confirm("Throw away the ingredients you added?")) onDone(); };
-  const stage = (items, g) => { setTray((t) => [...t, ...items.map((i) => ({ ...i, id: crypto.randomUUID() }))]); if (g) setGrade(g); };
+  const [askMore, setAskMore] = useState(false);   // the "add more or log it?" sheet after each add
+  const stage = (items, g) => { setTray((t) => [...t, ...items.map((i) => ({ ...i, id: crypto.randomUUID() }))]); if (g) setGrade(g); setAskMore(true); };
   const sum = tray.reduce((a, f) => ({ cal: a.cal + (+f.calories || 0), p: a.p + (+f.protein || 0) }), { cal: 0, p: 0 });
+  const finish = () => { commit(tray.map((f) => ({ ...f, meal: slot, ...(mealName.trim() ? { mealName: mealName.trim() } : {}) })), grade); onDone(); };
   return (
     <div className="steps fadein">
+      {askMore && tray.length > 0 && createPortal(
+        <div className="mealsheet-wrap" role="dialog" aria-label="Add more or log this meal" onClick={(e) => e.target === e.currentTarget && setAskMore(false)}>
+          <div className="mealsheet">
+            <div className="steptitle"><span className="stepnum">✓</span>Added to your {slot.toLowerCase()}</div>
+            <div className="sheetitems">{tray.map((f) => <div key={f.id} className="row small"><span>{f.name}</span><span className="mono">{Math.round(f.calories)}</span></div>)}</div>
+            <div className="row"><strong>{Math.round(sum.cal)} cal · {Math.round(sum.p)}g protein so far</strong></div>
+            <button className="btn ghost wide" onClick={() => setAskMore(false)}>Add more to this meal</button>
+            <button className="btn solid wide" onClick={finish}>Log this meal for the day</button>
+          </div>
+        </div>, document.querySelector(".app") || document.body)}
       <div className="stepbox">
         <div className="steptitle"><span className="stepnum">1</span>Which meal is this?</div>
         <div className="chips" style={{ marginBottom: 0 }}>{MEALS.map((m) => <button key={m} className={slot === m ? "chip on" : "chip"} onClick={() => setSlot(m)}>{m}</button>)}</div>
@@ -2245,7 +2296,7 @@ function LogMeal({ data, setData, dayId, onDone, budget, budgetLeft, commit }) {
         )}
         <div className="rowbtns">
           <button className="btn ghost wide" onClick={leave}>Cancel</button>
-          <button className="btn solid wide" disabled={!tray.length} onClick={() => { commit(tray.map((f) => ({ ...f, meal: slot, ...(mealName.trim() ? { mealName: mealName.trim() } : {}) })), grade); onDone(); }}>Log this meal</button>
+          <button className="btn solid wide" disabled={!tray.length} onClick={finish}>Log this meal</button>
         </div>
       </div>
     </div>
@@ -2260,17 +2311,50 @@ function AddFood({ onAdd, onCancel, calib, onCalib, recipes, setData, budget, bu
   return (
     <div className={bare ? "stack fadein" : "glass pad stack fadein"}>
       <div className="chips">
-        {[["weigh", "Ingredient"], ["scan", "Scan"], ["label", "Label"], ["recipe", "Recipe"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
+        {[["weigh", "Ingredient"], ["fruit", "Fruit"], ["scan", "Scan"], ["label", "Label"], ["recipe", "Recipe"], ["photo", "Photo"], ["desc", "Describe"]].map(([k, l]) => (
           <button key={k} className={mode === k ? "chip on" : "chip"} onClick={() => setMode(k)}>{l}</button>))}
       </div>
       {mode === "meal" && <MealBuilder meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} calib={calib} onCalib={onCalib} budget={budget} budgetLeft={budgetLeft} />}
       {mode === "recipe" && <Recipes recipes={recipes} setData={setData} meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
+      {mode === "fruit" && <FruitIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "weigh" && <WeighIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "scan" && <ScanIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "label" && <LabelIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
       {mode === "photo" && <SnapIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} calib={calib} onCalib={onCalib} />}
       {mode === "desc" && <DescribeIt meal={meal} setMeal={setMeal} onAdd={onAdd} onCancel={onCancel} />}
     </div>
+  );
+}
+
+/* ---------- fruit portion calculator: pick a fruit, slide the amount, add it to the meal ---------- */
+function FruitIt({ meal, setMeal, onAdd, onCancel }) {
+  const [name, setName] = useState("Grapes");
+  const f = FRUITS.find((x) => x.n === name) || FRUITS[0];
+  const [qty, setQty] = useState(fruitStart(f));
+  const pickFruit = (n) => { setName(n); setQty(fruitStart(FRUITS.find((x) => x.n === n) || FRUITS[0])); };
+  const step = fruitStep(f), m = fruitMacros(f, qty);
+  const label = `${qty} ${f.unit}${f.unit === "cup" || qty <= 1 ? "" : f.unit === "peach" ? "es" : "s"}`;
+  return (
+    <>
+      <label>Choose your fruit</label>
+      <select value={name} onChange={(e) => pickFruit(e.target.value)} aria-label="Fruit">
+        {FRUITS.map((x) => <option key={x.n} value={x.n}>{x.n}</option>)}
+      </select>
+      <div className="row"><label style={{ margin: 0 }}>Portion size</label><strong className="mono">{label}</strong></div>
+      <input type="range" min={step} max={f.max} step={step} value={qty} aria-label="Portion size" onChange={(e) => setQty(+e.target.value)} />
+      <div className="quad">
+        <div><div className="midnum" style={{ color: C.cal }}>{m.calories}</div><div className="dim tiny">Calories</div></div>
+        <div><div className="midnum">{m.fiber}g</div><div className="dim tiny">Fiber</div></div>
+        <div><div className="midnum" style={{ color: C.protein }}>{m.protein}g</div><div className="dim tiny">Protein</div></div>
+      </div>
+      <p className="dim tiny">Approximate values for fresh fruit. Actual sizes and weights vary.</p>
+      <MealPick meal={meal} setMeal={setMeal} />
+      <div className="rowbtns">
+        <button className="btn ghost wide" onClick={onCancel}>Cancel</button>
+        <button className="btn solid wide" disabled={!qty} onClick={() => onAdd([{ id: crypto.randomUUID(), meal, name: `${f.n}, ${fmtQty(qty, f.unit)}`, baseName: f.n, raw: false, unit: f.unit, qty,
+          per: f.per.slice(0, 4), calories: m.calories, protein: m.protein, carbs: m.carbs, fat: m.fat }])}>Add to meal</button>
+      </div>
+    </>
   );
 }
 
@@ -2531,7 +2615,7 @@ function GradeBadge({ food, items, share }) {
           })}
           {g.tip && <div className="gd-tip"><strong>To move up:</strong> {g.tip}</div>}
           <div className="gd-foot">Health comes first: how whole the food is, protein, portion size, added sugar and fat quality, against your daily goal. Good health is what keeps the weight off.</div>
-        </div>, document.body)}
+        </div>, document.querySelector(".app") || document.body)}
     </span>
   );
 }
@@ -4355,6 +4439,7 @@ function Weight({ data, setData, targets, updateDay }) {
   return (
     <>
       <StatBook data={data} />
+      <Fold id="wt-body" title="Weight and body" sub="Weigh-ins, waist and progress photos">
       <div className="glass hero">
         <Ring pct={start !== goal ? Math.max(0, lost) / Math.abs(start - goal) : 0} color={C.protein} size={220}>
           <div className="huge">{shown.toFixed(1)}<span className="unit">lb</span></div>
@@ -4393,8 +4478,11 @@ function Weight({ data, setData, targets, updateDay }) {
         </div>
       ) : <div className="glass pad center"><p className="dim">Log a few days and the trend appears here.</p></div>}
 
+      </Fold>
+      <Fold id="wt-goals" title="Challenge and strength" sub="Your 30-day challenge and lifting trends" defaultOpen={false}>
       <ChallengePanel data={data} setData={setData} />
       <StrengthPanel data={data} />
+      </Fold>
 
       {eta && <div className="glass pad"><p className="small">At {Math.abs(targets.actualPace).toFixed(1)} lb a week you reach {goal} around <strong>{eta}</strong>. After three weeks of real data, check that against what the scale actually did — the formula runs about 10% off either way.</p></div>}
     </>
@@ -5045,6 +5133,7 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
   const t = computeTargets(data.profile, [], useAdaptive ? adaptive.tdee : null);
   return (
     <>
+      <Fold id="set-plan" title="Your plan" sub="Daily targets, profile and look" defaultOpen={true}>
       <div className="glass pad stack">
         <h2>Look</h2>
         <div className="chips">
@@ -5062,13 +5151,6 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
         )}
       </div>
       <AdaptivePanel adaptive={adaptive} on={data.useAdaptive !== false} onToggle={(v) => setData((d) => ({ ...d, useAdaptive: v }))} />
-      <AccountPanel acct={acct} createAccount={createAccount} signOut={signOut} />
-      <SyncPanel {...{ sync, syncNow, startSync, joinSync, leaveSync }} />
-      <WatchPanel pullWatch={pullWatch} />
-      {data.profile?.sex === "female" && <CyclePanel data={data} setData={setData} />}
-      <InstallPanel />
-      <FastingPanel data={data} setData={setData} />
-      <AlertsPanel data={data} setData={setData} />
       <div className="glass pad">
         <div className="row"><span className="dim">Calories to stay the same weight {useAdaptive ? "(measured)" : "(estimate)"}</span><strong className="mono">{t.tdee.toLocaleString()}</strong></div>
         <div className="row"><span className="dim">Calories on a rest day</span><strong className="mono">{t.base.toLocaleString()}</strong></div>
@@ -5076,7 +5158,20 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
         {t.clamped && <p className="alert">Budget is held at the floor. Add movement instead of cutting lower.</p>}
       </div>
       <ProfileForm initial={data.profile} title="Your profile" cta="Save" onSave={onSave} />
+      </Fold>
+      <Fold id="set-account" title="Account and sync" sub="Your name and code, and syncing between devices" defaultOpen={false}>
+      <AccountPanel acct={acct} createAccount={createAccount} signOut={signOut} />
+      <SyncPanel {...{ sync, syncNow, startSync, joinSync, leaveSync }} />
+      <WatchPanel pullWatch={pullWatch} />
+      {data.profile?.sex === "female" && <CyclePanel data={data} setData={setData} />}
+      </Fold>
+      <Fold id="set-health" title="Health" sub="Lab results, fasting and reminders" defaultOpen={false}>
       <Labs data={data} setData={setData} />
+      <FastingPanel data={data} setData={setData} />
+      <AlertsPanel data={data} setData={setData} />
+      </Fold>
+      <Fold id="set-app" title="App and backup" sub="Install, theme, backup and import" defaultOpen={false}>
+      <InstallPanel />
       <div className="glass pad stack">
         <h2>Backup</h2>
         <p className="dim tiny">This lives in one browser. Copy it somewhere safe now and again.</p>
@@ -5091,7 +5186,8 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
         }}>Restore</button>
         {msg && <p className="dim tiny">{msg}</p>}
       </div>
-      <Importer setData={setData} />
+      <Importer setData={setData} />      </Fold>
+
     </>
   );
 }
@@ -5455,6 +5551,16 @@ function Shell({ children, theme, top }) {
         .sectitle { font-size:20px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; line-height:1.1; }
         .secsub { font-size:12.5px; opacity:.7; margin-top:3px; }
         .secright { font-size:15px; font-weight:700; white-space:nowrap; }
+        .fold { margin:0; }
+        .foldhead { width:100%; color:inherit; font:inherit; cursor:pointer; border-right:0; border-bottom:0; border-left:0; box-sizing:border-box; margin-top:26px; }
+        .fold:first-child .foldhead { margin-top:8px; }
+        .foldhead .chev { display:inline-block; transition:transform .15s; }
+        .foldhead[aria-expanded="false"] .chev { transform:rotate(-90deg); }
+        .foldhint { font-size:11px; font-weight:500; opacity:.65; }
+        .nextstep { border:1px solid rgba(255,255,255,.18); }
+        .mealsheet-wrap { position:fixed; inset:0; z-index:130; background:rgba(0,0,0,.55); display:flex; align-items:flex-end; justify-content:center; }
+        .mealsheet { width:100%; max-width:560px; box-sizing:border-box; padding:18px 16px calc(20px + env(safe-area-inset-bottom)); border-radius:18px 18px 0 0; background:#15171C; color:#F3F4F6; border:1px solid #2E313A; display:flex; flex-direction:column; gap:12px; animation:fadein .2s ease; }
+        .sheetitems { max-height:28vh; overflow-y:auto; display:flex; flex-direction:column; gap:6px; }
         .dropdown { border:1px solid rgba(255,255,255,.14); border-radius:12px; background:rgba(255,255,255,.04); overflow:hidden; max-height:290px; overflow-y:auto; }
         .dd-head { font-size:11.5px; letter-spacing:.08em; text-transform:uppercase; opacity:.6; padding:8px 12px 4px; }
         .dd-row { display:flex; justify-content:space-between; align-items:center; gap:10px; width:100%; text-align:left; padding:11px 12px; background:none; border:0; border-top:1px solid rgba(255,255,255,.07); color:inherit; font:inherit; font-size:14.5px; cursor:pointer; }
