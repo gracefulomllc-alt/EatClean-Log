@@ -628,9 +628,11 @@ export default function CutLog() {
   // Name + 4-digit code. The account holds a normal sync code, so signing in is "join that sync log".
   const [acct, setAcct] = useState(readAcct);
   const [skipLogin, setSkipLogin] = useState(() => { try { return localStorage.getItem("cutlog:nologin") === "1"; } catch { return false; } });
-  const finishLogin = useCallback(async (r, fresh) => {
+  const finishLogin = useCallback(async (r, fresh, keep = true) => {
     const code = normCode(r.code);
     localStorage.setItem("cutlog:sync", code);
+    // Not your own phone or computer? Not keeping it signed in means this device clears itself the next time it's opened.
+    try { if (keep) localStorage.removeItem("cutlog:temp"); else { localStorage.setItem("cutlog:temp", "1"); sessionStorage.setItem("cutlog:alive", "1"); } } catch { /* fine */ }
     writeAcct(r); setAcct(readAcct());
     if (fresh) { setSync({ state: "idle" }); await syncNow(); return; }
     const remote = (await syncApi({ op: "get", code })).data;
@@ -638,17 +640,29 @@ export default function CutLog() {
     setSync({ state: remote ? "ok" : "idle", at: Date.now() });
     if (!remote) await syncNow();
   }, [syncNow]);
-  const signIn = useCallback(async (id, pin) => finishLogin(await accountApi({ op: "login", id, pin }), false), [finishLogin]);
-  const createAccount = useCallback(async (name, pin) => {
+  const signIn = useCallback(async (id, pin, keep) => finishLogin(await accountApi({ op: "login", id, pin }), false, keep), [finishLogin]);
+  const createAccount = useCallback(async (name, pin, keep = true) => {
     const had = normCode(localStorage.getItem("cutlog:sync"));   // already syncing? keep that log and attach the name to it
     const r = await accountApi({ op: "create", name, pin, ...(had ? { code: had } : {}) });
-    await finishLogin(r, true);
+    await finishLogin(r, true, keep);
   }, [finishLogin]);
   const signOut = useCallback(async () => {
     if (localStorage.getItem("cutlog:sync") && !(await syncNow())) throw new Error("Couldn't save your latest changes to the cloud, so nothing was cleared. Check your connection and try again.");
     try { Object.keys(localStorage).filter((k) => k.startsWith("cutlog:") && k !== "cutlog:code").forEach((k) => localStorage.removeItem(k)); } catch { /* fine */ }
     location.reload();
   }, [syncNow]);
+  const [tempDevice, setTempDevice] = useState(() => { try { return localStorage.getItem("cutlog:temp") === "1"; } catch { return false; } });
+  const keepDevice = useCallback(() => { try { localStorage.removeItem("cutlog:temp"); } catch { /* fine */ } setTempDevice(false); }, []);
+  // A device that was signed in "just for now" signs itself out (after saving) when it's opened again later.
+  const didTempCheck = useRef(false);
+  useEffect(() => {
+    if (!data || didTempCheck.current) return;
+    didTempCheck.current = true;
+    try {
+      if (localStorage.getItem("cutlog:temp") === "1" && !sessionStorage.getItem("cutlog:alive")) signOut().catch(() => {});
+      else if (localStorage.getItem("cutlog:temp") === "1") sessionStorage.setItem("cutlog:alive", "1");
+    } catch { /* fine */ }
+  }, [data, signOut]);
 
   // The strip above the app (phone status bar, page edges) matches the theme too
   useEffect(() => {
@@ -809,7 +823,7 @@ export default function CutLog() {
         {tab === "coach" && <Coach data={data} setData={setData} targets={targets} adaptive={adaptive} />}
         {tab === "log" && <LogTab view={logView} setView={setLogView} data={data} setData={setData} onPick={(k) => { setViewDay(k); setTab("now"); }} />}
         {tab === "setup" && <Settings data={data} setData={setData} onSave={(p) => setData((d) => ({ ...d, profile: p }))} adaptive={adaptive} useAdaptive={useAdaptive}
-          sync={sync} syncNow={syncNow} startSync={startSync} joinSync={joinSync} leaveSync={leaveSync} pullWatch={pullWatch} acct={acct} createAccount={createAccount} signOut={signOut} />}
+          sync={sync} syncNow={syncNow} startSync={startSync} joinSync={joinSync} leaveSync={leaveSync} pullWatch={pullWatch} acct={acct} createAccount={createAccount} signOut={signOut} tempDevice={tempDevice} keepDevice={keepDevice} />}
       </div>
       <nav className="dock">
         {TABS.filter((t) => t[0] !== "log" && t[0] !== "setup").map(([id, label, Icon]) => (
@@ -2048,6 +2062,7 @@ const PinBox = ({ value, onChange, onEnter, label = "4-digit code", autoFocus })
 );
 
 function LoginScreen({ onSignIn, onCreate, onSkip }) {
+  const [keep, setKeep] = useState(true);
   const [list, setList] = useState(null);   // { names, admin } or "error"
   const [who, setWho] = useState("");        // an account id, or "new"
   const [name, setName] = useState("");
@@ -2061,8 +2076,8 @@ function LoginScreen({ onSignIn, onCreate, onSkip }) {
   const go = async () => {
     setBusy(true); setErr("");
     try {
-      if (isNew) { if (pin !== pin2) throw new Error("The two codes don't match."); await onCreate(name, pin); }
-      else await onSignIn(who, pin);
+      if (isNew) { if (pin !== pin2) throw new Error("The two codes don't match."); await onCreate(name, pin, keep); }
+      else await onSignIn(who, pin, keep);
     } catch (e) { setErr(String(e.message || e)); setPin(""); setPin2(""); }
     setBusy(false);
   };
@@ -2083,6 +2098,9 @@ function LoginScreen({ onSignIn, onCreate, onSkip }) {
         {isNew && <input placeholder="Your first name" value={name} maxLength={24} onChange={(e) => setName(e.target.value)} autoCapitalize="words" />}
         {(who || isNew) && <PinBox value={pin} onChange={setPin} onEnter={isNew ? undefined : go} label={isNew ? "Pick a 4-digit code" : "Your 4-digit code"} />}
         {isNew && <PinBox value={pin2} onChange={setPin2} onEnter={go} label="Type the code again" />}
+        {(who || isNew) && <label className="row small" style={{ justifyContent: "center", gap: 8, cursor: "pointer" }}>
+          <input type="checkbox" checked={keep} onChange={(e) => setKeep(e.target.checked)} style={{ width: "auto" }} /> Keep me signed in on this device</label>}
+        {(who || isNew) && !keep && <p className="dim tiny center">Not your own phone or computer? Good. This device will clear itself the next time it's opened.</p>}
         {(who || isNew) && <button className="btn accent wide" disabled={busy || !ready} onClick={go}>{busy ? "One moment…" : isNew ? "Add me and start" : "Sign in"}</button>}
         {err && <p className="alert small">{err}</p>}
         {!isNew && list.admin && <p className="dim tiny">Forgot your code? Ask {list.admin} to reset it.</p>}
@@ -2092,7 +2110,7 @@ function LoginScreen({ onSignIn, onCreate, onSkip }) {
   );
 }
 
-function AccountPanel({ acct, createAccount, signOut }) {
+function AccountPanel({ acct, createAccount, signOut, tempDevice, keepDevice }) {
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
   const [oldPin, setOldPin] = useState("");
@@ -2121,6 +2139,9 @@ function AccountPanel({ acct, createAccount, signOut }) {
     <div className="glass pad stack">
       <h2>Signed in as {acct.name}{acct.admin ? " (admin)" : ""}</h2>
       <p className="dim small">On another phone or computer, pick your name and enter your 4-digit code.</p>
+      {tempDevice
+        ? <div className="alert small">This device is signed in just for now and will clear itself the next time it's opened. <button className="chip" onClick={keepDevice}>Keep me signed in here</button></div>
+        : <p className="dim tiny">This device is remembered, so you won't sign in again here.</p>}
       <label>Change my code</label>
       <div className="row gap"><PinBox value={oldPin} onChange={setOldPin} label="Current code" /><PinBox value={newPin} onChange={setNewPin} label="New code" /></div>
       <button className="btn ghost wide" disabled={busy || oldPin.length !== 4 || newPin.length !== 4}
@@ -5126,7 +5147,7 @@ function FastingPanel({ data, setData }) {
   );
 }
 
-function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, leaveSync, pullWatch, adaptive, useAdaptive, acct, createAccount, signOut }) {
+function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, leaveSync, pullWatch, adaptive, useAdaptive, acct, createAccount, signOut, tempDevice, keepDevice }) {
   const [copied, setCopied] = useState(false);
   const [paste, setPaste] = useState("");
   const [msg, setMsg] = useState("");
@@ -5160,7 +5181,7 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
       <ProfileForm initial={data.profile} title="Your profile" cta="Save" onSave={onSave} />
       </Fold>
       <Fold id="set-account" title="Account and sync" sub="Your name and code, and syncing between devices" defaultOpen={false}>
-      <AccountPanel acct={acct} createAccount={createAccount} signOut={signOut} />
+      <AccountPanel acct={acct} createAccount={createAccount} signOut={signOut} tempDevice={tempDevice} keepDevice={keepDevice} />
       <SyncPanel {...{ sync, syncNow, startSync, joinSync, leaveSync }} />
       <WatchPanel pullWatch={pullWatch} />
       {data.profile?.sex === "female" && <CyclePanel data={data} setData={setData} />}
