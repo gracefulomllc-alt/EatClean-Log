@@ -2,6 +2,7 @@ import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
 import { roadPicks, ROAD_CHAINS, searchChains, visitCounts, chainGroups, modsFor, applyMods, modLabel } from "./fastFood.js";
 import { gradeFood, gradeTone, letterFor } from "./grade.js";
 import { labFocus, parseLabReport, mergeNewLabs } from "./labs.js";
+import { STAGE_DETAIL } from "./stageDetail.js";
 import { FRUITS, fruitMacros, fruitStep, fruitStart } from "./fruit.js";
 import { buildStatBook, RANGES } from "./statbook.js";
 import { applyWatch } from "./watch.js";
@@ -1232,6 +1233,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
           </Ring>
           <p className="dim tiny center">Started {fmtWhen(fast.start)}</p>
           <p className="stagebody">{st.body}</p>
+          {STAGE_DETAIL[st.at] && <p className="dim small" style={{ marginTop: 6 }}><b>Inside your body:</b> {STAGE_DETAIL[st.at].inside}</p>}
           {(() => { const c = fastCaution(hours, { trained: day.tags.some((x) => x === "lift" || x === "ball"), recovering: !!day.rest || !!data.recovery?.on }); return c ? <p className={c.level === "note" ? "cue" : "alert"}>{c.text}</p> : null; })()}
           <p className="center" style={{ margin: "4px 0 0" }}><strong>{Math.floor(hours)} hours {Math.floor((hours % 1) * 60)} min</strong> fasted</p>
           <button className="btn solid wide big" onClick={() => setEndOpen(true)}>End fast</button>
@@ -1272,10 +1274,11 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
           {STAGES.map((s) => (
             <div key={s.at} className={st && s.at === st.at ? "stagerow on" : "stagerow"}>
               <span className="mono hr" style={{ color: hours >= s.at && fast ? s.hue : undefined }}>{s.at}h</span>
-              <div><div className="sname">{s.name}</div><div className="dim tiny">{s.body}</div>{s.caution && <div className="tiny" style={{ color: "#FB923C", marginTop: 3 }}>Past what this app recommends. Talk to a doctor first.</div>}</div>
+              <div><div className="sname">{s.name}</div><div className="dim tiny">{s.body}</div>
+                {STAGE_DETAIL[s.at] && <div className="stageinside"><div className="tiny"><b>Inside your body:</b> {STAGE_DETAIL[s.at].inside}</div><div className="tiny" style={{ marginTop: 4 }}><b>What you may feel:</b> {STAGE_DETAIL[s.at].feel}</div></div>}{s.caution && <div className="tiny" style={{ color: "#FB923C", marginTop: 3 }}>Past what this app recommends. Talk to a doctor first.</div>}</div>
             </div>
           ))}
-          <p className="dim tiny pad">Rough averages. Your own switchover depends on your last meal, your training, and how depleted you already were. After 24 hours the extra benefit is small and the risks grow, so breaking the fast on plan is the win.</p>
+          <p className="dim tiny pad">Rough averages. Your own switchover depends on your last meal, your training, and how depleted you already were. Timing is based on standard human physiology and varies a lot. After 24 hours the extra benefit is small and the risks grow, so breaking the fast on plan is the win.</p>
         </div>
       )}
       </Fold>}
@@ -5577,6 +5580,7 @@ function Shell({ children, theme, top }) {
         .sectitle { font-size:20px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; line-height:1.1; }
         .secsub { font-size:12.5px; opacity:.7; margin-top:3px; }
         .secright { font-size:15px; font-weight:700; white-space:nowrap; }
+        .stageinside { margin-top:8px; padding:8px 10px; border-radius:10px; background:rgba(255,255,255,.05); line-height:1.45; }
         .fold { margin:0; }
         .foldhead { width:100%; color:inherit; font:inherit; cursor:pointer; border-right:0; border-bottom:0; border-left:0; box-sizing:border-box; margin-top:26px; }
         .fold:first-child .foldhead { margin-top:8px; }
