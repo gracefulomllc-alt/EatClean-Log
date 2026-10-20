@@ -204,8 +204,13 @@ const STAGES = [
   { at: 18, name: "Growth hormone rise", body: "Growth hormone trends upward. Part of why muscle holds up reasonably well through a fast." },
   { at: 20, name: "Autophagy window", body: "Cellular cleanup is thought to step up here. The human timing is poorly pinned down and most hard data is from animals." },
   { at: 24, name: "Deep fast", body: "Liver glycogen is largely gone and ketones are the main fuel. Mind your electrolytes and don't train hard in here." },
+  // Past 24 hours the benefits stop growing and the risks keep climbing. Shown so you know what's going on, not as a goal.
+  { at: 30, name: "Ketones high, electrolytes dropping", body: "Ketones are now a major fuel for your brain and hunger often eases. You're losing sodium, potassium and magnesium, which is where headaches, cramps and lightheadedness come from.", caution: true },
+  { at: 36, name: "Muscle protection matters", body: "Your body is making glucose from amino acids and fat by-products. Some lean tissue is used. Blood pressure can run low and standing up fast can make you dizzy. This app tells you to break the fast here.", caution: true },
+  { at: 48, name: "Two days", body: "Insulin is at its lowest and ketones level off. Extra fat loss is small compared with the strain. Break it gently with a small meal, since a big one can cause stomach trouble and swelling.", caution: true },
+  { at: 72, name: "Three days or more", body: "This is medical-supervision territory. Claims about immune reset come from small studies and animals and aren't settled in people. Re-feeding too fast can upset body salts to a dangerous level.", caution: true },
 ];
-STAGES.forEach((st, i) => Object.defineProperty(st, "hue", { get: () => PALETTES[THEME].stages[i], enumerable: true }));
+STAGES.forEach((st, i) => Object.defineProperty(st, "hue", { get: () => { const h = PALETTES[THEME].stages; return h[i] ?? h[h.length - 1]; }, enumerable: true }));
 const stageAt = (h) => STAGES.reduce((a, s) => (h >= s.at ? s : a), STAGES[0]);
 const nextStage = (h) => STAGES.find((s) => s.at > h) || null;
 
@@ -1220,7 +1225,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
       ) : fast ? (
         <div className="glass hero">
           <Ring pct={Math.min(1, hours / 24)} color={st.hue}
-            ticks={STAGES.map((sg) => ({ at: sg.at / 24, hit: hours >= sg.at, color: sg.hue }))}>
+            ticks={STAGES.filter((sg) => sg.at <= 24).map((sg) => ({ at: sg.at / 24, hit: hours >= sg.at, color: sg.hue }))}>
             <div className="mono huge">{clock(now - fast.start)}</div>
             <div className="stagename" style={{ color: st.hue }}>{st.name}</div>
             <div className="dim tiny">{nx ? `${nx.name} in ${(nx.at - hours).toFixed(1)}h` : "deep fast"}</div>
@@ -1267,10 +1272,10 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
           {STAGES.map((s) => (
             <div key={s.at} className={st && s.at === st.at ? "stagerow on" : "stagerow"}>
               <span className="mono hr" style={{ color: hours >= s.at && fast ? s.hue : undefined }}>{s.at}h</span>
-              <div><div className="sname">{s.name}</div><div className="dim tiny">{s.body}</div></div>
+              <div><div className="sname">{s.name}</div><div className="dim tiny">{s.body}</div>{s.caution && <div className="tiny" style={{ color: "#FB923C", marginTop: 3 }}>Past what this app recommends. Talk to a doctor first.</div>}</div>
             </div>
           ))}
-          <p className="dim tiny pad">Rough averages. Your own switchover depends on your last meal, your training, and how depleted you already were.</p>
+          <p className="dim tiny pad">Rough averages. Your own switchover depends on your last meal, your training, and how depleted you already were. After 24 hours the extra benefit is small and the risks grow, so breaking the fast on plan is the win.</p>
         </div>
       )}
       </Fold>}
