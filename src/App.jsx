@@ -3,6 +3,7 @@ import { roadPicks, ROAD_CHAINS, searchChains, visitCounts, chainGroups } from "
 import { gradeFood, gradeTone, letterFor } from "./grade.js";
 import { labFocus, parseLabReport, mergeNewLabs } from "./labs.js";
 import { STAGE_DETAIL } from "./stageDetail.js";
+import { activityTip } from "./activityTip.js";
 import { orderParts, applyParts, partsLabel } from "./orderParts.js";
 import { FRUITS, fruitMacros, fruitStep, fruitStart } from "./fruit.js";
 import { buildStatBook, RANGES } from "./statbook.js";
@@ -1320,6 +1321,8 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
         }} />
         : <button className="btn solid wide big" onClick={() => setOpen(true)}><Plus size={18} /> {H("Log a play", "Add a meal")}</button>}
 
+      <ActivityTipCard day={day} data={data} targets={targets} />
+
       {isToday && <NextUp data={data} left={left} proteinLeft={targets.protein - t.p} dayId={dayId} updateDay={updateDay} />}
 
       {(() => {
@@ -1443,6 +1446,24 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
   );
 }
 
+
+// What today's movement means for eating. Information only: it never changes your budget on its own.
+function ActivityTipCard({ day, data, targets }) {
+  const tip = activityTip({ steps: day.steps, sessions: day.sessions, weightLb: data.profile.weight, activity: data.profile.activity, recovering: !!data.recovery?.on });
+  if (!tip.has) return null;
+  return (
+    <div className="glass pad stack">
+      <h2>Your activity today</h2>
+      {tip.workouts.length > 0 && <p className="small"><b>{tip.workouts.join(" and ")}.</b> {tip.recovering ? "Recovery mode is on, so no activity calories or protein are added."
+        : <>Already in your budget: <b>+{tip.inBudgetCal} cal</b>{tip.inBudgetProtein ? <> and <b>+{tip.inBudgetProtein}g protein</b></> : null}. That's about half of what the workout burned.</>}</p>}
+      {tip.steps > 0 && <p className="small"><b>{tip.steps.toLocaleString()} steps.</b> {tip.extraSteps
+        ? <>About {tip.extraSteps.toLocaleString()} more than usual for your activity level.{tip.stepCal ? <> If you're hungry, you could eat around <b>{tip.stepCal} more cal</b>. That is not added to your budget.</> : null}</>
+        : "That's in line with what your budget already expects, so nothing extra to eat for it."}</p>}
+      <p className="small">Protein target today: <b>{targets.protein}g</b>.{tip.inBudgetProtein ? ` That includes +${tip.inBudgetProtein}g for training.` : ""}</p>
+      <p className="dim tiny">Information only. This card doesn't change your numbers. Estimates vary a lot from person to person.</p>
+    </div>
+  );
+}
 
 function WatchCard({ day, pullWatch }) {
   const [info, setInfo] = useState(() => { try { return JSON.parse(localStorage.getItem("cutlog:watch")) || null; } catch { return null; } });
