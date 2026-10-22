@@ -41,4 +41,29 @@ await H({ op: "login", id: jess.id, pin: "2468" });
 for (let i = 0; i < MAX_TRIES - 1; i++) await H({ op: "login", id: jess.id, pin: "0001" });
 t((await H({ op: "login", id: jess.id, pin: "2468" })).status === 200, "a right PIN resets the count");
 t(await hashPin("1234", "a") !== await hashPin("1234", "b"), "salted");
+// deleting profiles
+const purged = [];
+const D = (b) => handle(store, b, { ...opt(), purge: async (c) => void purged.push(c) });
+const sam = (await H({ op: "create", name: "Sam", pin: "1357", code: "SAMSAMSAMSAM1234" })).body;
+t((await D({ op: "delete", id: sam.id, pin: "1357", confirm: "Dan" })).status === 400, "must type the name to confirm");
+t((await D({ op: "delete", id: sam.id, pin: "0000", confirm: "Sam" })).status === 401, "own delete needs the right code");
+t((await D({ op: "delete", adminId: jess.id, adminPin: "2468", id: sam.id, confirm: "Sam" })).status === 403, "non-admin can't delete others");
+r = await D({ op: "delete", id: sam.id, pin: "1357", confirm: "sam" });
+t(r.status === 200 && purged.length === 1 && purged[0] === "SAMSAMSAMSAM1234", "own profile deleted and cloud data purged: " + purged);
+t((await H({ op: "list" })).body.names.every((x) => x.name !== "Sam"), "gone from the list");
+// shared sync code: another profile still uses it, so nothing is purged
+const a1 = (await H({ op: "create", name: "Pat", pin: "1111", code: "SHAREDCODE123456" })).body;
+const a2 = (await H({ op: "create", name: "Patty", pin: "2222", code: "SHAREDCODE123456" })).body;
+purged.length = 0;
+await D({ op: "delete", id: a1.id, pin: "1111", confirm: "Pat" });
+t(purged.length === 0, "cloud data kept while another profile shares the code");
+await D({ op: "delete", id: a2.id, pin: "2222", confirm: "Patty" });
+t(purged.length === 1 && purged[0] === "SHAREDCODE123456", "purged when the last one goes");
+// admin deletes someone, and admin handover
+const old = (await H({ op: "create", name: "Old Test", pin: "9999" })).body;
+t((await D({ op: "delete", adminId: terel.id, adminPin: "wrong", id: old.id, confirm: "Old Test" })).status === 401, "admin must prove their code");
+t((await D({ op: "delete", adminId: terel.id, adminPin: "1234", id: old.id, confirm: "Old Test" })).status === 200, "admin deletes someone");
+r = await D({ op: "delete", id: terel.id, pin: "1234", confirm: "Terel" });
+t(r.status === 200, "admin can delete themselves");
+r = await H({ op: "list" }); t(r.body.admin !== null && r.body.admin !== "Terel", "someone else is made admin: " + r.body.admin);
 console.log(bad ? `${bad} failed` : `accounts ok (${ok})`); process.exit(bad ? 1 : 0);

@@ -17,7 +17,7 @@ const okPin = (p) => /^\d{4}$/.test(String(p || ""));
 const bad = (status, msg) => ({ status, body: { error: msg } });
 const pub = (a) => ({ id: a.id, name: a.name, admin: !!a.admin });
 
-export async function handle(store, body, { now = Date.now(), newId = () => crypto.randomUUID(), newCode = () => hex(crypto.getRandomValues(new Uint8Array(8))).toUpperCase() } = {}) {
+export async function handle(store, body, { purge = null, now = Date.now(), newId = () => crypto.randomUUID(), newCode = () => hex(crypto.getRandomValues(new Uint8Array(8))).toUpperCase() } = {}) {
   const roster = JSON.parse((await store.get("roster")) || '{"accounts":[]}');
   const save = () => store.set("roster", JSON.stringify(roster));
   const find = (id) => roster.accounts.find((a) => a.id === id);
@@ -79,6 +79,30 @@ export async function handle(store, body, { now = Date.now(), newId = () => cryp
     if (!okPin(body.newPin)) return bad(400, "The new code is 4 numbers.");
     a.salt = newId(); a.hash = await hashPin(body.newPin, a.salt); a.fails = 0; a.until = 0;
     await save();
+    return { status: 200, body: { ok: true } };
+  }
+
+  // Delete a profile: you can delete your own with your code, and the admin can delete anyone. The person's name has to be typed to confirm.
+  // Their cloud log, watch data and photos go too, unless another profile still uses the same sync code.
+  if (body.op === "delete") {
+    let target;
+    if (body.adminId) {
+      const boss = find(body.adminId), err = await check(boss, body.adminPin);
+      if (err) return err;
+      if (!boss.admin) return bad(403, "Only the admin can delete someone else's profile.");
+      target = find(body.id);
+      if (!target) return bad(404, "That name isn't on the list anymore.");
+    } else {
+      target = find(body.id);
+      const err = await check(target, body.pin);
+      if (err) return err;
+    }
+    if (!body.confirm || !sameName(cleanName(body.confirm), target.name)) return bad(400, "Type the name exactly to confirm.");
+    const others = roster.accounts.filter((a) => a.id !== target.id);
+    if (target.admin && others.length) others.slice().sort((x, y) => (x.at || 0) - (y.at || 0))[0].admin = true;   // the oldest profile takes over as admin
+    roster.accounts = others;
+    await save();
+    if (purge && !others.some((a) => a.code === target.code)) await purge(target.code);
     return { status: 200, body: { ok: true } };
   }
 

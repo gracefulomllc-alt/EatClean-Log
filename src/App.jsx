@@ -2181,6 +2181,14 @@ function AccountPanel({ acct, createAccount, signOut, tempDevice, keepDevice }) 
   const [sure, setSure] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);   // { ok, text }
+  const [delOpen, setDelOpen] = useState(false);
+  const [delName, setDelName] = useState("");
+  const [delPin, setDelPin] = useState("");
+  const [aTarget, setATarget] = useState("");
+  const [aName, setAName] = useState("");
+  const [aPin, setAPin] = useState("");
+  // After a profile is deleted this device forgets it too. No sync first: that would put the log back in the cloud.
+  const wipe = () => { try { Object.keys(localStorage).filter((k) => k.startsWith("cutlog:") && k !== "cutlog:code").forEach((k) => localStorage.removeItem(k)); } catch { /* fine */ } location.reload(); };
   useEffect(() => { if (acct?.admin) accountApi({ op: "list" }).then((r) => setList(r.names.filter((n) => n.id !== acct.id))).catch(() => {}); }, [acct?.id, acct?.admin]);
   const run = async (fn, okText) => { setBusy(true); setMsg(null); try { await fn(); setMsg(okText ? { ok: true, text: okText } : null); } catch (e) { setMsg({ ok: false, text: String(e.message || e) }); } setBusy(false); };
 
@@ -2213,10 +2221,31 @@ function AccountPanel({ acct, createAccount, signOut, tempDevice, keepDevice }) 
         <button className="btn ghost wide" disabled={busy || !target || adminPin.length !== 4 || resetPin.length !== 4}
           onClick={() => run(async () => { await accountApi({ op: "reset", adminId: acct.id, adminPin, id: target, newPin: resetPin }); setAdminPin(""); setResetPin(""); setTarget(""); }, "Their code was reset. Tell them the new one.")}>Reset their code</button>
       </>}
+      {acct.admin && list.length > 0 && <>
+        <label>Delete someone's profile <span className="dim tiny">(admin)</span></label>
+        <select value={aTarget} onChange={(e) => { setATarget(e.target.value); setAName(""); }} aria-label="Profile to delete">
+          <option value="">Pick a name…</option>{list.map((n) => <option key={n.id} value={n.id}>{n.name}</option>)}</select>
+        {aTarget && <>
+          <p className="alert small">This erases their name, synced log, watch data and photos. It can't be undone.</p>
+          <input placeholder={`Type ${list.find((n) => n.id === aTarget)?.name || "their name"} to confirm`} value={aName} onChange={(e) => setAName(e.target.value)} aria-label="Type their name to confirm" />
+          <PinBox value={aPin} onChange={setAPin} label="Your code" />
+          <button className="btn ghost wide" disabled={busy || !aName.trim() || aPin.length !== 4}
+            onClick={() => run(async () => { await accountApi({ op: "delete", adminId: acct.id, adminPin: aPin, id: aTarget, confirm: aName }); setList((l) => l.filter((n) => n.id !== aTarget)); setATarget(""); setAName(""); setAPin(""); }, "That profile was deleted.")}>Delete that profile forever</button>
+        </>}
+      </>}
       {msg && <p className={msg.ok ? "dim small" : "alert small"}>{msg.text}</p>}
       <button className="btn ghost wide" disabled={busy} onClick={() => { if (!sure) { setSure(true); setTimeout(() => setSure(false), 4000); return; } run(signOut); }}>
         {sure ? "Tap again: save, sign out and clear this device" : "Sign out and clear this device"}</button>
       <p className="dim tiny">Use this on a shared phone or computer. Your log stays safe in the cloud under your name.</p>
+      <button className="btn ghost wide" onClick={() => setDelOpen(!delOpen)}>{delOpen ? "Never mind" : "Delete my profile"}</button>
+      {delOpen && (
+        <div className="stack">
+          <p className="alert small">This erases your name, your synced log, watch data and photos for good. It can't be undone. Back up first in Settings if you want a copy.</p>
+          <input placeholder={`Type ${acct.name} to confirm`} value={delName} onChange={(e) => setDelName(e.target.value)} aria-label="Type your name to confirm" />
+          <PinBox value={delPin} onChange={setDelPin} label="Your code" />
+          <button className="btn solid wide" disabled={busy || !delName.trim() || delPin.length !== 4}
+            onClick={() => run(async () => { await accountApi({ op: "delete", id: acct.id, pin: delPin, confirm: delName }); wipe(); })}>Delete my profile forever</button>
+        </div>)}
     </div>
   );
 }
