@@ -1245,6 +1245,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
             <button className="btn ghost wide" onClick={() => setEditStart(true)}>Edit start time</button>
             <button className="btn ghost wide" onClick={() => setShowStages(!showStages)}>{showStages ? "Hide stages" : "All stages"}</button>
           </div>
+          <button className="btn ghost wide" onClick={() => { if (window.confirm("Delete this fast without saving it? It won't be added to your past fasts.")) setData((d) => ({ ...d, fast: null })); }}>Delete this fast (don't save it)</button>
         </div>
       ) : confirmFast ? (
         <FastStart data={data} early={confirmFast === "early"} onCancel={() => setConfirmFast(false)}
