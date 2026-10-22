@@ -823,7 +823,7 @@ export default function CutLog() {
       {(tab === "weight" || tab === "log") && <ProgressSwitch tab={tab} setTab={setTab} />}
       <PopHost />
       <div key={tab} className="fadein">
-        {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay, openCrew, goTab: () => { setTab("setup"); setTimeout(() => document.getElementById("fasting-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 250); } }} />}
+        {tab === "now" && <Now {...{ data, setData, dayId: viewDay, setDayId: setViewDay, day, targets, updateDay, openCrew, pullWatch, goTab: () => { setTab("setup"); setTimeout(() => document.getElementById("fasting-panel")?.scrollIntoView({ behavior: "smooth", block: "start" }), 250); } }} />}
         {tab === "out" && <RoadTab data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} dayId={viewDay} setDayId={setViewDay} />}
         {tab === "plan" && <Plan data={data} setData={setData} targets={targets} day={day} updateDay={updateDay} dayId={viewDay} setDayId={setViewDay} goSettings={() => setTab("setup")} />}
         {tab === "weight" && <Weight data={data} setData={setData} targets={targets} updateDay={updateDay} />}
@@ -1148,10 +1148,10 @@ function NextStep({ data, day, left, proteinLeft }) {
   const goal = data.profile?.waterOz || 100, water = +day.water || 0, n = day.foods.length;
   const hr = new Date().getHours();
   let head, body;
-  if (!n) { head = hr < 11 ? "Log your breakfast" : "Log your first meal"; body = "Tap Add a meal below, pick the meal, add what you ate, then log it."; }
+  if (!n) { head = hr < 11 ? "Log your breakfast" : "Log your first meal"; body = "Tap Add a meal, pick the meal, add what you ate, then log it."; }
   else if (left < 0) { head = "You're over your budget today"; body = "No more food needed. Water and a walk are the best move. Tomorrow is a fresh start."; }
   else if (proteinLeft > 25 && left > 150) { head = `Get about ${Math.round(proteinLeft)}g more protein`; body = `You have ${Math.round(left).toLocaleString()} calories left. See What to eat next below.`; }
-  else if (water < goal * 0.5) { head = "Drink some water"; body = `You're at ${water} of ${goal} oz. Use the Water buttons below.`; }
+  else if (water < goal * 0.5) { head = "Drink some water"; body = `You're at ${water} of ${goal} oz. Open Water below and tap a button.`; }
   else { head = "You're on track"; body = "Keep going. Log what you eat as you eat it."; }
   return (
     <div className="glass pad center nextstep"><div className="dim tiny" style={{ letterSpacing: ".1em", textTransform: "uppercase" }}>Your next step</div>
@@ -1159,7 +1159,10 @@ function NextStep({ data, day, left, proteinLeft }) {
   );
 }
 
-function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew, goTab }) {
+function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew, goTab, pullWatch }) {
+  const [watchInfo, setWatchInfo] = useState(() => { try { return JSON.parse(localStorage.getItem("cutlog:watch")) || null; } catch { return null; } });
+  useEffect(() => { const on = (e) => setWatchInfo(e.detail); window.addEventListener("cutlog:watch", on); return () => window.removeEventListener("cutlog:watch", on); }, []);
+  const watchOn = !!(watchInfo && watchInfo.n > 0) || Object.values(data.days || {}).some((d) => (d.sessions || []).some((x) => x.src === "watch"));
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const removeFood = (id) => setData((d) => ({ ...d, deleted: tombstone(d, "food:" + id),
@@ -1192,7 +1195,6 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
     <>
       {isToday && <NextStep data={data} day={day} left={left} proteinLeft={targets.protein - t.p} />}
       {isToday && !PRO && <GamesPanel />}
-      {isToday && <CrewCard data={data} onOpen={openCrew} />}
       {data.cycle?.on && data.cycle.start && data.profile?.sex === "female" && <CycleCard cycle={data.cycle} dayId={dayId} />}
       {(fastOn || (!fastEnabled && !fast && isToday && fastGate(data.profile).ok)) && <Fold id="fasting" title="Fasting" sub={fast && fastOn ? `${st?.name || "Fasting"} · next: ${nx?.name || "keep going"}` : "Your fasting clock"} right={fast && fastOn ? fmtHM(now - fast.start) : ""}>
       {fastOn && fast && (() => {
@@ -1307,6 +1309,17 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
         </div>
       </div>
 
+      {open ? <LogMeal data={data} setData={setData} dayId={dayId} budget={targets.calories} budgetLeft={left} onDone={() => setOpen(false)}
+        commit={(items, grade) => {
+          // A shared mealId groups these items so a grade (if any) can attach to the right ones,
+          // even for a one-item "meal" — grading a single food should still show its verdict.
+          const mealId = crypto.randomUUID();
+          updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, ...items.map((i) => ({ at: stampFor(dayId), ...i, mealId, u: Date.now() }))],
+            grades: grade ? { ...(d.grades || {}), [mealId]: { ...grade, at: Date.now() } } : d.grades }));
+          pop({ calories: items.reduce((a, f) => a + (+f.calories || 0), 0), protein: items.reduce((a, f) => a + (+f.protein || 0), 0) });
+        }} />
+        : <button className="btn solid wide big" onClick={() => setOpen(true)}><Plus size={18} /> {H("Log a play", "Add a meal")}</button>}
+
       {isToday && <NextUp data={data} left={left} proteinLeft={targets.protein - t.p} dayId={dayId} updateDay={updateDay} />}
 
       {(() => {
@@ -1319,7 +1332,7 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
 
       <Fold id="meals" title="What you've eaten" sub="Every meal logged for this day" right={`${day.foods.length} item${day.foods.length === 1 ? "" : "s"}`}>
       <div className="glass">
-        {day.foods.length === 0 ? <p className="dim center pad">{H("Empty box score. Get on the board.", "Nothing logged yet. Press Add a meal below to start.")}</p> :
+        {day.foods.length === 0 ? <p className="dim center pad">{H("Empty box score. Get on the board.", "Nothing logged yet. Press Add a meal above to start.")}</p> :
           MEALS.filter((m) => day.foods.some((f) => f.meal === m)).map((m) => (
             <div key={m}>
               <div className="mealhead"><span className="dot" style={{ background: MEAL_COLOR[m], boxShadow: `0 0 8px ${MEAL_COLOR[m]}` }} />{m}
@@ -1368,23 +1381,12 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
         </div>
       )}
 
-      {open ? <LogMeal data={data} setData={setData} dayId={dayId} budget={targets.calories} budgetLeft={left} onDone={() => setOpen(false)}
-        commit={(items, grade) => {
-          // A shared mealId groups these items so a grade (if any) can attach to the right ones,
-          // even for a one-item "meal" — grading a single food should still show its verdict.
-          const mealId = crypto.randomUUID();
-          updateDay(dayId, (d) => ({ ...d, foods: [...d.foods, ...items.map((i) => ({ at: stampFor(dayId), ...i, mealId, u: Date.now() }))],
-            grades: grade ? { ...(d.grades || {}), [mealId]: { ...grade, at: Date.now() } } : d.grades }));
-          pop({ calories: items.reduce((a, f) => a + (+f.calories || 0), 0), protein: items.reduce((a, f) => a + (+f.protein || 0), 0) });
-        }} />
-        : <button className="btn solid wide big" onClick={() => setOpen(true)}><Plus size={18} /> {H("Log a play", "Add a meal")}</button>}
-      {!open && <p className="dim small center" style={{ marginTop: -4, marginBottom: 10 }}>Press the button after you eat. Pick the meal, add your food (or tap one you've eaten before), then log it.</p>}
 
       {(() => {
         const goal = data.profile.waterOz || 100, have = +day.water || 0;
         return (
           <>
-          <Fold id="water" title="Water" sub="Press a button each time you drink" right={`${have} / ${goal} oz`}>
+          <Fold id="water" title="Water" sub="Press a button each time you drink" defaultOpen={false} right={`${have} / ${goal} oz`}>
           <div className="glass pad">
             <div className="row"><label style={{ margin: 0 }}>Water</label>
               <span className="mono" style={{ color: have >= goal ? C.water : undefined }}>{have} / {goal} oz</span></div>
@@ -1431,10 +1433,36 @@ function Now({ data, setData, dayId, setDayId, day, targets, updateDay, openCrew
         {day.sleep && +day.sleep < 6 && <p className="cue">Under six hours. Short sleep pushes appetite up hard — if today is a fight, that's why, not willpower.</p>}
       </div>
       </Fold>
+      {watchOn && <Fold id="watch" title="Your watch" sub="Steps, sleep and workouts it sent" defaultOpen={false} right={day.steps ? `${Number(day.steps).toLocaleString()} steps` : ""}>
+        <WatchCard day={day} pullWatch={pullWatch} />
+      </Fold>}
+      {isToday && <Fold id="friends" title="Friends" sub="Your group and the weekly board" defaultOpen={false}>
+        <CrewCard data={data} onOpen={openCrew} />
+      </Fold>}
     </>
   );
 }
 
+
+function WatchCard({ day, pullWatch }) {
+  const [info, setInfo] = useState(() => { try { return JSON.parse(localStorage.getItem("cutlog:watch")) || null; } catch { return null; } });
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { const on = (e) => setInfo(e.detail); window.addEventListener("cutlog:watch", on); return () => window.removeEventListener("cutlog:watch", on); }, []);
+  const ws = (day.sessions || []).filter((x) => x.src === "watch");
+  const at = info?.at ? new Date(info.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+  return (
+    <div className="glass pad stack">
+      <div className="quad">
+        <div><div className="midnum">{day.steps ? Number(day.steps).toLocaleString() : "—"}</div><div className="dim tiny">Steps</div></div>
+        <div><div className="midnum">{day.sleep ? `${day.sleep}h` : "—"}</div><div className="dim tiny">Sleep</div></div>
+        <div><div className="midnum">{ws.length}</div><div className="dim tiny">Workouts</div></div>
+      </div>
+      {ws.map((x) => <div key={x.id} className="row small"><span>{describeSession(x)}</span><span className="dim">{Math.round(x.min)} min</span></div>)}
+      <div className="row"><span className="dim tiny">{at ? `Last checked ${at}` : "Not checked yet"}</span>
+        <button className="chip" disabled={busy} onClick={async () => { setBusy(true); await pullWatch?.(); setBusy(false); }}>{busy ? "Checking…" : "Check now"}</button></div>
+    </div>
+  );
+}
 
 function ScoreCard({ data, dayId, day, targets, updateDay }) {
   const prof = { ...data.profile, recovering: !!data.recovery?.on };
