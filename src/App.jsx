@@ -1,8 +1,9 @@
 import { suggestMeals, avoidNote, ALLERGENS, DIETS } from "./mealLibrary.js";
-import { roadPicks, ROAD_CHAINS, searchChains, visitCounts, chainGroups, modsFor, applyMods, modLabel } from "./fastFood.js";
+import { roadPicks, ROAD_CHAINS, searchChains, visitCounts, chainGroups } from "./fastFood.js";
 import { gradeFood, gradeTone, letterFor } from "./grade.js";
 import { labFocus, parseLabReport, mergeNewLabs } from "./labs.js";
 import { STAGE_DETAIL } from "./stageDetail.js";
+import { orderParts, applyParts, partsLabel } from "./orderParts.js";
 import { FRUITS, fruitMacros, fruitStep, fruitStart } from "./fruit.js";
 import { buildStatBook, RANGES } from "./statbook.js";
 import { applyWatch } from "./watch.js";
@@ -3628,7 +3629,8 @@ function RoadTab({ data, setData, targets, day, updateDay, dayId, setDayId }) {
   const [chain, setChain] = useState("");
   const [more, setMore] = useState(false);
   const [sort, setSort] = useState("");
-  const [modsOn, setModsOn] = useState({});
+  const [edits, setEdits] = useState({});       // key -> the parts you changed (took out or added)
+  const [editOpen, setEditOpen] = useState({});
   const [portion, setPortion] = useState({});
   const [logged, setLogged] = useState({});
   const [saved, setSaved] = useState({});
@@ -3701,9 +3703,11 @@ function RoadTab({ data, setData, targets, day, updateDay, dayId, setDayId }) {
         <div className="mealhead">Best picks for you</div>
         {picks.length === 0 && <p className="dim small pad">Nothing matches your food rules here. Try a different meal or place, or ask the coach below.</p>}
         {picks.map((m0) => {
-          const key = m0.chain + m0.name, f = portion[key] || 1, ids = modsOn[key] || [];
-          const mm = applyMods(m0, ids), m = scaleOrder(mm, f);
-          const label = `${m0.name}${ids.length ? `, ${ids.map((i) => modLabel(i).toLowerCase()).join(", ")}` : ""}`;
+          const key = m0.chain + m0.name, f = portion[key] || 1, ids = edits[key] || [];
+          const parts = orderParts(m0);
+          const mm = applyParts(m0, ids), m = scaleOrder(mm, f);
+          const label = partsLabel(m0, ids);
+          const flip = (id) => setEdits((o) => ({ ...o, [key]: ids.includes(id) ? ids.filter((i) => i !== id) : [...ids, id] }));
           return (
             <div key={key} className="dish">
               <div><div className="dishname">{m0.name}</div><div className="dim tiny">{m0.chain}</div></div>
@@ -3713,12 +3717,21 @@ function RoadTab({ data, setData, targets, day, updateDay, dayId, setDayId }) {
               </div>
               <div className="tagrow">{tagsFor({ ...mm, tags: m0.chain }).slice(0, 4).map((t) => <span key={t} className="tagpill">{t}</span>)}</div>
               {m0.tweak && <ul className="tweaks"><li>{m0.tweak}</li></ul>}
-              {modsFor(m0).length > 0 && (
-                <div className="chips" aria-label="Customize this order">{modsFor(m0).map((x) => {
-                  const d = x.d(m0);
-                  return <button key={x.id} className={ids.includes(x.id) ? "chip on" : "chip"}
-                    onClick={() => setModsOn((o) => ({ ...o, [key]: ids.includes(x.id) ? ids.filter((i) => i !== x.id) : [...ids, x.id] }))}>{x.label} ({d[0] > 0 ? "+" : ""}{d[0]} cal)</button>;
-                })}</div>)}
+              {parts.length > 0 && (
+                <button className="btn ghost wide" onClick={() => setEditOpen((o) => ({ ...o, [key]: !o[key] }))}>
+                  {editOpen[key] ? "Done editing" : ids.length ? `Edit this order (${ids.length} change${ids.length === 1 ? "" : "s"})` : "Edit this order"}</button>)}
+              {editOpen[key] && parts.length > 0 && (
+                <div className="editparts">
+                  {parts.some((x) => x.kind === "in") && <div className="dim tiny">What's in it. Tap to take something out.</div>}
+                  {parts.filter((x) => x.kind === "in").map((x) => { const off = ids.includes(x.id); return (
+                    <button key={x.id} className={off ? "partrow off" : "partrow"} aria-pressed={!off} onClick={() => flip(x.id)}>
+                      <span>{off ? "✕" : "✓"} {x.label}</span><span className="mono">{off ? `removed −${Math.round(-x.d[0])}` : `${Math.round(-x.d[0])} cal`}</span></button>); })}
+                  {parts.some((x) => x.kind === "add") && <div className="dim tiny">Add extras</div>}
+                  {parts.filter((x) => x.kind === "add").map((x) => { const on = ids.includes(x.id); return (
+                    <button key={x.id} className={on ? "partrow on" : "partrow"} aria-pressed={on} onClick={() => flip(x.id)}>
+                      <span>{on ? "✓" : "+"} {x.label}</span><span className="mono">{x.d[0] > 0 ? "+" : ""}{Math.round(x.d[0])} cal</span></button>); })}
+                  <p className="dim tiny">Estimates for a typical portion. Your total above updates as you tap.</p>
+                </div>)}
               <div className="chips" aria-label="Portion">{PORTIONS.map(([v, l]) => <button key={v} className={f === v ? "chip on" : "chip"} onClick={() => setPortion((x) => ({ ...x, [key]: v }))}>{l}</button>)}</div>
               <div className="rowbtns">
                 <button className="btn solid wide" disabled={logged[key]} onClick={() => {
@@ -5580,6 +5593,10 @@ function Shell({ children, theme, top }) {
         .sectitle { font-size:20px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; line-height:1.1; }
         .secsub { font-size:12.5px; opacity:.7; margin-top:3px; }
         .secright { font-size:15px; font-weight:700; white-space:nowrap; }
+        .editparts { display:flex; flex-direction:column; gap:6px; padding:10px; border-radius:12px; background:rgba(255,255,255,.05); }
+        .partrow { display:flex; justify-content:space-between; align-items:center; gap:10px; width:100%; padding:11px 12px; border-radius:10px; border:1px solid rgba(255,255,255,.14); background:rgba(255,255,255,.04); color:inherit; font:inherit; font-size:14.5px; cursor:pointer; text-align:left; }
+        .partrow.off { opacity:.6; text-decoration:line-through; border-style:dashed; }
+        .partrow.on { border-color:#22C55E; background:rgba(34,197,94,.14); }
         .stageinside { margin-top:8px; padding:8px 10px; border-radius:10px; background:rgba(255,255,255,.05); line-height:1.45; }
         .fold { margin:0; }
         .foldhead { width:100%; color:inherit; font:inherit; cursor:pointer; border-right:0; border-bottom:0; border-left:0; box-sizing:border-box; margin-top:26px; }
