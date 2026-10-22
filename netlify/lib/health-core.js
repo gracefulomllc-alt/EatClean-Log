@@ -63,7 +63,13 @@ export async function handleHealth({ method, code, since = 0, days = 0, body, st
   }
   if (method !== "POST") return { status: 405, json: { error: "Use POST." } };
   const recs = normalize(body, now);
-  if (!recs.length) return { status: 400, json: { error: "Nothing usable in that message. Send steps, sleep, exercise, or a date with steps." } };
+  if (!recs.length) {
+    // The Health Connect Webhook app posts {timestamp, app_version, timezone} plus one list per type that had
+    // new records. A batch with nothing we use (no new steps yet, or only heart rate) is a normal sync, not an
+    // error: answer 200 so the phone doesn't count it as a failure and stop retrying good data.
+    if (body && typeof body === "object" && typeof body.app_version === "string") return { status: 200, json: { ok: true, received: 0, added: 0, note: "Nothing to save in this batch (no steps, sleep or exercise)." } };
+    return { status: 400, json: { error: "Nothing usable in that message. Send steps, sleep, exercise, or a date with steps." } };
+  }
   let added = 0;
   for (const r of recs) {
     const prev = have.recs[r.id];

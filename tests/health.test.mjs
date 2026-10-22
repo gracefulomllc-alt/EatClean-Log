@@ -9,6 +9,8 @@ t((await H({ method: "POST", body: { steps: [] } })).status === 404, "unknown co
 await syncStore.set(await keyFor(CODE), "{}");
 t((await H({ method: "POST", code: "short", body: {} })).status === 400, "bad code format");
 t((await H({ method: "POST", body: { hello: 1 } })).status === 400, "nothing usable is explained");
+{ const e = await H({ method: "POST", body: { timestamp: "2026-10-15T11:00:00Z", app_version: "2.1", timezone: "America/Denver", heart_rate: [{ bpm: 70, time: "2026-10-15T10:00:00Z" }] } });
+  t(e.status === 200 && e.json.received === 0, "a Health Connect Webhook batch with nothing we use is a normal sync, not a failure"); }
 const android = { timestamp: "2026-10-15T11:00:00Z", steps: [{ count: 4000, start_time: "2026-10-15T06:00:00Z", end_time: "2026-10-15T09:00:00Z" }, { count: 1200, start_time: "2026-10-15T09:00:00Z", end_time: "2026-10-15T10:00:00Z" }],
   sleep: [{ session_end_time: "2026-10-15T13:00:00Z", duration_seconds: 27000, stages: [] }],
   exercise: [{ type: "WEIGHTLIFTING", start_time: "2026-10-15T01:00:00Z", end_time: "2026-10-15T02:00:00Z", duration_seconds: 3600 }, { type: "RUNNING", start_time: "2026-10-14T01:00:00Z", end_time: "2026-10-14T01:30:00Z", duration_seconds: 1800, distance_meters: 5000 }] };
