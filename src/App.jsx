@@ -4876,7 +4876,8 @@ function CyclePanel({ data, setData }) {
 /* ---------- watch and phone sync: set up once, then steps, sleep and workouts show up on their own ---------- */
 function WatchPanel({ pullWatch }) {
   const code = localStorage.getItem("cutlog:sync");
-  const url = `${location.origin}/api/health`;
+  // The code rides in the address itself (?code=), so a watch app only needs one paste. Header setups failed in practice.
+  const url = `${location.origin}/api/health?code=${String(code || "").toUpperCase().replace(/[^A-Z0-9]/g, "")}`;
   const [phone, setPhone] = useState(() => (/iPhone|iPad|Macintosh/.test(navigator.userAgent) ? "ios" : "android"));
   const [info, setInfo] = useState(() => { try { return JSON.parse(localStorage.getItem("cutlog:watch")) || null; } catch { return null; } });
   const [msg, setMsg] = useState("");
@@ -4902,15 +4903,13 @@ function WatchPanel({ pullWatch }) {
             <button className={phone === "android" ? "chip on" : "chip"} onClick={() => setPhone("android")}>Android (Samsung, Pixel, Garmin, Fitbit)</button>
             <button className={phone === "ios" ? "chip on" : "chip"} onClick={() => setPhone("ios")}>iPhone and Apple Watch</button>
           </div>
-          <Row k="url" label="Web address to send to" value={url} />
-          <Row k="hname" label="Header name" value="x-sync-code" />
-          <Row k="hval" label="Header value (your sync code, keep it private)" value={code} />
+          <Row k="url" label="Web address to send to (it has your sync code in it, keep it private)" value={url} />
           {phone === "android" ? (
             <ol className="small" style={{ paddingLeft: 18 }}>
               <li>Make sure your watch app writes to <strong>Health Connect</strong>. Samsung Health, Fitbit and Garmin Connect can. In Samsung Health: Settings, then Health Connect, then allow steps, sleep and exercise.</li>
               <li>On your phone, install a free app that posts Health Connect data to a web address. One that works this way is <strong>Health Connect Webhook</strong> (search for it in the Play Store).</li>
               <li>In that app, allow it to read steps, sleep, exercise and distance.</li>
-              <li>Add a webhook. Paste the web address above. Add a header with the name and value above.</li>
+              <li>Tap <strong>Webhooks</strong> and add one. Paste the web address above. That's all it needs, no headers.</li>
               <li>Turn on automatic sync in that app, then come back here and press <strong>Check now</strong>.</li>
             </ol>
           ) : (
@@ -4919,7 +4918,7 @@ function WatchPanel({ pullWatch }) {
               <ol className="small" style={{ paddingLeft: 18 }}>
                 <li>Open the <strong>Shortcuts</strong> app and make a new shortcut called "Send to D1 Reload".</li>
                 <li>Add <strong>Find Health Samples</strong> for Steps today, then <strong>Calculate Statistics</strong> (Sum) on them. Do the same for Sleep if you want it.</li>
-                <li>Add <strong>Get Contents of URL</strong>. Set the URL to the web address above, Method to POST, add a header with the name and value above, and set the Request Body to JSON with the fields below (date as yyyy-MM-dd, steps from your sum).</li>
+                <li>Add <strong>Get Contents of URL</strong>. Set the URL to the web address above, Method to POST, and set the Request Body to JSON with the fields below (date as yyyy-MM-dd, steps from your sum).</li>
                 <li>Under <strong>Automation</strong>, run it at 12 pm and 8 pm. It may ask you to tap Run when your phone is unlocked.</li>
                 <li>Press Check now below. For workouts on iPhone, the quickest way is still to add them in the app.</li>
               </ol>
