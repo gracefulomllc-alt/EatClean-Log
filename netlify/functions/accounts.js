@@ -21,7 +21,7 @@ export default async (req) => {
   if (access && req.headers.get("x-access-code") !== access) return new Response("Bad access code", { status: 401 });
   let body;
   try { body = await req.json(); } catch { return new Response("Bad JSON", { status: 400 }); }
-  const r = await handle(getStore("cutlog-accounts"), body || {}, { purge });
+  const r = await handle(getStore("cutlog-accounts"), body || {}, { purge, recoveryKey: Netlify.env.get("ADMIN_KEY") || "" });
   // The app shows the response text as the message, so errors are plain sentences.
   return r.status === 200 ? json(200, r.body) : new Response(r.body.error, { status: r.status });
 };

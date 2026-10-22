@@ -17,7 +17,7 @@ const okPin = (p) => /^\d{4}$/.test(String(p || ""));
 const bad = (status, msg) => ({ status, body: { error: msg } });
 const pub = (a) => ({ id: a.id, name: a.name, admin: !!a.admin });
 
-export async function handle(store, body, { purge = null, now = Date.now(), newId = () => crypto.randomUUID(), newCode = () => hex(crypto.getRandomValues(new Uint8Array(8))).toUpperCase() } = {}) {
+export async function handle(store, body, { purge = null, recoveryKey = "", now = Date.now(), newId = () => crypto.randomUUID(), newCode = () => hex(crypto.getRandomValues(new Uint8Array(8))).toUpperCase() } = {}) {
   const roster = JSON.parse((await store.get("roster")) || '{"accounts":[]}');
   const save = () => store.set("roster", JSON.stringify(roster));
   const find = (id) => roster.accounts.find((a) => a.id === id);
@@ -38,7 +38,7 @@ export async function handle(store, body, { purge = null, now = Date.now(), newI
 
   if (body.op === "list") {
     const admin = roster.accounts.find((a) => a.admin);
-    return { status: 200, body: { names: roster.accounts.map((a) => ({ id: a.id, name: a.name })).sort((x, y) => x.name.localeCompare(y.name)), admin: admin ? admin.name : null } };
+    return { status: 200, body: { names: roster.accounts.map((a) => ({ id: a.id, name: a.name, admin: !!a.admin })).sort((x, y) => x.name.localeCompare(y.name)), admin: admin ? admin.name : null } };
   }
 
   if (body.op === "create") {
@@ -82,6 +82,30 @@ export async function handle(store, body, { purge = null, now = Date.now(), newI
     return { status: 200, body: { ok: true } };
   }
 
+  // An admin can make someone else an admin (or take it away). There is always at least one admin.
+  if (body.op === "setadmin") {
+    const boss = find(body.adminId), err = await check(boss, body.adminPin);
+    if (err) return err;
+    if (!boss.admin) return bad(403, "Only an admin can do that.");
+    const a = find(body.id);
+    if (!a) return bad(404, "That name isn't on the list anymore.");
+    const on = !!body.admin;
+    if (!on && roster.accounts.filter((x) => x.admin && x.id !== a.id).length === 0) return bad(400, "There has to be at least one admin.");
+    a.admin = on;
+    await save();
+    return { status: 200, body: { ok: true } };
+  }
+
+  // Lost admin (the first profile was a test one nobody can sign into): whoever holds the app owner's ADMIN_KEY setting can claim it with their own name and code.
+  if (body.op === "claimadmin") {
+    if (!recoveryKey || String(body.key || "") !== recoveryKey) return bad(403, "That owner key isn't right.");
+    const a = find(body.id), err = await check(a, body.pin);
+    if (err) return err;
+    a.admin = true;
+    await save();
+    return { status: 200, body: { ok: true } };
+  }
+
   // Delete a profile: you can delete your own with your code, and the admin can delete anyone. The person's name has to be typed to confirm.
   // Their cloud log, watch data and photos go too, unless another profile still uses the same sync code.
   if (body.op === "delete") {
@@ -99,7 +123,7 @@ export async function handle(store, body, { purge = null, now = Date.now(), newI
     }
     if (!body.confirm || !sameName(cleanName(body.confirm), target.name)) return bad(400, "Type the name exactly to confirm.");
     const others = roster.accounts.filter((a) => a.id !== target.id);
-    if (target.admin && others.length) others.slice().sort((x, y) => (x.at || 0) - (y.at || 0))[0].admin = true;   // the oldest profile takes over as admin
+    if (target.admin && others.length && !others.some((a) => a.admin)) others.slice().sort((x, y) => (x.at || 0) - (y.at || 0))[0].admin = true;   // the oldest profile takes over as admin
     roster.accounts = others;
     await save();
     if (purge && !others.some((a) => a.code === target.code)) await purge(target.code);

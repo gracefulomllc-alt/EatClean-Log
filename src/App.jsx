@@ -2169,7 +2169,7 @@ function LoginScreen({ onSignIn, onCreate, onSkip }) {
   );
 }
 
-function AccountPanel({ acct, createAccount, signOut, tempDevice, keepDevice }) {
+function AccountPanel({ acct, createAccount, signOut, tempDevice, keepDevice, setAcct }) {
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
   const [oldPin, setOldPin] = useState("");
@@ -2189,7 +2189,18 @@ function AccountPanel({ acct, createAccount, signOut, tempDevice, keepDevice }) 
   const [aPin, setAPin] = useState("");
   // After a profile is deleted this device forgets it too. No sync first: that would put the log back in the cloud.
   const wipe = () => { try { Object.keys(localStorage).filter((k) => k.startsWith("cutlog:") && k !== "cutlog:code").forEach((k) => localStorage.removeItem(k)); } catch { /* fine */ } location.reload(); };
-  useEffect(() => { if (acct?.admin) accountApi({ op: "list" }).then((r) => setList(r.names.filter((n) => n.id !== acct.id))).catch(() => {}); }, [acct?.id, acct?.admin]);
+  const [people, setPeople] = useState([]);
+  const [mkTarget, setMkTarget] = useState("");
+  const [mkPin, setMkPin] = useState("");
+  const [ownerKey, setOwnerKey] = useState("");
+  const [claimPin, setClaimPin] = useState("");
+  // Ask the server who is an admin, so a stale "not admin" on this device fixes itself.
+  const reload = () => accountApi({ op: "list" }).then((r) => {
+    setPeople(r.names); setList(r.names.filter((n) => n.id !== acct?.id));
+    const me = r.names.find((n) => n.id === acct?.id);
+    if (me && acct && !!me.admin !== !!acct.admin) { writeAcct({ ...acct, admin: !!me.admin }); setAcct && setAcct(readAcct()); }
+  }).catch(() => {});
+  useEffect(() => { if (acct?.id) reload(); }, [acct?.id]);
   const run = async (fn, okText) => { setBusy(true); setMsg(null); try { await fn(); setMsg(okText ? { ok: true, text: okText } : null); } catch (e) { setMsg({ ok: false, text: String(e.message || e) }); } setBusy(false); };
 
   if (!acct) return (
@@ -2220,6 +2231,23 @@ function AccountPanel({ acct, createAccount, signOut, tempDevice, keepDevice }) 
         <div className="row gap"><PinBox value={adminPin} onChange={setAdminPin} label="Your code" /><PinBox value={resetPin} onChange={setResetPin} label="Their new code" /></div>
         <button className="btn ghost wide" disabled={busy || !target || adminPin.length !== 4 || resetPin.length !== 4}
           onClick={() => run(async () => { await accountApi({ op: "reset", adminId: acct.id, adminPin, id: target, newPin: resetPin }); setAdminPin(""); setResetPin(""); setTarget(""); }, "Their code was reset. Tell them the new one.")}>Reset their code</button>
+      </>}
+      {acct.admin && list.length > 0 && <>
+        <label>Make someone an admin <span className="dim tiny">(admins can delete profiles and reset codes)</span></label>
+        <select value={mkTarget} onChange={(e) => setMkTarget(e.target.value)} aria-label="Who to make admin">
+          <option value="">Pick a name…</option>{list.map((n) => <option key={n.id} value={n.id}>{n.name}{n.admin ? " (admin)" : ""}</option>)}</select>
+        <PinBox value={mkPin} onChange={setMkPin} label="Your code" />
+        {(() => { const t = list.find((n) => n.id === mkTarget); const on = !t?.admin; return (
+          <button className="btn ghost wide" disabled={busy || !mkTarget || mkPin.length !== 4}
+            onClick={() => run(async () => { await accountApi({ op: "setadmin", adminId: acct.id, adminPin: mkPin, id: mkTarget, admin: on }); setMkPin(""); setMkTarget(""); await reload(); }, on ? "They're an admin now." : "They're not an admin anymore.")}>{on ? "Make them an admin" : "Remove their admin"}</button>); })()}
+      </>}
+      {!acct.admin && <>
+        <label>Can't see admin tools? <span className="dim tiny">(owner key)</span></label>
+        <p className="dim tiny">Admins can delete other people's profiles. If the first profile was an old test one, the app owner can give you admin with the owner key.</p>
+        <input placeholder="Owner key" type="password" value={ownerKey} onChange={(e) => setOwnerKey(e.target.value)} aria-label="Owner key" />
+        <PinBox value={claimPin} onChange={setClaimPin} label="Your code" />
+        <button className="btn ghost wide" disabled={busy || !ownerKey || claimPin.length !== 4}
+          onClick={() => run(async () => { await accountApi({ op: "claimadmin", id: acct.id, pin: claimPin, key: ownerKey }); setOwnerKey(""); setClaimPin(""); await reload(); }, "You're an admin now.")}>Make me admin</button>
       </>}
       {acct.admin && list.length > 0 && <>
         <label>Delete someone's profile <span className="dim tiny">(admin)</span></label>
@@ -5280,7 +5308,7 @@ function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, l
       <ProfileForm initial={data.profile} title="Your profile" cta="Save" onSave={onSave} />
       </Fold>
       <Fold id="set-account" title="Account and sync" sub="Your name and code, and syncing between devices" defaultOpen={false}>
-      <AccountPanel acct={acct} createAccount={createAccount} signOut={signOut} tempDevice={tempDevice} keepDevice={keepDevice} />
+      <AccountPanel acct={acct} setAcct={setAcct} createAccount={createAccount} signOut={signOut} tempDevice={tempDevice} keepDevice={keepDevice} />
       <SyncPanel {...{ sync, syncNow, startSync, joinSync, leaveSync }} />
       <WatchPanel pullWatch={pullWatch} />
       {data.profile?.sex === "female" && <CyclePanel data={data} setData={setData} />}

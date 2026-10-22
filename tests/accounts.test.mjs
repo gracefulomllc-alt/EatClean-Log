@@ -66,4 +66,28 @@ t((await D({ op: "delete", adminId: terel.id, adminPin: "1234", id: old.id, conf
 r = await D({ op: "delete", id: terel.id, pin: "1234", confirm: "Terel" });
 t(r.status === 200, "admin can delete themselves");
 r = await H({ op: "list" }); t(r.body.admin !== null && r.body.admin !== "Terel", "someone else is made admin: " + r.body.admin);
+// several admins, and claiming admin with the owner key
+const m1 = (await H({ op: "create", name: "Coach", pin: "1212" })).body;
+const m2 = (await H({ op: "create", name: "Helper", pin: "3434" })).body;
+const curAdmin = (await H({ op: "list" })).body.names.find((x) => x.admin);
+t(!!curAdmin, "list shows who is admin");
+const adminId = curAdmin.id, adminPinFor = { [m1.id]: "1212", [m2.id]: "3434" };
+const ap = adminPinFor[adminId];
+if (ap) {
+  t((await H({ op: "setadmin", adminId: m2.id === adminId ? m1.id : m2.id, adminPin: "wrong", id: m1.id, admin: true })).status !== 200, "non-admin can't promote");
+  const other = m1.id === adminId ? m2 : m1;
+  t((await H({ op: "setadmin", adminId, adminPin: ap, id: other.id, admin: true })).status === 200, "admin makes another admin");
+  const adm = (await H({ op: "list" })).body.names.filter((x) => x.admin).length;
+  t(adm === 2, "two admins");
+  const otherPin = adminPinFor[other.id];
+  t((await D({ op: "delete", adminId: other.id, adminPin: otherPin, id: adminId, confirm: curAdmin.name })).status === 200, "second admin can delete the first");
+  t((await H({ op: "list" })).body.names.filter((x) => x.admin).length === 1, "still exactly one admin after deleting an admin (no extra promotion)");
+  t((await H({ op: "setadmin", adminId: other.id, adminPin: otherPin, id: other.id, admin: false })).status === 400, "can't remove the last admin");
+}
+const lost = (await H({ op: "create", name: "Lost", pin: "5656" })).body;
+t((await handle(store, { op: "claimadmin", id: lost.id, pin: "5656", key: "x" }, { ...opt(), recoveryKey: "" })).status === 403, "claim refused with no owner key set");
+t((await handle(store, { op: "claimadmin", id: lost.id, pin: "5656", key: "nope" }, { ...opt(), recoveryKey: "SECRET" })).status === 403, "claim refused with wrong key");
+t((await handle(store, { op: "claimadmin", id: lost.id, pin: "0000", key: "SECRET" }, { ...opt(), recoveryKey: "SECRET" })).status === 401, "claim needs your code");
+t((await handle(store, { op: "claimadmin", id: lost.id, pin: "5656", key: "SECRET" }, { ...opt(), recoveryKey: "SECRET" })).status === 200, "claim works with the owner key");
+t((await H({ op: "list" })).body.names.find((x) => x.id === lost.id).admin === true, "claimed admin shows");
 console.log(bad ? `${bad} failed` : `accounts ok (${ok})`); process.exit(bad ? 1 : 0);
