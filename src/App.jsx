@@ -831,7 +831,7 @@ export default function CutLog() {
         {tab === "coach" && <Coach data={data} setData={setData} targets={targets} adaptive={adaptive} />}
         {tab === "log" && <LogTab view={logView} setView={setLogView} data={data} setData={setData} onPick={(k) => { setViewDay(k); setTab("now"); }} />}
         {tab === "setup" && <Settings data={data} setData={setData} onSave={(p) => setData((d) => ({ ...d, profile: p }))} adaptive={adaptive} useAdaptive={useAdaptive}
-          sync={sync} syncNow={syncNow} startSync={startSync} joinSync={joinSync} leaveSync={leaveSync} pullWatch={pullWatch} acct={acct} createAccount={createAccount} signOut={signOut} tempDevice={tempDevice} keepDevice={keepDevice} />}
+          sync={sync} syncNow={syncNow} startSync={startSync} joinSync={joinSync} leaveSync={leaveSync} pullWatch={pullWatch} acct={acct} setAcct={setAcct} createAccount={createAccount} signOut={signOut} tempDevice={tempDevice} keepDevice={keepDevice} />}
       </div>
       <nav className="dock">
         {TABS.filter((t) => t[0] !== "log" && t[0] !== "setup").map(([id, label, Icon]) => (
@@ -5274,7 +5274,7 @@ function FastingPanel({ data, setData }) {
   );
 }
 
-function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, leaveSync, pullWatch, adaptive, useAdaptive, acct, createAccount, signOut, tempDevice, keepDevice }) {
+function Settings({ data, setData, onSave, sync, syncNow, startSync, joinSync, leaveSync, pullWatch, adaptive, useAdaptive, acct, setAcct, createAccount, signOut, tempDevice, keepDevice }) {
   const [copied, setCopied] = useState(false);
   const [paste, setPaste] = useState("");
   const [msg, setMsg] = useState("");
